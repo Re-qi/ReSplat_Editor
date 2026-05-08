@@ -73,7 +73,7 @@ class Splat extends Element {
 
     rebuildMaterial: (bands: number) => void;
 
-    constructor(asset: Asset, orientation: Vec3) {
+    constructor(asset: Asset, rotation: Quat) {
         super(ElementType.splat);
 
         const splatResource = asset.resource as GSplatResource;
@@ -86,7 +86,7 @@ class Splat extends Element {
         this.numSplats = splatData.numSplats;
 
         this.entity = new Entity('splatEntitiy');
-        this.entity.setEulerAngles(orientation);
+        this.entity.setLocalRotation(rotation);
         this.entity.addComponent('gsplat', { asset });
 
         const instance = this.entity.gsplat.instance;

@@ -11,9 +11,15 @@ import {
     DataTable,
     Options,
     ReadFileSystem,
+    Transform,
     ZipReadFileSystem
 } from '@playcanvas/splat-transform';
 import { GSplatData } from 'playcanvas';
+
+type LoadResult = {
+    gsplatData: GSplatData;
+    transform: Transform;
+};
 
 /**
  * Default options for readFile.
@@ -79,7 +85,7 @@ const dataTableToGSplatData = (dataTable: DataTable): GSplatData => {
  * @param fileSystem - The file system to read from
  * @param skipReorder - Skip morton reordering (for files already in morton order or animation playback)
  */
-const loadGSplatData = async (filename: string, fileSystem: ReadFileSystem, skipReorder?: boolean): Promise<GSplatData> => {
+const loadGSplatData = async (filename: string, fileSystem: ReadFileSystem, skipReorder?: boolean): Promise<LoadResult> => {
     const inputFormat = getInputFormat(filename);
     const lowerFilename = filename.toLowerCase();
 
@@ -95,7 +101,7 @@ const loadGSplatData = async (filename: string, fileSystem: ReadFileSystem, skip
                 params: [],
                 fileSystem: zipFs
             });
-            return dataTableToGSplatData(tables[0]);
+            return { gsplatData: dataTableToGSplatData(tables[0]), transform: tables[0].transform };
         } finally {
             zipFs.close();
         }
@@ -127,7 +133,7 @@ const loadGSplatData = async (filename: string, fileSystem: ReadFileSystem, skip
 
     // Convert to GSplatData (use first table, as most formats return single table)
     // LCC may return multiple tables for different LOD levels - we use the first (highest detail)
-    return dataTableToGSplatData(tables[0]);
+    return { gsplatData: dataTableToGSplatData(tables[0]), transform: tables[0].transform };
 };
 
 /**
