@@ -2,7 +2,7 @@ import { Button, Element, Container } from '@playcanvas/pcui';
 
 import { Events } from '../events';
 import { ShortcutManager } from '../shortcut-manager';
-import { localize } from './localization';
+import { localize, formatTooltipWithShortcut } from './localization';
 import redoSvg from './svg/redo.svg';
 import brushSvg from './svg/select-brush.svg';
 import eyedropperSvg from './svg/select-eyedropper.svg';
@@ -215,7 +215,7 @@ class BottomToolbar extends Container {
             if (shortcutId) {
                 const shortcut = shortcutManager.formatShortcut(shortcutId);
                 if (shortcut) {
-                    return `${text} ( ${shortcut} )`;
+                    return formatTooltipWithShortcut(text, shortcut);
                 }
             }
             return text;

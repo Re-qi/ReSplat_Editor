@@ -43,5 +43,15 @@ const formatInteger = (value: number): string => {
     }).format(Math.round(value));
 };
 
-export { localizeInit, localize, formatInteger };
+// Spaces inside "( … )" would otherwise allow awkward wraps (e.g. "Camera ("
+// on one line and "V )" on the next). NBSP keeps the shortcut group intact;
+// the normal space before '(' still allows a wrap before the parenthetical.
+const formatTooltipWithShortcut = (label: string, shortcut: string): string => {
+    if (!shortcut) {
+        return label;
+    }
+    return `${label} (\u00A0${shortcut}\u00A0)`;
+};
+
+export { localizeInit, localize, formatInteger, formatTooltipWithShortcut };
 export type { LocalizeOptions };

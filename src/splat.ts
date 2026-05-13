@@ -18,7 +18,7 @@ import {
 import { Element, ElementType } from './element';
 import { Serializer } from './serializer';
 import { vertexShader, fragmentShader, gsplatCenter } from './shaders/splat-shader';
-import { State } from './splat-state';
+import { State, SplatState } from './splat-state';
 import { Transform } from './transform';
 import { TransformPalette } from './transform-palette';
 
@@ -49,6 +49,9 @@ class Splat extends Element {
     entity: Entity;
     changedCounter = 0;
     stateTexture: Texture;
+    // encapsulates per-splat state mirror (cpu Uint8Array + gpu Texture).
+    // all writes go through state.setBits/clearBits/toggleBits, then flush().
+    state: SplatState;
     transformTexture: Texture;
     selectionBoundStorage: BoundingBox;
     localBoundStorage: BoundingBox;
@@ -129,8 +132,11 @@ class Splat extends Element {
             });
         };
 
-        // create the state texture
+        // create the state texture and the SplatState mirror that owns it.
+        // splatData.getProp('state') aliases state.data so existing read-only
+        // consumers (serialize, status-bar, etc) keep working unchanged.
         this.stateTexture = createTexture('splatState', PIXELFORMAT_R8);
+        this.state = new SplatState(this.splatData.getProp('state') as Uint8Array, this.stateTexture);
         this.transformTexture = createTexture('splatTransform', PIXELFORMAT_R16U);
 
         // create the transform palette
@@ -171,32 +177,12 @@ class Splat extends Element {
     }
 
     async updateState(changedState = State.selected) {
-        const state = this.splatData.getProp('state') as Uint8Array;
-
-        // write state data to gpu texture
-        const data = this.stateTexture.lock();
-        data.set(state);
-        this.stateTexture.unlock();
-
-        let numSelected = 0;
-        let numLocked = 0;
-        let numDeleted = 0;
-
-        for (let i = 0; i < state.length; ++i) {
-            const s = state[i];
-            if (s & State.deleted) {
-                numDeleted++;
-            } else if (s & State.locked) {
-                numLocked++;
-            } else if (s & State.selected) {
-                numSelected++;
-            }
-        }
-
-        this.numSplats = state.length - numDeleted;
-        this.numLocked = numLocked;
-        this.numSelected = numSelected;
-        this.numDeleted = numDeleted;
+        // uploads dirty range + refreshes counts in one pass.
+        this.state.flush();
+        this.numSplats = this.state.data.length - this.state.numDeleted;
+        this.numLocked = this.state.numLocked;
+        this.numSelected = this.state.numSelected;
+        this.numDeleted = this.state.numDeleted;
 
         // handle splats being added or removed
         if (changedState & State.deleted) {

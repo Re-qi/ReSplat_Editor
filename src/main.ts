@@ -2,6 +2,7 @@ import { WebPCodec } from '@playcanvas/splat-transform';
 import { Color, createGraphicsDevice } from 'playcanvas';
 
 import { registerCameraPosesEvents } from './camera-poses';
+import { CommandQueue } from './command-queue';
 import { registerDocEvents } from './doc';
 import { EditHistory } from './edit-history';
 import { registerEditorEvents } from './editor';
@@ -80,12 +81,16 @@ const main = async () => {
     // url
     const url = new URL(window.location.href);
 
-    // edit history
-    const editHistory = new EditHistory(events);
+    // shared command queue for all async splat work (GPU readbacks + history mutations).
+    // every consumer that needs ordering relative to other commands enqueues here.
+    const commandQueue = new CommandQueue();
 
-    // expose edit history queue so subsystems (e.g. transform handlers) can serialize their
-    // own async work onto the same chain that gates add/undo/redo.
-    events.function('edit.queue', (fn: () => Promise<void>) => editHistory.queue(fn));
+    // edit history (uses the shared queue internally)
+    const editHistory = new EditHistory(events, commandQueue);
+
+    // expose the queue as an event for any module that needs to serialise async work
+    // alongside history mutations.
+    events.function('queue', (fn: () => Promise<void> | void) => commandQueue.enqueue(fn));
 
     // init localization
     await localizeInit();
@@ -131,7 +136,8 @@ const main = async () => {
         events,
         sceneConfig,
         editorUI.canvas,
-        graphicsDevice
+        graphicsDevice,
+        commandQueue
     );
 
     // colors

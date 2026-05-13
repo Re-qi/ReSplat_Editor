@@ -57,7 +57,9 @@ class Tooltips extends Container {
                 }
 
                 text.text = textString;
-                style.display = 'inline';
+                // inline-block so max-width / wrapping in SCSS apply (inline
+                // would stay one long line).
+                style.display = 'inline-block';
 
                 // clamp to viewport so tooltip doesn't go off-screen
                 const tooltipRect = this.dom.getBoundingClientRect();
@@ -85,7 +87,7 @@ class Tooltips extends Container {
             const enter = () => {
                 cancelTimer();
 
-                if (style.display === 'inline') {
+                if (style.display === 'inline-block') {
                     activate();
                 } else {
                     startTimer(() => activate());
@@ -95,7 +97,7 @@ class Tooltips extends Container {
             const leave = () => {
                 cancelTimer();
 
-                if (style.display === 'inline') {
+                if (style.display === 'inline-block') {
                     startTimer(() => {
                         style.display = 'none';
                     });

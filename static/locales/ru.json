@@ -83,6 +83,7 @@
     "panel.view-options.tonemapping.hejl": "Hejl",
     "panel.splat-data": "Данные Splat",
     "panel.splat-data.distance": "Расстояние",
+    "panel.splat-data.camera-depth": "Глубина камеры",
     "panel.splat-data.volume": "Объём",
     "panel.splat-data.surface-area": "Площадь поверхности",
     "panel.splat-data.scale-x": "Масштаб X",
@@ -91,6 +92,9 @@
     "panel.splat-data.red": "Красный",
     "panel.splat-data.green": "Зелёный",
     "panel.splat-data.blue": "Синий",
+    "panel.splat-data.dc-red": "DC Красный",
+    "panel.splat-data.dc-green": "DC Зелёный",
+    "panel.splat-data.dc-blue": "DC Синий",
     "panel.splat-data.opacity": "Непрозрачность",
     "panel.splat-data.hue": "Тон",
     "panel.splat-data.saturation": "Насыщенность",
@@ -100,7 +104,8 @@
     "panel.splat-data.normal": "Normal",
     "panel.splat-data.sh": "SH",
     "panel.splat-data.log-scale": "Логарифмическая шкала",
-    "panel.splat-data.show-all": "Show All",
+    "panel.splat-data.show-all": "Все свойства",
+    "panel.splat-data.on-screen-only": "Только видимые сплаты",
     "panel.splat-data.totals": "Итого",
     "panel.splat-data.totals.splats": "Сплаты",
     "panel.splat-data.totals.selected": "Выбрано",
@@ -277,5 +282,8 @@
     "status-bar.timeline": "Временная шкала",
     "status-bar.splat-data": "Данные сплатов",
     "tooltip.status-bar.timeline": "Переключить панель временной шкалы",
-    "tooltip.status-bar.splat-data": "Переключить панель данных сплатов"
+    "tooltip.status-bar.splat-data": "Переключить панель данных сплатов",
+    "tooltip.splat-data.on-screen-only": "Учитывать только сплаты, видимые в поле зрения камеры. Сплаты вне экрана исключаются из гистограммы.",
+    "tooltip.splat-data.log-scale": "Использовать логарифмическую вертикальную шкалу, чтобы малые значения были видны рядом с большими.",
+    "tooltip.splat-data.show-all": "Показать все свойства сплатов в списке, включая необработанные коэффициенты DC и сферических гармоник."
 }

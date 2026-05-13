@@ -83,6 +83,7 @@
     "panel.view-options.tonemapping.hejl": "Hejl",
     "panel.splat-data": "Données Splat",
     "panel.splat-data.distance": "Distance",
+    "panel.splat-data.camera-depth": "Profondeur caméra",
     "panel.splat-data.volume": "Volume",
     "panel.splat-data.surface-area": "Zone de surface",
     "panel.splat-data.scale-x": "Échelle X",
@@ -91,6 +92,9 @@
     "panel.splat-data.red": "Rouge",
     "panel.splat-data.green": "Vert",
     "panel.splat-data.blue": "Bleu",
+    "panel.splat-data.dc-red": "DC Rouge",
+    "panel.splat-data.dc-green": "DC Vert",
+    "panel.splat-data.dc-blue": "DC Bleu",
     "panel.splat-data.opacity": "Opacité",
     "panel.splat-data.hue": "Teinte",
     "panel.splat-data.saturation": "Saturation",
@@ -100,7 +104,8 @@
     "panel.splat-data.normal": "Normal",
     "panel.splat-data.sh": "SH",
     "panel.splat-data.log-scale": "Échelle logarithmique",
-    "panel.splat-data.show-all": "Show All",
+    "panel.splat-data.show-all": "Toutes les propriétés",
+    "panel.splat-data.on-screen-only": "Splats visibles uniquement",
     "panel.splat-data.totals": "Totaux",
     "panel.splat-data.totals.splats": "Splats",
     "panel.splat-data.totals.selected": "Selectionné",
@@ -277,5 +282,8 @@
     "status-bar.timeline": "Chronologie",
     "status-bar.splat-data": "Données Splat",
     "tooltip.status-bar.timeline": "Afficher/Masquer le panneau Chronologie",
-    "tooltip.status-bar.splat-data": "Afficher/Masquer le panneau Données Splat"
+    "tooltip.status-bar.splat-data": "Afficher/Masquer le panneau Données Splat",
+    "tooltip.splat-data.on-screen-only": "Ne compter que les splats visibles dans la caméra. Les splats hors écran sont exclus de l'histogramme.",
+    "tooltip.splat-data.log-scale": "Utiliser une échelle verticale logarithmique pour rendre visibles les petites valeurs à côté des grandes.",
+    "tooltip.splat-data.show-all": "Afficher toutes les propriétés des splats dans la liste, y compris les coefficients DC bruts et harmoniques sphériques."
 }

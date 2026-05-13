@@ -16,6 +16,7 @@ import {
 import { AssetLoader } from './asset-loader';
 import { Camera } from './camera';
 import { CameraPoseGizmos } from './camera-pose-gizmos';
+import { CommandQueue } from './command-queue';
 import { DataProcessor } from './data-processor';
 import { Element, ElementType, ElementTypeList } from './element';
 import { Events } from './events';
@@ -99,6 +100,11 @@ class Scene {
     outline: Outline;
     underlay: Underlay;
 
+    // shared queue for serialising async splat work. exposed so subsystems that
+    // need to order their async work alongside edit-history operations can do so
+    // without going through edit-history directly.
+    commandQueue: CommandQueue;
+
     contentRoot: Entity;
     cameraRoot: Entity;
 
@@ -106,11 +112,13 @@ class Scene {
         events: Events,
         config: SceneConfig,
         canvas: HTMLCanvasElement,
-        graphicsDevice: GraphicsDevice
+        graphicsDevice: GraphicsDevice,
+        commandQueue: CommandQueue
     ) {
         this.events = events;
         this.config = config;
         this.canvas = canvas;
+        this.commandQueue = commandQueue;
 
         // configure the playcanvas application. we render to an offscreen buffer so require
         // only the simplest of backbuffers.

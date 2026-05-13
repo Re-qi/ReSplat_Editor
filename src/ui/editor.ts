@@ -153,7 +153,7 @@ class EditorUI {
         });
 
         const timelinePanel = new TimelinePanel(events, tooltips);
-        const dataPanel = new DataPanel(events);
+        const dataPanel = new DataPanel(events, tooltips);
         const statusBar = new StatusBar(events, tooltips);
 
         timelinePanel.hidden = true;

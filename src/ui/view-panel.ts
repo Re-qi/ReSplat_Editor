@@ -3,7 +3,7 @@ import { Color } from 'playcanvas';
 
 import { Events } from '../events';
 import { ShortcutManager } from '../shortcut-manager';
-import { localize } from './localization';
+import { localize, formatTooltipWithShortcut } from './localization';
 import { Tooltips } from './tooltips';
 
 class ViewPanel extends Container {
@@ -483,7 +483,7 @@ class ViewPanel extends Container {
         // tooltips
         const shortcutManager: ShortcutManager = events.invoke('shortcutManager');
         const shortcut = shortcutManager.formatShortcut('grid.toggleVisible');
-        tooltips.register(showGridLabel, `${localize('panel.view-options.show-grid')} ( ${shortcut} )`, 'left');
+        tooltips.register(showGridLabel, formatTooltipWithShortcut(localize('panel.view-options.show-grid'), shortcut), 'left');
         tooltips.register(bgClrPicker, localize('panel.view-options.background-color'), 'left');
         tooltips.register(selectedClrPicker, localize('panel.view-options.selected-color'), 'top');
         tooltips.register(unselectedClrPicker, localize('panel.view-options.unselected-color'), 'top');

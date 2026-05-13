@@ -83,6 +83,7 @@
     "panel.view-options.tonemapping.hejl": "Hejl",
     "panel.splat-data": "スプラットの統計",
     "panel.splat-data.distance": "距離",
+    "panel.splat-data.camera-depth": "カメラ深度",
     "panel.splat-data.volume": "体積",
     "panel.splat-data.surface-area": "表面積",
     "panel.splat-data.scale-x": "スケール X",
@@ -91,6 +92,9 @@
     "panel.splat-data.red": "赤",
     "panel.splat-data.green": "緑",
     "panel.splat-data.blue": "青",
+    "panel.splat-data.dc-red": "DC 赤",
+    "panel.splat-data.dc-green": "DC 緑",
+    "panel.splat-data.dc-blue": "DC 青",
     "panel.splat-data.opacity": "不透明度",
     "panel.splat-data.hue": "色相",
     "panel.splat-data.saturation": "彩度",
@@ -100,7 +104,8 @@
     "panel.splat-data.normal": "Normal",
     "panel.splat-data.sh": "SH",
     "panel.splat-data.log-scale": "対数スケール",
-    "panel.splat-data.show-all": "Show All",
+    "panel.splat-data.show-all": "すべてのプロパティ",
+    "panel.splat-data.on-screen-only": "表示中のスプラットのみ",
     "panel.splat-data.totals": "合計",
     "panel.splat-data.totals.splats": "スプラット数",
     "panel.splat-data.totals.selected": "選択中",
@@ -277,5 +282,8 @@
     "status-bar.timeline": "タイムライン",
     "status-bar.splat-data": "スプラットデータ",
     "tooltip.status-bar.timeline": "タイムラインパネルの切り替え",
-    "tooltip.status-bar.splat-data": "スプラットデータパネルの切り替え"
+    "tooltip.status-bar.splat-data": "スプラットデータパネルの切り替え",
+    "tooltip.splat-data.on-screen-only": "カメラに映っているスプラットのみをヒストグラムに含めます。画面外のスプラットは除外されます。",
+    "tooltip.splat-data.log-scale": "縦軸を対数スケールで表示し、小さい値と大きい値の両方を見やすくします。",
+    "tooltip.splat-data.show-all": "未加工のDC係数や球面調和関数係数を含む、すべてのスプラットプロパティをリストに表示します。"
 }

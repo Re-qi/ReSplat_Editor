@@ -37,24 +37,18 @@ class StateOp {
     }
 
     private apply(op: BitOp) {
-        const state = this.splat.splatData.getProp('state') as Uint8Array;
-        const { mask } = this;
+        const { state } = this.splat;
+        const { mask, ranges } = this;
 
         switch (op) {
             case BitOp.SET:
-                this.ranges.forEach((i) => {
-                    state[i] |= mask;
-                });
+                state.setBits(ranges, mask);
                 break;
             case BitOp.CLEAR:
-                this.ranges.forEach((i) => {
-                    state[i] &= ~mask;
-                });
+                state.clearBits(ranges, mask);
                 break;
             case BitOp.TOGGLE:
-                this.ranges.forEach((i) => {
-                    state[i] ^= mask;
-                });
+                state.toggleBits(ranges, mask);
                 break;
         }
     }
@@ -107,18 +101,33 @@ class SelectInvertOp extends StateOp {
 class SelectOp extends StateOp {
     name = 'selectOp';
 
-    constructor(splat: Splat, op: 'add' | 'remove' | 'set', filter: ((i: number) => boolean) | Uint32Array) {
+    // `sel` is a committed snapshot of hits: either a per-splat mask
+    // (Uint8Array, 255 = hit) or a sorted Uint32Array of indices. taking a
+    // committed mask rather than a closure removes the foot-gun where a
+    // predicate captured `state[i]` at call time and was evaluated later.
+    // `op` semantics:
+    //   add    — select valid splats that are hit and currently unselected
+    //   remove — deselect valid splats that are hit and currently selected
+    //   set    — make selection match the hit mask (toggle valid splats whose
+    //            current selection state differs from the mask). NOT a replace —
+    //            the underlying BitOp is TOGGLE on the rows where selection and
+    //            hit disagree, which leaves locked/deleted bits untouched.
+    constructor(splat: Splat, op: 'add' | 'remove' | 'set', sel: Uint8Array | Uint32Array) {
         const splatData = splat.splatData;
         const state = splatData.getProp('state') as Uint8Array;
         const bitOp = op === 'add' ? BitOp.SET : op === 'remove' ? BitOp.CLEAR : BitOp.TOGGLE;
 
-        // wrap sorted IDs in a cursor-based predicate
-        const pred = filter instanceof Uint32Array ? sortedPredicate(filter) : filter;
+        const isHit = sel instanceof Uint32Array ? sortedPredicate(sel) : (i: number) => sel[i] === 255;
+
+        // single rule applied uniformly: only valid (clean or selected) splats
+        // are considered. consolidates the locked/deleted guard in one place so
+        // each producer doesn't have to remember it for the 'set' (toggle) path.
+        const valid = (i: number) => state[i] === 0 || state[i] === State.selected;
 
         const preds = {
-            add: (i: number) => pred(i) && state[i] === 0,
-            remove: (i: number) => pred(i) && state[i] === State.selected,
-            set: (i: number) => (state[i] === State.selected) !== pred(i)
+            add: (i: number) => valid(i) && isHit(i) && state[i] === 0,
+            remove: (i: number) => valid(i) && isHit(i) && state[i] === State.selected,
+            set: (i: number) => valid(i) && ((state[i] === State.selected) !== isHit(i))
         };
 
         super(splat, IndexRanges.fromPredicate(splatData.numSplats, preds[op]), State.selected, bitOp);

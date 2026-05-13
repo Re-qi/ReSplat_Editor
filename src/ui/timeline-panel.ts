@@ -2,7 +2,7 @@ import { Button, Container, NumericInput, SelectInput } from '@playcanvas/pcui';
 
 import { Events } from '../events';
 import { ShortcutManager } from '../shortcut-manager';
-import { localize } from './localization';
+import { localize, formatTooltipWithShortcut } from './localization';
 import { Tooltips } from './tooltips';
 
 class Ticks extends Container {
@@ -445,7 +445,7 @@ class TimelinePanel extends Container {
             if (shortcutId) {
                 const shortcut = shortcutManager.formatShortcut(shortcutId);
                 if (shortcut) {
-                    return `${text} ( ${shortcut} )`;
+                    return formatTooltipWithShortcut(text, shortcut);
                 }
             }
             return text;
