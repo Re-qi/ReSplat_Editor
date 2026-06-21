@@ -1,4 +1,4 @@
-const vertexShader = /* glsl*/`
+const vertexShader = /* glsl*/ `
 #include "gsplatCommonVS"
 
 uniform sampler2D splatState;
@@ -11,11 +11,17 @@ uniform vec4 clrScale;
 
 varying mediump vec4 texCoord_flags;            // xy: texCoord, z: selected, w: locked
 varying mediump vec4 color;
+varying mediump float depthValue;               // Depth value for depth mode
 
 #if PICK_PASS
     uniform uint pickOp;                        // 0: add, 1: remove, 2: set
     uniform int pickMode;                       // 0: pick id, 1: depth estimation
 #endif
+
+uniform int displayMode;                        // 0: color mode, 1: depth mode
+uniform float near_clip;
+uniform float far_clip;
+uniform float depthCycleLength;                 // depth fmod cycle length (default 50)
 
 mediump vec4 discardVec = vec4(0.0, 0.0, 2.0, 1.0);
 
@@ -91,11 +97,14 @@ void main(void) {
         (vertexState & 2u) != 0u ? 1.0 : 0.0        // locked
     );
 
+    // Calculate depth value - repeating gradient based on depthCycleLength
+    float linearDepth = -center.view.z;
+    depthValue = mod(linearDepth / max(depthCycleLength, 1.0), 1.0);
+
     #if PICK_PASS
         if (pickMode == 1) {
             // depth estimation mode: compute normalized depth in vertex shader
-            float linearDepth = -center.view.z;
-            float normalizedDepth = (linearDepth - camera_params.z) / (camera_params.y - camera_params.z);
+            float normalizedDepth = (linearDepth - near_clip) / (far_clip - near_clip);
             vec4 clr = getColor();
             color = vec4(normalizedDepth, 0.0, 0.0, 1.0) * clr.a;
         } else {
@@ -149,9 +158,11 @@ void main(void) {
 const fragmentShader = /* glsl*/`
 varying mediump vec4 texCoord_flags;
 varying mediump vec4 color;
+varying mediump float depthValue;
 
 uniform bool outlineMode;
 uniform float ringSize;
+uniform int displayMode;
 
 #if PICK_PASS
     uniform int pickMode;           // 0: id, 1: depth estimation
@@ -200,16 +211,25 @@ void main(void) {
 
         bool selected = texCoord_flags.z != 0.0 && texCoord_flags.w == 0.0;
 
-        if (outlineMode) {
-            pcFragColor0 = vec4(color.xyz * alpha, alpha);
-            pcFragColor1 = vec4(0.0, 0.0, 0.0, selected ? norm : 0.0);
+        if (displayMode == 1) {
+            // Depth mode - repeating gradient based on depthCycleLength
+            // depthValue goes 0->1 as distance goes 0->depthCycleLength
+            // Force alpha to 1.0 to avoid blending artifacts from semi-transparent Gaussians
+            pcFragColor0 = vec4(vec3(depthValue), 1.0);
+            pcFragColor1 = vec4(0.0, 0.0, 0.0, 0.0);
         } else {
-            if (selected) {
-                pcFragColor0 = vec4(color.xyz * alpha * 0.8, alpha);
-                pcFragColor1 = vec4(color.xyz * alpha * 0.2, alpha);
-            } else {
+            // Color mode (original)
+            if (outlineMode) {
                 pcFragColor0 = vec4(color.xyz * alpha, alpha);
-                pcFragColor1 = vec4(0.0, 0.0, 0.0, 0.0);
+                pcFragColor1 = vec4(0.0, 0.0, 0.0, selected ? norm : 0.0);
+            } else {
+                if (selected) {
+                    pcFragColor0 = vec4(color.xyz * alpha * 0.8, alpha);
+                    pcFragColor1 = vec4(color.xyz * alpha * 0.2, alpha);
+                } else {
+                    pcFragColor0 = vec4(color.xyz * alpha, alpha);
+                    pcFragColor1 = vec4(0.0, 0.0, 0.0, 0.0);
+                }
             }
         }
     #endif

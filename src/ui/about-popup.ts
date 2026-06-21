@@ -3,7 +3,7 @@ import { version as engineVersion, revision as engineRevision } from 'playcanvas
 
 import { version as appVersion } from '../../package.json';
 
-// Inline SVG for the SuperSplat logo
+// Inline SVG for the ReSplat logo
 const logoSvg = `
 <svg xmlns='http://www.w3.org/2000/svg' width="64" height="64" viewBox='64 64 384 384'>
   <path fill='#f26722' d='M129.83,217c9.75,0,17.64-7.9,17.64-17.64s-7.9-17.64-17.64-17.64-17.64,7.9-17.64,17.64,7.9,17.64,17.64,17.64Z'/>
@@ -64,7 +64,7 @@ class AboutPopup extends Container {
         });
         logoContainer.dom.innerHTML = logoSvg;
         logoContainer.dom.addEventListener('click', () => {
-            window.open('https://github.com/playcanvas/supersplat', '_blank')?.focus();
+            window.open('https://github.com/playcanvas/ReSplat', '_blank')?.focus();
         });
 
         // App name and version
@@ -72,12 +72,12 @@ class AboutPopup extends Container {
             id: 'about-app-info'
         });
         appInfo.dom.addEventListener('click', () => {
-            window.open('https://github.com/playcanvas/supersplat', '_blank')?.focus();
+            window.open('https://github.com/playcanvas/ReSplat', '_blank')?.focus();
         });
 
         const appName = new Label({
             id: 'about-app-name',
-            text: 'SuperSplat'
+            text: 'ReSplat'
         });
 
         const appVersionLabel = new Label({
@@ -93,36 +93,14 @@ class AboutPopup extends Container {
             id: 'about-deps'
         });
 
-        // PCUI
-        const pcuiRow = new Container({
+        // Powered by
+        const poweredByRow = new Container({
             class: 'about-dep-row'
         });
-        pcuiRow.dom.addEventListener('click', () => {
-            window.open('https://github.com/playcanvas/pcui', '_blank')?.focus();
-        });
-        const pcuiName = new Label({ class: 'about-dep-name', text: 'PCUI' });
-        const pcuiVersionL = new Label({ class: 'about-dep-version', text: `v${pcuiVersion}` });
-        const pcuiRev = new Label({ class: 'about-dep-revision', text: `(${pcuiRevision.substring(0, 7)})` });
-        pcuiRow.append(pcuiName);
-        pcuiRow.append(pcuiVersionL);
-        pcuiRow.append(pcuiRev);
+        const poweredByText = new Label({ class: 'about-dep-name', text: 'powered by SuperSplat v2.27.0' });
+        poweredByRow.append(poweredByText);
 
-        // Engine
-        const engineRow = new Container({
-            class: 'about-dep-row'
-        });
-        engineRow.dom.addEventListener('click', () => {
-            window.open('https://github.com/playcanvas/engine', '_blank')?.focus();
-        });
-        const engineName = new Label({ class: 'about-dep-name', text: 'PlayCanvas' });
-        const engineVer = new Label({ class: 'about-dep-version', text: `v${engineVersion}` });
-        const engineRev = new Label({ class: 'about-dep-revision', text: `(${engineRevision.substring(0, 7)})` });
-        engineRow.append(engineName);
-        engineRow.append(engineVer);
-        engineRow.append(engineRev);
-
-        depsContainer.append(pcuiRow);
-        depsContainer.append(engineRow);
+        depsContainer.append(poweredByRow);
 
         // Assemble content
         content.append(logoContainer);

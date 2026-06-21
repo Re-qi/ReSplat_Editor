@@ -1,6 +1,7 @@
 import { Color, Mat4 } from 'playcanvas';
 
 import { AnimTrack } from './anim-track';
+import { Element } from './element';
 import { IndexRanges, sortedPredicate } from './index-ranges';
 import { Pivot } from './pivot';
 import { Scene } from './scene';
@@ -173,26 +174,26 @@ class ResetOp extends StateOp {
 // op for modifying a splat transform
 class EntityTransformOp {
     name = 'entityTransform';
-    splat: Splat;
+    element: any;
     oldt: Transform;
     newt: Transform;
 
-    constructor(options: { splat: Splat, oldt: Transform, newt: Transform }) {
-        this.splat = options.splat;
+    constructor(options: { element: any, oldt: Transform, newt: Transform }) {
+        this.element = options.element;
         this.oldt = options.oldt;
         this.newt = options.newt;
     }
 
     do() {
-        this.splat.move(this.newt.position, this.newt.rotation, this.newt.scale);
+        this.element.move(this.newt.position, this.newt.rotation, this.newt.scale);
     }
 
     undo() {
-        this.splat.move(this.oldt.position, this.oldt.rotation, this.oldt.scale);
+        this.element.move(this.oldt.position, this.oldt.rotation, this.oldt.scale);
     }
 
     destroy() {
-        this.splat = null;
+        this.element = null;
         this.oldt = null;
         this.newt = null;
     }
@@ -432,6 +433,46 @@ class SplatRenameOp {
     }
 }
 
+class AddShapeOp {
+    name = 'addShape';
+    scene: Scene;
+    shape: Element;
+    shapes: Element[];
+    currentShape: Element | null;
+    setCurrentShape: (shape: Element | null) => void;
+    skipDo: boolean;
+
+    constructor(options: { scene: Scene, shape: Element, shapes: Element[], currentShape: Element | null, setCurrentShape: (shape: Element | null) => void, skipDo?: boolean }) {
+        this.scene = options.scene;
+        this.shape = options.shape;
+        this.shapes = options.shapes;
+        this.currentShape = options.currentShape;
+        this.setCurrentShape = options.setCurrentShape;
+        this.skipDo = options.skipDo || false;
+    }
+
+    do() {
+        if (!this.skipDo) {
+            this.shapes.push(this.shape);
+            this.scene.add(this.shape);
+            this.setCurrentShape(this.shape);
+        }
+        this.skipDo = false;
+    }
+
+    undo() {
+        const idx = this.shapes.indexOf(this.shape);
+        if (idx !== -1) {
+            this.shapes.splice(idx, 1);
+        }
+        if (this.currentShape === this.shape) {
+            const newCurrent = this.shapes.length > 0 ? this.shapes[this.shapes.length - 1] : null;
+            this.setCurrentShape(newCurrent);
+        }
+        this.scene.remove(this.shape);
+    }
+}
+
 export {
     EditOp,
     SelectAllOp,
@@ -450,5 +491,6 @@ export {
     AnimTrackEditOp,
     MultiOp,
     AddSplatOp,
-    SplatRenameOp
+    SplatRenameOp,
+    AddShapeOp
 };

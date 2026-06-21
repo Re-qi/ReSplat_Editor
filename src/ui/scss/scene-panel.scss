@@ -1,13 +1,80 @@
 @use 'colors.scss' as *;
 
 #scene-panel {
-    top: 102px;
-    left: 24px;
+    top: 24px;
+    right: 24px;
     width: 320px;
-}
+    max-height: calc(100% - 48px);
+    overflow-y: auto;
 
-.collapsed #scene-panel {
-    display: none;
+    transition: transform 0.3s ease;
+
+    &.collapsed {
+        transform: translateX(calc(100% + 24px));
+    }
+
+    &.has-scrollbar {
+        padding-right: 10px;
+
+        &::-webkit-scrollbar-track {
+            border-top-right-radius: 8px;
+            border-bottom-right-radius: 8px;
+        }
+
+        &::-webkit-scrollbar-thumb {
+            border-radius: 4px;
+        }
+    }
+
+    // Embedded color and view panels - override absolute positioning
+    #color-panel,
+    #view-panel {
+        position: static !important;
+        transform: none !important;
+        flex-direction: column;
+
+        &:not(.pcui-hidden) {
+            display: flex;
+        }
+
+        // Style the internal panel-header for embedded panels
+        > .panel-header {
+            display: flex;
+            flex-direction: row;
+            align-items: center;
+            padding: 2px;
+            background-color: $bcg-dark;
+
+            & > .panel-header-icon {
+                font-family: pc-icon;
+                font-weight: bold;
+                font-size: 13px;
+                color: $clr-hilight;
+                
+                // 统一设置图标大小和边距
+                width: 16px;
+                height: 16px;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                margin: 0 4px;
+                
+                // 针对 SVG 元素，使用 !important 覆盖 SVG 内联属性
+                svg {
+                    width: 16px !important;
+                    height: 16px !important;
+                }
+            }
+
+            & > .panel-header-label {
+                color: $text-primary;
+                font-weight: bold;
+                flex-grow: 1;
+                text-transform: uppercase;
+                margin: 0 4px;
+            }
+        }
+    }
 }
 
 .panel-header-button.active,
@@ -19,7 +86,35 @@
     }
 }
 
+#scene-panel > .panel-header:nth-child(1),
+#scene-panel > .panel-header:nth-child(3) {
+    width: 316px;
+}
+
+#scene-panel > .panel-header:nth-child(4) {
+    height: 24px;
+}
+
+#scene-panel > .panel-header:nth-child(5) {
+    height: 24px;
+}
+
+#scene-panel > .panel-header > .panel-header-button:nth-child(3) > svg {
+    width: 16px;
+    height: 16px;
+}
+
+.scene-import-btn {
+    height: 16px;
+
+    > svg {
+        width: 16px;
+        height: 16px;
+    }
+}
+
 .splat-list-container {
-    max-height: 300px;
+    max-height: 200px;
     overflow: auto;
+    width: 322px;
 }

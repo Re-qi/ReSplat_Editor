@@ -12,10 +12,12 @@ const defaultShortcuts: Record<string, ShortcutBinding> = {
     'camera.reset': { keys: ['f'], shift: 'required' },
     'camera.focus': { keys: ['f'] },
     'camera.toggleControlMode': { keys: ['v'] },
+    'select.duplicate': { keys: ['d'], ctrl: 'required' },
+    'select.separate': { keys: ['p'] },
+    'select.merge': { keys: ['j'], ctrl: 'required' },
 
     // Show
-    'camera.toggleOverlay': { keys: ['Tab'] },
-    'camera.toggleMode': { keys: ['m'] },
+    'camera.cycleMode': { keys: ['Tab'] },
     'grid.toggleVisible': { keys: ['g'] },
     'select.hide': { keys: ['h'] },
     'select.unhide': { keys: ['h'], shift: 'required' },
@@ -36,10 +38,10 @@ const defaultShortcuts: Record<string, ShortcutBinding> = {
     'select.delete': { keys: ['Delete', 'Backspace'] },
 
     // Tools
-    'tool.move': { keys: ['1'] },
-    'tool.rotate': { keys: ['2'] },
-    'tool.scale': { keys: ['3'] },
-    'tool.rectSelection': { keys: ['r'] },
+    'tool.move': { keys: ['w'] },
+    'tool.rotate': { keys: ['e'] },
+    'tool.scale': { keys: ['r'] },
+    'tool.rectSelection': { keys: ['q'] },
     'tool.lassoSelection': { keys: ['l'] },
     'tool.polygonSelection': { keys: ['p'] },
     'tool.brushSelection': { keys: ['b'] },
@@ -53,18 +55,14 @@ const defaultShortcuts: Record<string, ShortcutBinding> = {
     // Other
     'edit.undo': { keys: ['z'], ctrl: 'required', repeat: true, capture: true },
     'edit.redo': { keys: ['z'], ctrl: 'required', shift: 'required', repeat: true, capture: true },
-    'dataPanel.toggle': { keys: ['d'], ctrl: 'required', capture: true },
     'timelinePanel.toggle': { keys: ['t'], ctrl: 'required', capture: true },
+    'bottomToolbar.toggle': { keys: ['t'] },
+    'scenePanel.toggle': { keys: ['n'] },
 
-    // Camera fly keys - use physical positions (codes) for WASD layout on non-QWERTY keyboards
-    'camera.fly.forward': { codes: ['KeyW'], held: true, shift: 'optional', alt: 'optional' },
-    'camera.fly.backward': { codes: ['KeyS'], held: true, shift: 'optional', alt: 'optional' },
-    'camera.fly.left': { codes: ['KeyA'], held: true, shift: 'optional', alt: 'optional' },
-    'camera.fly.right': { codes: ['KeyD'], held: true, shift: 'optional', alt: 'optional' },
-    'camera.fly.down': { codes: ['KeyQ'], held: true, shift: 'optional', alt: 'optional' },
-    'camera.fly.up': { codes: ['KeyE'], held: true, shift: 'optional', alt: 'optional' },
-    'camera.modifier.fast': { codes: ['ShiftLeft', 'ShiftRight'], held: true, alt: 'optional' },
-    'camera.modifier.slow': { codes: ['AltLeft', 'AltRight'], held: true, shift: 'optional' }
+    'camera.toggleOverlay': { keys: ['z'], alt: 'required', capture: true },
+
+    // Camera fly keys - handled by main.ts for conditional mouse state checking
+    // (W/A/S/D/Q/E are intercepted there to switch tools when no mouse is pressed)
 };
 
 class ShortcutManager {

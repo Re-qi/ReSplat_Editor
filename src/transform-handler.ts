@@ -1,3 +1,4 @@
+import { Element } from './element';
 import { EntityTransformHandler } from './entity-transform-handler';
 import { Events } from './events';
 import { registerPivotEvents } from './pivot';
@@ -36,18 +37,29 @@ const registerTransformHandlerEvents = (events: Events) => {
     const entityTransformHandler = new EntityTransformHandler(events);
     const splatsTransformHandler = new SplatsTransformHandler(events);
 
-    const update = (splat: Splat) => {
+    const update = (element: Element | null) => {
         pop();
-        if (splat) {
-            if (splat.numSelected > 0) {
+        if (element) {
+            // Check shape selection first: if a shape is selected, use entity handler
+            // Otherwise check splat selection: if a splat has selected gaussians, use splats handler
+            const shapeSel = events.invoke('shapeSelection') as Element | null;
+            const splatSel = events.invoke('splatSelection') as Element | null;
+            if (splatSel instanceof Splat && splatSel.numSelected > 0) {
                 push(splatsTransformHandler);
             } else {
+                push(entityTransformHandler);
+            }
+        } else {
+            // splat was cleared — fall back to shape selection if present
+            const shapeSel = events.invoke('shapeSelection') as Element | null;
+            if (shapeSel) {
                 push(entityTransformHandler);
             }
         }
     };
 
     events.on('selection.changed', update);
+    events.on('selection.shapeChanged', update);
     events.on('splat.stateChanged', update);
 
     events.on('transformHandler.push', (handler: TransformHandler) => {

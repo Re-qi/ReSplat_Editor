@@ -1,0 +1,110 @@
+@use 'colors.scss' as *;
+
+#camera-mode-switch {
+    position: absolute;
+    right: 352px;
+    top: 24px;
+    height: 54px;
+    padding: 0px 8px;
+    border-radius: 8px;
+
+    background-color: $bcg-dark;
+
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+
+    transition: transform 0.3s ease;
+
+    &>.camera-mode-btn {
+        width: 38px;
+        height: 38px;
+        margin: 1px 1px;
+        padding: 0px;
+        border: 0px;
+        border-radius: 2px;
+        box-sizing: border-box;
+        background-color: $bcg-dark;
+
+        display: flex;
+        align-items: center;
+        justify-content: center;
+
+        cursor: pointer;
+        transition: color 100ms, opacity 100ms, box-shadow 100ms;
+
+        svg {
+            display: flex;
+            color: $clr-default;
+            fill: currentColor;
+        }
+
+        &:hover {
+            box-shadow: 0 0 2px 1px rgb(255 102 0 / 30%);
+        }
+
+        &:active {
+            background-color: $bcg-darkest;
+            box-shadow: none;
+        }
+
+        &.active {
+            svg {
+                color: $clr-hilight;
+            }
+        }
+    }
+
+    &.scene-has-scrollbar {
+        right: 362px;
+    }
+
+    &.scene-collapsed {
+        transform: translateX(344px);
+    }
+
+    #fly-speed-popup {
+        position: absolute;
+        top: calc(100% + 4px);
+        right: 0;
+        width: 250px;
+        height: 28px;
+        padding: 0px 8px;
+        border-radius: 6px;
+        background-color: $bcg-dark;
+        display: flex;
+        flex-direction: row;
+        align-items: center;
+        white-space: nowrap;
+
+        .fly-speed-popup-label {
+            margin-right: 6px;
+            color: $text-secondary;
+            font-size: 11px;
+        }
+
+        .fly-speed-popup-slider {
+            flex: 1;
+            margin: 0px;
+
+            .pcui-numeric-input {
+                display: flex;
+                width: 20px;
+                box-sizing: content-box;
+
+                input {
+                    width: 25px;
+                }
+            }
+
+            & > .pcui-slider-container {
+                & > .pcui-slider-bar {
+                    & > .pcui-slider-handle {
+                        background-color: $clr-default;
+                        border-radius: 3px;
+                    }
+                }
+            }
+        }
+    }
+}

@@ -6,22 +6,26 @@ import {
     CULLFACE_FRONT,
     BlendState,
     BoundingBox,
+    Color,
     Entity,
+    Mat4,
+    Quat,
     ShaderMaterial,
     Vec3
 } from 'playcanvas';
 
 import { Element, ElementType } from './element';
 import { Serializer } from './serializer';
+import { Transform } from './transform';
 import { vertexShader, fragmentShader } from './shaders/sphere-shape-shader';
-
-const v = new Vec3();
-const bound = new BoundingBox();
 
 class SphereShape extends Element {
     _radius = 1;
+    _color = new Color(1, 1, 1);
     pivot: Entity;
     material: ShaderMaterial;
+    bound = new BoundingBox();
+    invMat = new Mat4();
 
     constructor() {
         super(ElementType.debug);
@@ -49,6 +53,7 @@ class SphereShape extends Element {
         material.update();
 
         this.pivot.render.meshInstances[0].material = material;
+        this.pivot.render.meshInstances[0].cull = false;
         this.pivot.render.layers = [this.scene.worldLayer.id];
 
         this.material = material;
@@ -64,7 +69,9 @@ class SphereShape extends Element {
     }
 
     destroy() {
-
+        if (this.scene) {
+            this.scene.remove(this);
+        }
     }
 
     serialize(serializer: Serializer): void {
@@ -73,8 +80,10 @@ class SphereShape extends Element {
     }
 
     onPreRender() {
-        this.pivot.getWorldTransform().getTranslation(v);
-        this.material.setParameter('sphere', [v.x, v.y, v.z, this.radius]);
+        // Pass inverse world matrix for local-space ray-ellipsoid intersection
+        this.invMat.copy(this.pivot.getWorldTransform()).invert();
+        this.material.setParameter('matrix_model_inv', this.invMat.data);
+        this.material.setParameter('shapeColor', [this._color.r, this._color.g, this._color.b]);
 
         const device = this.scene.graphicsDevice;
         device.scope.resolve('targetSize').setValue([device.width, device.height]);
@@ -84,14 +93,45 @@ class SphereShape extends Element {
         this.updateBound();
     }
 
+    // Alias for EntityTransformHandler compatibility
+    get entity() {
+        return this.pivot;
+    }
+
+    // Implementation for transform system compatibility
+    getPivot(_mode: string, _selection: boolean, result: Transform) {
+        result.set(
+            this.pivot.getLocalPosition(),
+            this.pivot.getLocalRotation(),
+            this.pivot.getLocalScale()
+        );
+    }
+
+    move(position?: Vec3, rotation?: Quat, scale?: Vec3) {
+        if (position) {
+            this.pivot.setLocalPosition(position);
+        }
+        if (rotation) {
+            this.pivot.setLocalRotation(rotation);
+        }
+        if (scale) {
+            this.pivot.setLocalScale(scale);
+            // Use the max dimension as radius so the selection covers the entire non-uniform shape
+            this._radius = Math.max(scale.x, scale.y, scale.z) / 2;
+        }
+        this.updateBound();
+        this.scene.events.fire('splat.moved', this);
+    }
+
     updateBound() {
-        bound.center.copy(this.pivot.getPosition());
-        bound.halfExtents.set(this.radius, this.radius, this.radius);
+        this.bound.center.copy(this.pivot.getPosition());
+        const s = this.pivot.getLocalScale();
+        this.bound.halfExtents.set(s.x / 2, s.y / 2, s.z / 2);
         this.scene.boundDirty = true;
     }
 
     get worldBound(): BoundingBox | null {
-        return bound;
+        return this.bound;
     }
 
     set radius(radius: number) {
@@ -104,7 +144,28 @@ class SphereShape extends Element {
     }
 
     get radius() {
-        return this._radius;
+        const s = this.pivot.getLocalScale();
+        return Math.max(s.x, s.y, s.z) / 2;
+    }
+
+    get radiusX() {
+        return this.pivot.getLocalScale().x / 2;
+    }
+
+    get radiusY() {
+        return this.pivot.getLocalScale().y / 2;
+    }
+
+    get radiusZ() {
+        return this.pivot.getLocalScale().z / 2;
+    }
+
+    set color(c: Color) {
+        this._color.copy(c);
+    }
+
+    get color() {
+        return this._color;
     }
 }
 

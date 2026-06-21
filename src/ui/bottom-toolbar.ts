@@ -8,13 +8,18 @@ import brushSvg from './svg/select-brush.svg';
 import eyedropperSvg from './svg/select-eyedropper.svg';
 import floodSvg from './svg/select-flood.svg';
 import lassoSvg from './svg/select-lasso.svg';
+import opacitySvg from './svg/select-opacity.svg';
 import pickerSvg from './svg/select-picker.svg';
 import polygonSvg from './svg/select-poly.svg';
-import sphereSvg from './svg/select-sphere.svg';
-import boxSvg from './svg/show-hide-splats.svg';
+import sizeSvg from './svg/select-inverse.svg';
 import undoSvg from './svg/undo.svg';
+import translateSvg from './svg/move.svg';
+import rotateSvg from './svg/rotate.svg';
+import scaleSvg from './svg/scale.svg';
+import measureSvg from './svg/ruler.svg';
+import coordSpaceSvg from './svg/compass.svg';
+import originSvg from './svg/origin.svg';
 import { Tooltips } from './tooltips';
-// import cropSvg from './svg/crop.svg';
 
 const createSvg = (svgString: string) => {
     const decodedStr = decodeURIComponent(svgString.substring('data:image/svg+xml,'.length));
@@ -71,60 +76,54 @@ class BottomToolbar extends Container {
             class: 'bottom-toolbar-tool'
         });
 
-        const sphere = new Button({
-            id: 'bottom-toolbar-sphere',
-            class: 'bottom-toolbar-tool'
-        });
-
-        const box = new Button({
-            id: 'bottom-toolbar-box',
-            class: 'bottom-toolbar-tool'
-        });
-
         const eyedropper = new Button({
             id: 'bottom-toolbar-eyedropper',
             class: 'bottom-toolbar-tool'
         });
 
-        // const crop = new Button({
-        //     id: 'bottom-toolbar-crop',
-        //     class: ['bottom-toolbar-tool', 'disabled']
-        // });
+        const floodPopupBtn = new Button({
+            id: 'bottom-toolbar-flood-popup',
+            class: 'bottom-toolbar-tool'
+        });
+
+        const opacity = new Button({
+            id: 'bottom-toolbar-opacity',
+            class: 'bottom-toolbar-tool'
+        });
+
+        const size = new Button({
+            id: 'bottom-toolbar-size',
+            class: 'bottom-toolbar-tool'
+        });
 
         const translate = new Button({
             id: 'bottom-toolbar-translate',
-            class: 'bottom-toolbar-tool',
-            icon: 'E111'
+            class: 'bottom-toolbar-tool'
         });
 
         const rotate = new Button({
             id: 'bottom-toolbar-rotate',
-            class: 'bottom-toolbar-tool',
-            icon: 'E113'
+            class: 'bottom-toolbar-tool'
         });
 
         const scale = new Button({
             id: 'bottom-toolbar-scale',
-            class: 'bottom-toolbar-tool',
-            icon: 'E112'
+            class: 'bottom-toolbar-tool'
         });
 
         const measure = new Button({
             id: 'bottom-toolbar-measure',
-            class: 'bottom-toolbar-tool',
-            icon: 'E358'
+            class: 'bottom-toolbar-tool'
         });
 
         const coordSpace = new Button({
             id: 'bottom-toolbar-coord-space',
-            class: 'bottom-toolbar-toggle',
-            icon: 'E118'
+            class: 'bottom-toolbar-toggle'
         });
 
         const origin = new Button({
             id: 'bottom-toolbar-origin',
-            class: ['bottom-toolbar-toggle'],
-            icon: 'E189'
+            class: ['bottom-toolbar-toggle']
         });
 
         undo.dom.appendChild(createSvg(undoSvg));
@@ -132,12 +131,36 @@ class BottomToolbar extends Container {
         picker.dom.appendChild(createSvg(pickerSvg));
         polygon.dom.appendChild(createSvg(polygonSvg));
         brush.dom.appendChild(createSvg(brushSvg));
-        flood.dom.appendChild(createSvg(floodSvg));
-        sphere.dom.appendChild(createSvg(sphereSvg));
-        box.dom.appendChild(createSvg(boxSvg));
         lasso.dom.appendChild(createSvg(lassoSvg));
         eyedropper.dom.appendChild(createSvg(eyedropperSvg));
+        opacity.dom.appendChild(createSvg(opacitySvg));
+        size.dom.appendChild(createSvg(sizeSvg));
+        translate.dom.appendChild(createSvg(translateSvg));
+        rotate.dom.appendChild(createSvg(rotateSvg));
+        scale.dom.appendChild(createSvg(scaleSvg));
+        measure.dom.appendChild(createSvg(measureSvg));
+        coordSpace.dom.appendChild(createSvg(coordSpaceSvg));
+        origin.dom.appendChild(createSvg(originSvg));
         // crop.dom.appendChild(createSvg(cropSvg));
+
+        // 创建长按弹出列表（收纳 eyedropper、flood、opacity、size）
+        const floodPopup = document.createElement('div');
+        floodPopup.className = 'bottom-toolbar-popup';
+        floodPopup.style.display = 'none';
+        floodPopup.appendChild(eyedropper.dom);
+        floodPopupBtn.dom.appendChild(createSvg(floodSvg));
+        floodPopup.appendChild(floodPopupBtn.dom);
+        floodPopup.appendChild(opacity.dom);
+        floodPopup.appendChild(size.dom);
+        this.dom.appendChild(floodPopup);
+
+        // 阻止弹出列表中的事件冒泡
+        floodPopup.addEventListener('mousedown', (e) => {
+            e.stopPropagation();
+        });
+        floodPopup.addEventListener('mouseup', (e) => {
+            e.stopPropagation();
+        });
 
         this.append(undo);
         this.append(redo);
@@ -147,11 +170,6 @@ class BottomToolbar extends Container {
         this.append(polygon);
         this.append(brush);
         this.append(flood);
-        this.append(eyedropper);
-        this.append(new Element({ class: 'bottom-toolbar-separator' }));
-        this.append(sphere);
-        this.append(box);
-        // this.append(crop);
         this.append(new Element({ class: 'bottom-toolbar-separator' }));
         this.append(translate);
         this.append(rotate);
@@ -166,11 +184,135 @@ class BottomToolbar extends Container {
         polygon.dom.addEventListener('click', () => events.fire('tool.polygonSelection'));
         lasso.dom.addEventListener('click', () => events.fire('tool.lassoSelection'));
         brush.dom.addEventListener('click', () => events.fire('tool.brushSelection'));
-        flood.dom.addEventListener('click', () => events.fire('tool.floodSelection'));
+
+        // 用于动态切换 flood 按钮上的 SVG
+        let currentFloodSvgElement: HTMLElement | null = null;
+        const floodSvgMap: Record<string, string> = {
+            floodSelection: floodSvg,
+            eyedropperSelection: eyedropperSvg,
+            opacitySelection: opacitySvg,
+            sizeSelection: sizeSvg
+        };
+
+        const floodTooltipMap: Record<string, string> = {
+            floodSelection: 'tooltip.bottom-toolbar.flood',
+            eyedropperSelection: 'tooltip.bottom-toolbar.eyedropper',
+            opacitySelection: 'tooltip.bottom-toolbar.opacity',
+            sizeSelection: 'tooltip.bottom-toolbar.size'
+        };
+
+        const updateFloodSvg = (toolName: string) => {
+            const svgData = floodSvgMap[toolName];
+            if (!svgData) return;
+            if (currentFloodSvgElement) {
+                currentFloodSvgElement.remove();
+            }
+            currentFloodSvgElement = createSvg(svgData) as HTMLElement;
+            flood.dom.appendChild(currentFloodSvgElement);
+        };
+
+        // 初始显示 eyedropper SVG
+        updateFloodSvg('eyedropperSelection');
+
+        // 添加小三角点击区域
+        const floodToggle = document.createElement('div');
+        floodToggle.className = 'bottom-toolbar-flood-toggle';
+        floodToggle.style.cssText = `
+            position: absolute;
+            right: 1px;
+            bottom: 1px;
+            width: 10px;
+            height: 10px;
+            cursor: pointer;
+            z-index: 2;
+        `;
+        flood.dom.style.position = 'relative';
+        flood.dom.appendChild(floodToggle);
+
+        // flood 按钮：短按激活 eyedropper 工具，长按展开子菜单
+        let longPressTimer: ReturnType<typeof setTimeout> | null = null;
+        let isLongPress = false;
+
+        const showFloodPopup = () => {
+            const floodRect = flood.dom.getBoundingClientRect();
+            const toolbarRect = this.dom.getBoundingClientRect();
+            floodPopup.style.left = `${floodRect.right - toolbarRect.left + 10}px`;
+            floodPopup.style.top = `${floodRect.top - toolbarRect.top - 6}px`;
+            floodPopup.style.display = '';
+        };
+
+        const hideFloodPopup = () => {
+            floodPopup.style.display = 'none';
+        };
+
+        const isPopupVisible = () => {
+            return floodPopup.style.display !== 'none';
+        };
+
+        // 小三角点击：直接展开菜单
+        floodToggle.addEventListener('mousedown', (e) => {
+            e.stopPropagation();
+            if (isPopupVisible()) {
+                hideFloodPopup();
+            } else {
+                showFloodPopup();
+            }
+        });
+
+        flood.dom.addEventListener('mousedown', (e) => {
+            if (e.button !== 0) return;
+            // 如果点击的是小三角区域，不触发工具激活
+            if (floodToggle.contains(e.target as Node)) return;
+            isLongPress = false;
+            longPressTimer = setTimeout(() => {
+                isLongPress = true;
+                showFloodPopup();
+            }, 500);
+        });
+
+        flood.dom.addEventListener('mouseup', (e) => {
+            if (e.button !== 0) return;
+            // 如果点击的是小三角区域，不触发工具激活
+            if (floodToggle.contains(e.target as Node)) return;
+            if (longPressTimer) {
+                clearTimeout(longPressTimer);
+                longPressTimer = null;
+            }
+            if (!isLongPress) {
+                if (isPopupVisible()) {
+                    hideFloodPopup();
+                } else {
+                    events.fire('tool.eyedropperSelection');
+                }
+            }
+        });
+
+        flood.dom.addEventListener('mouseleave', () => {
+            if (longPressTimer) {
+                clearTimeout(longPressTimer);
+                longPressTimer = null;
+            }
+        });
+
+        // 点击弹窗外区域关闭弹出列表
+        document.addEventListener('mousedown', (e) => {
+            if (isPopupVisible() && !floodPopup.contains(e.target as Node) && !flood.dom.contains(e.target as Node)) {
+                hideFloodPopup();
+            }
+        });
+
+        // 弹出列表中的按钮点击后关闭弹出列表
+        [eyedropper, floodPopupBtn, opacity, size].forEach((btn) => {
+            btn.dom.addEventListener('click', () => {
+                hideFloodPopup();
+            });
+        });
+
         picker.dom.addEventListener('click', () => events.fire('tool.rectSelection'));
         eyedropper.dom.addEventListener('click', () => events.fire('tool.eyedropperSelection'));
-        sphere.dom.addEventListener('click', () => events.fire('tool.sphereSelection'));
-        box.dom.addEventListener('click', () => events.fire('tool.boxSelection'));
+        floodPopupBtn.dom.addEventListener('click', () => events.fire('tool.floodSelection'));
+        opacity.dom.addEventListener('click', () => events.fire('tool.opacitySelection'));
+        size.dom.addEventListener('click', () => events.fire('tool.sizeSelection'));
         translate.dom.addEventListener('click', () => events.fire('tool.move'));
         rotate.dom.addEventListener('click', () => events.fire('tool.rotate'));
         scale.dom.addEventListener('click', () => events.fire('tool.scale'));
@@ -188,16 +330,24 @@ class BottomToolbar extends Container {
         events.on('tool.activated', (toolName: string) => {
             picker.class[toolName === 'rectSelection' ? 'add' : 'remove']('active');
             brush.class[toolName === 'brushSelection' ? 'add' : 'remove']('active');
-            flood.class[toolName === 'floodSelection' ? 'add' : 'remove']('active');
+            flood.class[['floodSelection', 'eyedropperSelection', 'opacitySelection', 'sizeSelection'].includes(toolName) ? 'add' : 'remove']('active');
             polygon.class[toolName === 'polygonSelection' ? 'add' : 'remove']('active');
             lasso.class[toolName === 'lassoSelection' ? 'add' : 'remove']('active');
-            sphere.class[toolName === 'sphereSelection' ? 'add' : 'remove']('active');
-            box.class[toolName === 'boxSelection' ? 'add' : 'remove']('active');
             translate.class[toolName === 'move' ? 'add' : 'remove']('active');
             rotate.class[toolName === 'rotate' ? 'add' : 'remove']('active');
             scale.class[toolName === 'scale' ? 'add' : 'remove']('active');
             measure.class[toolName === 'measure' ? 'add' : 'remove']('active');
             eyedropper.class[toolName === 'eyedropperSelection' ? 'add' : 'remove']('active');
+            opacity.class[toolName === 'opacitySelection' ? 'add' : 'remove']('active');
+            size.class[toolName === 'sizeSelection' ? 'add' : 'remove']('active');
+
+            // 动态切换 flood 按钮上的 SVG 图标
+            if (['floodSelection', 'eyedropperSelection', 'opacitySelection', 'sizeSelection'].includes(toolName)) {
+                updateFloodSvg(toolName);
+                // 更新 tooltip
+                tooltips.unregister(flood);
+                tooltips.register(flood, tooltip(floodTooltipMap[toolName], `tool.${toolName}`));
+            }
         });
 
         events.on('tool.coordSpace', (space: 'local' | 'world') => {
@@ -228,9 +378,7 @@ class BottomToolbar extends Container {
         tooltips.register(lasso, tooltip('tooltip.bottom-toolbar.lasso', 'tool.lassoSelection'));
         tooltips.register(polygon, tooltip('tooltip.bottom-toolbar.polygon', 'tool.polygonSelection'));
         tooltips.register(brush, tooltip('tooltip.bottom-toolbar.brush', 'tool.brushSelection'));
-        tooltips.register(flood, tooltip('tooltip.bottom-toolbar.flood', 'tool.floodSelection'));
-        tooltips.register(sphere, tooltip('tooltip.bottom-toolbar.sphere'));
-        tooltips.register(box, tooltip('tooltip.bottom-toolbar.box'));
+        tooltips.register(flood, tooltip('tooltip.bottom-toolbar.eyedropper', 'tool.eyedropperSelection'));
         tooltips.register(translate, tooltip('tooltip.bottom-toolbar.translate', 'tool.move'));
         tooltips.register(rotate, tooltip('tooltip.bottom-toolbar.rotate', 'tool.rotate'));
         tooltips.register(scale, tooltip('tooltip.bottom-toolbar.scale', 'tool.scale'));
@@ -238,6 +386,13 @@ class BottomToolbar extends Container {
         tooltips.register(coordSpace, tooltip('tooltip.bottom-toolbar.local-space', 'tool.toggleCoordSpace'));
         tooltips.register(origin, tooltip('tooltip.bottom-toolbar.bound-center'));
         tooltips.register(eyedropper, tooltip('tooltip.bottom-toolbar.eyedropper', 'tool.eyedropperSelection'));
+        tooltips.register(floodPopupBtn, tooltip('tooltip.bottom-toolbar.flood', 'tool.floodSelection'));
+        tooltips.register(opacity, tooltip('tooltip.bottom-toolbar.opacity', 'tool.opacitySelection'));
+        tooltips.register(size, tooltip('tooltip.bottom-toolbar.size', 'tool.sizeSelection'));
+
+        events.on('bottomToolbar.toggle', () => {
+            this.dom.classList.toggle('collapsed');
+        });
     }
 }
 

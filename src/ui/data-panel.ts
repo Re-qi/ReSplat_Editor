@@ -330,9 +330,9 @@ class DataPanel extends Container {
         // tooltips explain what each toggle actually does. registered on the
         // row containers so the entire row (label + toggle) shares one
         // hover target.
-        tooltips.register(onScreenOnly, localize('tooltip.splat-data.on-screen-only'), 'right');
-        tooltips.register(logScale, localize('tooltip.splat-data.log-scale'), 'right');
-        tooltips.register(showAll, localize('tooltip.splat-data.show-all'), 'right');
+        tooltips.register(onScreenOnly, localize('tooltip.splat-data.on-screen-only'), 'bottom');
+        tooltips.register(logScale, localize('tooltip.splat-data.log-scale'), 'bottom');
+        tooltips.register(showAll, localize('tooltip.splat-data.show-all'), 'bottom');
 
         controlsContainer.append(controls);
 

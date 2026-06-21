@@ -2,8 +2,8 @@
 
 #mode-toggle {
     position: absolute;
-    left: calc(50% - 60px);
-    top: 0px;
+    left: 24px;
+    top: 74px;
     width: 120px;
 
     padding: 0px 8px;
@@ -14,18 +14,27 @@
     display: flex;
     flex-direction: row;
     align-items: center;
-    justify-content: center;
+    justify-content: flex-start;
 
     cursor: pointer;
 
     &.centers-mode {
-        #rings-icon, #rings-text {
+        #rings-icon, #rings-text,
+        #splat-icon, #splat-text {
             display: none;
         }
     }
 
     &.rings-mode {
-        #centers-icon, #centers-text {
+        #centers-icon, #centers-text,
+        #splat-icon, #splat-text {
+            display: none;
+        }
+    }
+
+    &.splat-mode {
+        #centers-icon, #centers-text,
+        #rings-icon, #rings-text {
             display: none;
         }
     }
@@ -36,6 +45,87 @@
 
     #rings-icon {
         color: $clr-hilight;
+    }
+
+    #splat-icon {
+        width: 12px;
+        height: 12px;
+        color: $clr-hilight;
+
+        svg {
+            width: 12px;
+            height: 12px;
+        }
+    }
+
+    #mode-dropdown-btn {
+        width: 16px;
+        height: 16px;
+        margin-left: auto;
+        color: $clr-default;
+
+        svg {
+            width: 16px;
+            height: 16px;
+            fill: currentColor;
+        }
+
+        &.open {
+            color: $clr-hilight;
+        }
+    }
+
+    #mode-dropdown-menu {
+        position: absolute;
+        top: calc(100% + 3px);
+        left: 0;
+        right: 0;
+        padding: 2px 0;
+        background-color: $bcg-dark;
+        border-radius: 8px;
+        z-index: 100;
+
+        .mode-dropdown-item {
+            display: flex;
+            flex-direction: row;
+            align-items: center;
+            padding: 5px 8px;
+            cursor: pointer;
+            color: $text-secondary;
+            border-radius: 4px;
+            margin: 2px 4px;
+
+            &:hover {
+                color: $text-primary;
+                background-color: $bcg-darker;
+            }
+
+            &.active {
+                color: #000 !important;
+                background-color: $clr-hilight;
+
+                .mode-dropdown-icon,
+                .pcui-label {
+                    color: #000 !important;
+                }
+
+                &:hover {
+                    background-color: $clr-hilight;
+                }
+            }
+
+            .mode-dropdown-icon {
+                width: 12px;
+                height: 12px;
+                margin-right: 4px;
+                color: $text-secondary;
+
+                svg {
+                    width: 12px;
+                    height: 12px;
+                }
+            }
+        }
     }
 
     &:hover {

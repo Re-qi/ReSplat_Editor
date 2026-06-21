@@ -1,4 +1,4 @@
-import { Entity, GraphicsDevice, TransformGizmo } from 'playcanvas';
+import { Entity, TransformGizmo } from 'playcanvas';
 
 import { Events } from '../events';
 import { Pivot } from '../pivot';
@@ -12,6 +12,10 @@ class TransformTool {
         let pivot: Pivot;
         let active = false;
         let dragging = false;
+
+        // only allow left mouse button to control the gizmo
+        gizmo.mouseButtons[1] = false;
+        gizmo.mouseButtons[2] = false;
 
         // create the transform pivot
         const pivotEntity = new Entity('gizmoPivot');
@@ -52,7 +56,10 @@ class TransformTool {
         };
 
         events.on('tool.coordSpace', (coordSpace: string) => {
-            gizmo.coordSpace = coordSpace as 'local' | 'world';
+            // ScaleGizmo overrides coordSpace setter as a no-op, so we must
+            // write the internal field directly and trigger a rotation update.
+            (gizmo as any)._coordSpace = coordSpace as 'local' | 'world';
+            (gizmo as any)._updateRotation();
         });
 
         // set the gizmo size to remain a constant size in screen space.
@@ -77,6 +84,7 @@ class TransformTool {
             events.on('pivot.placed', reattach);
             events.on('pivot.moved', reattach);
             events.on('selection.changed', reattach);
+            events.on('selection.shapeChanged', reattach);
         };
 
         this.deactivate = () => {
@@ -86,10 +94,34 @@ class TransformTool {
             events.off('pivot.placed', reattach);
             events.off('pivot.moved', reattach);
             events.off('selection.changed', reattach);
+            events.off('selection.shapeChanged', reattach);
         };
 
-        // initialize coodinate space
-        gizmo.coordSpace = events.invoke('tool.coordSpace');
+        // Handle gizmo hide/show events (e.g., from blocking plane follow mode)
+        events.on('gizmo.hide', () => {
+            gizmo.enabled = false;
+            gizmo.detach();
+        });
+
+        events.on('gizmo.show', () => {
+            if (active && events.invoke('selection')) {
+                // Sync pivot to current element position before reattaching
+                const selection = events.invoke('selection') as any;
+                if (selection?.pivot) {
+                    const pos = selection.pivot.getPosition();
+                    const rot = selection.pivot.getRotation();
+                    const scale = selection.pivot.getLocalScale();
+                    const p = events.invoke('pivot') as Pivot;
+                    p.transform.set(pos, rot, scale);
+                }
+                gizmo.enabled = true;
+                reattach();
+            }
+        });
+
+        // initialize coordinate space (bypass ScaleGizmo's no-op setter)
+        (gizmo as any)._coordSpace = events.invoke('tool.coordSpace');
+        (gizmo as any)._updateRotation();
     }
 }
 

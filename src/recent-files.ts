@@ -1,4 +1,4 @@
-const DB_NAME = 'supersplat';
+const DB_NAME = 'ReSplat';
 const DB_VERSION = 1;
 const STORE_NAME = 'recent-files';
 

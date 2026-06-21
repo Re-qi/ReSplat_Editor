@@ -6,24 +6,28 @@ import {
     CULLFACE_FRONT,
     BlendState,
     BoundingBox,
+    Color,
     Entity,
+    Mat4,
+    Quat,
     ShaderMaterial,
     Vec3
 } from 'playcanvas';
 
 import { Element, ElementType } from './element';
 import { Serializer } from './serializer';
+import { Transform } from './transform';
 import { vertexShader, fragmentShader } from './shaders/box-shape-shader';
-
-const v = new Vec3();
-const bound = new BoundingBox();
 
 class BoxShape extends Element {
     _lenX = 2;
     _lenY = 2;
     _lenZ = 2;
+    _color = new Color(1, 1, 1);
     pivot: Entity;
     material: ShaderMaterial;
+    bound = new BoundingBox();
+    invMat = new Mat4();
 
     constructor() {
         super(ElementType.debug);
@@ -32,6 +36,7 @@ class BoxShape extends Element {
         this.pivot.addComponent('render', {
             type: 'box'
         });
+        this.pivot.setLocalScale(this._lenX, this._lenY, this._lenZ);
     }
 
     add() {
@@ -49,12 +54,14 @@ class BoxShape extends Element {
         material.update();
 
         this.pivot.render.meshInstances[0].material = material;
+        this.pivot.render.meshInstances[0].cull = false;
         this.pivot.render.layers = [this.scene.worldLayer.id];
 
         this.material = material;
 
         this.scene.contentRoot.addChild(this.pivot);
 
+        this.pivot.setLocalScale(this._lenX, this._lenY, this._lenZ);
         this.updateBound();
     }
 
@@ -64,7 +71,9 @@ class BoxShape extends Element {
     }
 
     destroy() {
-
+        if (this.scene) {
+            this.scene.remove(this);
+        }
     }
 
     serialize(serializer: Serializer): void {
@@ -75,10 +84,10 @@ class BoxShape extends Element {
     }
 
     onPreRender() {
-        this.pivot.setLocalScale(this._lenX, this._lenY, this._lenZ);
-        this.pivot.getWorldTransform().getTranslation(v);
-        this.material.setParameter('boxCen', [v.x, v.y, v.z]);
-        this.material.setParameter('boxLen', [this._lenX * 0.5, this._lenY * 0.5, this._lenZ  * 0.5]);
+        // Pass inverse world matrix for local-space ray-box intersection
+        this.invMat.copy(this.pivot.getWorldTransform()).invert();
+        this.material.setParameter('matrix_model_inv', this.invMat.data);
+        this.material.setParameter('shapeColor', [this._color.r, this._color.g, this._color.b]);
 
         const device = this.scene.graphicsDevice;
         device.scope.resolve('targetSize').setValue([device.width, device.height]);
@@ -88,41 +97,85 @@ class BoxShape extends Element {
         this.updateBound();
     }
 
+    // Alias for EntityTransformHandler compatibility
+    get entity() {
+        return this.pivot;
+    }
+
+    // Implementation for transform system compatibility
+    getPivot(_mode: string, _selection: boolean, result: Transform) {
+        result.set(
+            this.pivot.getLocalPosition(),
+            this.pivot.getLocalRotation(),
+            this.pivot.getLocalScale()
+        );
+    }
+
+    move(position?: Vec3, rotation?: Quat, scale?: Vec3) {
+        if (position) {
+            this.pivot.setLocalPosition(position);
+        }
+        if (rotation) {
+            this.pivot.setLocalRotation(rotation);
+        }
+        if (scale) {
+            this.pivot.setLocalScale(scale);
+            // Sync internal fields so lenX/Y/Z getters and serialization stay consistent
+            this._lenX = scale.x;
+            this._lenY = scale.y;
+            this._lenZ = scale.z;
+        }
+        this.updateBound();
+        this.scene.events.fire('splat.moved', this);
+    }
+
     updateBound() {
-        bound.center.copy(this.pivot.getPosition());
-        bound.halfExtents.set(this._lenX, this._lenY, this._lenZ);
+        this.bound.center.copy(this.pivot.getPosition());
+        const s = this.pivot.getLocalScale();
+        this.bound.halfExtents.set(s.x / 2, s.y / 2, s.z / 2);
         this.scene.boundDirty = true;
     }
 
     get worldBound(): BoundingBox | null {
-        return bound;
+        return this.bound;
     }
 
     set lenX(lenX: number) {
         this._lenX = lenX;
+        this.pivot.setLocalScale(lenX, this.pivot.getLocalScale().y, this.pivot.getLocalScale().z);
         this.updateBound();
     }
 
     get lenX() {
-        return this._lenX;
+        return this.pivot.getLocalScale().x;
     }
 
     set lenY(lenY: number) {
         this._lenY = lenY;
+        this.pivot.setLocalScale(this.pivot.getLocalScale().x, lenY, this.pivot.getLocalScale().z);
         this.updateBound();
     }
 
     get lenY() {
-        return this._lenY;
+        return this.pivot.getLocalScale().y;
     }
 
     set lenZ(lenZ: number) {
         this._lenZ = lenZ;
+        this.pivot.setLocalScale(this.pivot.getLocalScale().x, this.pivot.getLocalScale().y, lenZ);
         this.updateBound();
     }
 
     get lenZ() {
-        return this._lenZ;
+        return this.pivot.getLocalScale().z;
+    }
+
+    set color(c: Color) {
+        this._color.copy(c);
+    }
+
+    get color() {
+        return this._color;
     }
 }
 

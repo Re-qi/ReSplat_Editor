@@ -1,0 +1,71 @@
+@use 'colors.scss' as *;
+
+#overlay-toggle {
+    position: absolute;
+    right: 554px;
+    top: 24px;
+    height: 54px;
+    padding: 0px 8px;
+    border-radius: 8px;
+
+    background-color: $bcg-dark;
+
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+
+    transition: transform 0.3s ease;
+
+    &>.overlay-toggle-btn {
+        width: 38px;
+        height: 38px;
+        margin: 1px 1px;
+        padding: 0px;
+        border: 0px;
+        border-radius: 2px;
+        box-sizing: border-box;
+        background-color: $bcg-dark;
+
+        display: flex;
+        align-items: center;
+        justify-content: center;
+
+        cursor: pointer;
+        transition: color 100ms, opacity 100ms, box-shadow 100ms;
+
+        svg {
+            display: flex;
+            color: $clr-default;
+            fill: currentColor;
+            width: 24px !important;
+            height: 24px !important;
+        }
+
+        &:hover {
+            box-shadow: 0 0 2px 1px rgb(255 102 0 / 30%);
+        }
+
+        &:active {
+            background-color: $bcg-darkest;
+            box-shadow: none;
+        }
+
+        &.active {
+            svg {
+                color: $clr-hilight;
+            }
+        }
+    }
+
+    .overlay-toggle-text {
+        display: none;
+    }
+
+    &.scene-has-scrollbar {
+        right: 564px;
+    }
+
+    &.scene-collapsed {
+        transform: translateX(344px);
+    }
+}

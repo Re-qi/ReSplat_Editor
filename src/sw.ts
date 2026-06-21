@@ -3,7 +3,7 @@ import { version as appVersion } from '../package.json';
 // export default null
 declare let self: ServiceWorkerGlobalScope;
 
-const cacheName = `superSplat-v${appVersion}`;
+const cacheName = `ReSplat-v${appVersion}`;
 
 const cacheUrls = [
     './',
@@ -30,6 +30,7 @@ const cacheUrls = [
 
 self.addEventListener('install', (event) => {
     console.log(`installing v${appVersion}`);
+    self.skipWaiting();
 
     // create cache for current version
     event.waitUntil(
@@ -42,6 +43,7 @@ self.addEventListener('install', (event) => {
 
 self.addEventListener('activate', () => {
     console.log(`activating v${appVersion}`);
+    self.clients.claim();
 
     // delete the old caches once this one is activated
     caches.keys().then((names) => {
@@ -54,8 +56,6 @@ self.addEventListener('activate', () => {
 });
 
 self.addEventListener('fetch', (event) => {
-    event.respondWith(
-        caches.match(event.request)
-        .then(response => response ?? fetch(event.request))
-    );
+    // ALWAYS USE NETWORK FOR DEV
+    event.respondWith(fetch(event.request));
 });

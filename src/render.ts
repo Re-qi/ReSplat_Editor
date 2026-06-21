@@ -159,8 +159,8 @@ const registerRenderEvents = (scene: Scene, events: Events) => {
             );
 
             // construct filename
-            const selected = events.invoke('selection') as Splat;
-            const filename = `${removeExtension(selected?.name ?? 'SuperSplat')}-image.png`;
+            const selected = events.invoke('selection') as any;
+            const filename = `${removeExtension(selected?.name ?? 'ReSplat')}-image.png`;
 
             // download
             downloadFile(arrayBuffer, filename);
@@ -383,7 +383,7 @@ const registerRenderEvents = (scene: Scene, events: Events) => {
                 // Download (skip if cancelled -- the caller will delete the file)
                 if (!cancelled && !fileStream) {
                     const currentSplats = (scene.getElementsByType(ElementType.splat) as Splat[]).filter(splat => splat.visible);
-                    downloadFile((output.target as BufferTarget).buffer, `${removeExtension(currentSplats[0]?.name ?? 'supersplat')}.${fileExtension}`);
+                    downloadFile((output.target as BufferTarget).buffer, `${removeExtension(currentSplats[0]?.name ?? 'ReSplat')}.${fileExtension}`);
                 }
 
                 return !cancelled;
@@ -415,7 +415,7 @@ const registerRenderEvents = (scene: Scene, events: Events) => {
         // actively working, which helps prevent aggressive background throttling and
         // codec reclamation.
         if (navigator.locks) {
-            return navigator.locks.request('supersplat-video-render', renderImpl);
+            return navigator.locks.request('ReSplat-video-render', renderImpl);
         }
         return renderImpl();
     });

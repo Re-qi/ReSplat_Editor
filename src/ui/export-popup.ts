@@ -169,6 +169,30 @@ class ExportPopup extends Container {
         fovRow.append(fovLabel);
         fovRow.append(fovSlider);
 
+        // viewer: camera start position
+
+        const startRow = new Container({
+            class: 'row'
+        });
+
+        const startLabel = new Label({
+            class: 'label',
+            text: localize('popup.export.start-position')
+        });
+
+        const startSelect = new SelectInput({
+            class: 'select',
+            defaultValue: 'viewport',
+            options: [
+                { v: 'default', t: localize('popup.export.default') },
+                { v: 'viewport', t: localize('popup.export.viewport') },
+                { v: 'pose', t: localize('popup.export.pose-camera') }
+            ]
+        });
+
+        startRow.append(startLabel);
+        startRow.append(startSelect);
+
         // compress
 
         const compressRow = new Container({
@@ -187,6 +211,28 @@ class ExportPopup extends Container {
 
         compressRow.append(compressLabel);
         compressRow.append(compressBoolean);
+
+        // splats
+
+        const splatsRow = new Container({
+            class: 'row'
+        });
+
+        const splatsLabel = new Label({
+            class: 'label',
+            text: localize('popup.export.splats-select')
+        });
+
+        const splatsSelect = new SelectInput({
+            class: 'select',
+            defaultValue: 'all',
+            options: [
+                { v: 'all', t: localize('popup.export.splats-select.all') }
+            ]
+        });
+
+        splatsRow.append(splatsLabel);
+        splatsRow.append(splatsSelect);
 
         // spherical harmonic bands
 
@@ -257,7 +303,9 @@ class ExportPopup extends Container {
         content.append(loopRow);
         content.append(colorRow);
         content.append(fovRow);
+        content.append(startRow);
         content.append(compressRow);
+        content.append(splatsRow);
         content.append(bandsRow);
         content.append(iterationsRow);
         content.append(filenameRow);
@@ -325,19 +373,31 @@ class ExportPopup extends Container {
 
         const reset = (exportType: ExportType, splatNames: string[], hasPoses: boolean) => {
             const allRows = [
-                viewerTypeRow, animationRow, loopRow, colorRow, fovRow, compressRow, bandsRow, iterationsRow, filenameRow
+                viewerTypeRow, animationRow, loopRow, colorRow, fovRow, startRow, compressRow, splatsRow, bandsRow, iterationsRow, filenameRow
             ];
 
             const activeRows = {
-                ply: [compressRow, bandsRow, filenameRow],
-                splat: [filenameRow],
-                sog: [bandsRow, iterationsRow, filenameRow],
-                viewer: [viewerTypeRow, animationRow, loopRow, colorRow, fovRow, bandsRow, filenameRow]
-            }[exportType];
+                ply: [compressRow, splatsRow, bandsRow, filenameRow],
+                standardPly: [splatsRow, bandsRow, filenameRow],
+                splat: [splatsRow, filenameRow],
+                sog: [splatsRow, bandsRow, iterationsRow, filenameRow],
+                viewer: [viewerTypeRow, animationRow, loopRow, colorRow, fovRow, startRow, splatsRow, bandsRow, filenameRow]
+            }[exportType] as Container[];
 
             allRows.forEach((r) => {
                 r.hidden = activeRows.indexOf(r) === -1;
             });
+
+            // update splat list
+            splatsSelect.options = [
+                {
+                    v: 'all',
+                    t: localize('popup.export.splats-select.all')
+                },
+                ...splatNames.map((s, i) => ({ v: i.toFixed(0), t: s }))
+            ];
+            splatsSelect.value = 'all';
+            splatsSelect.enabled = splatNames.length > 1;
 
             bandsSlider.value = events.invoke('view.bands');
 
@@ -351,6 +411,7 @@ class ExportPopup extends Container {
             filenameEntry.value = splatNames[0];
             switch (exportType) {
                 case 'ply':
+                case 'standardPly':
                     updateExtension('.ply');
                     break;
                 case 'splat':
@@ -371,6 +432,9 @@ class ExportPopup extends Container {
             animationToggle.enabled = hasPoses;
             loopSelect.value = 'repeat';
             loopSelect.enabled = hasPoses;
+
+            startSelect.value = hasPoses ? 'pose' : 'viewport';
+            startSelect.disabledOptions = hasPoses ? {} : { 'pose': startSelect.options[2].t };
 
             colorPicker.value = [bgClr.r, bgClr.g, bgClr.b];
 
@@ -398,7 +462,7 @@ class ExportPopup extends Container {
             const assemblePlyOptions = () : SceneExportOptions => {
                 return {
                     filename: filenameEntry.value,
-                    splatIdx: 'all',
+                    splatIdx: splatsSelect.value === 'all' ? 'all' : parseInt(splatsSelect.value, 10),
                     serializeSettings: {
                         maxSHBands: bandsSlider.value
                     },
@@ -409,7 +473,7 @@ class ExportPopup extends Container {
             const assembleSplatOptions = () : SceneExportOptions => {
                 return {
                     filename: filenameEntry.value,
-                    splatIdx: 'all',
+                    splatIdx: splatsSelect.value === 'all' ? 'all' : parseInt(splatsSelect.value, 10),
                     serializeSettings: { }
                 };
             };
@@ -417,7 +481,7 @@ class ExportPopup extends Container {
             const assembleSogOptions = () : SceneExportOptions => {
                 return {
                     filename: filenameEntry.value,
-                    splatIdx: 'all',
+                    splatIdx: splatsSelect.value === 'all' ? 'all' : parseInt(splatsSelect.value, 10),
                     serializeSettings: {
                         maxSHBands: bandsSlider.value
                     },
@@ -486,7 +550,7 @@ class ExportPopup extends Container {
 
                 return {
                     filename: filenameEntry.value,
-                    splatIdx: 'all',
+                    splatIdx: splatsSelect.value === 'all' ? 'all' : parseInt(splatsSelect.value, 10),
                     serializeSettings: {
                         maxSHBands: bandsSlider.value
                     },
@@ -505,6 +569,7 @@ class ExportPopup extends Container {
                 onExport = () => {
                     switch (exportType) {
                         case 'ply':
+                        case 'standardPly':
                             resolve(assemblePlyOptions());
                             break;
                         case 'splat':

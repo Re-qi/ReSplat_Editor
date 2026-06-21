@@ -1,4 +1,6 @@
-# SuperSplat Editor
+# ReSplat Editor
+
+> **Powered by [supersplat-2.27.0](https://github.com/playcanvas/supersplat)** — This project is a fork/rebrand of the original SuperSplat editor.
 
 [![Github Release](https://img.shields.io/github/v/release/playcanvas/supersplat)](https://github.com/playcanvas/supersplat/releases)
 [![License](https://img.shields.io/github/license/playcanvas/supersplat)](https://github.com/playcanvas/supersplat/blob/main/LICENSE)
@@ -6,25 +8,25 @@
 [![Reddit](https://img.shields.io/badge/Reddit-FF4500?style=flat&logo=reddit&logoColor=white&color=black)](https://www.reddit.com/r/PlayCanvas)
 [![X](https://img.shields.io/badge/X-000000?style=flat&logo=x&logoColor=white&color=black)](https://x.com/intent/follow?screen_name=playcanvas)
 
-| [SuperSplat Editor](https://superspl.at/editor) | [User Guide](https://developer.playcanvas.com/user-manual/gaussian-splatting/editing/supersplat/) | [Blog](https://blog.playcanvas.com) | [Forum](https://forum.playcanvas.com) |
+| [ReSplat Editor](https://superspl.at/editor) | [User Guide](https://developer.playcanvas.com/user-manual/gaussian-splatting/editing/ReSplat/) | [Blog](https://blog.playcanvas.com) | [Forum](https://forum.playcanvas.com) |
 
-The SuperSplat Editor is a free and open source tool for inspecting, editing, optimizing and publishing 3D Gaussian Splats. It is built on web technologies and runs in the browser, so there's nothing to download or install.
+The ReSplat Editor is a free and open source tool for inspecting, editing, optimizing and publishing 3D Gaussian Splats. It is built on web technologies and runs in the browser, so there's nothing to download or install.
 
 A live version of this tool is available at: https://superspl.at/editor
 
 ![image](https://github.com/user-attachments/assets/b6cbb5cc-d3cc-4385-8c71-ab2807fd4fba)
 
-To learn more about using SuperSplat, please refer to the [User Guide](https://developer.playcanvas.com/user-manual/gaussian-splatting/editing/supersplat/).
+To learn more about using ReSplat, please refer to the [User Guide](https://developer.playcanvas.com/user-manual/gaussian-splatting/editing/ReSplat/).
 
 ## Local Development
 
-To initialize a local development environment for SuperSplat, ensure you have [Node.js](https://nodejs.org/) 18 or later installed. Follow these steps:
+To initialize a local development environment for ReSplat, ensure you have [Node.js](https://nodejs.org/) 18 or later installed. Follow these steps:
 
 1. Clone the repository:
 
    ```sh
-   git clone https://github.com/playcanvas/supersplat.git
-   cd supersplat
+   git clone https://github.com/playcanvas/ReSplat.git
+   cd ReSplat
    ```
 
 2. Install dependencies:
@@ -33,7 +35,7 @@ To initialize a local development environment for SuperSplat, ensure you have [N
    npm install
    ```
 
-3. Build SuperSplat and start a local web server:
+3. Build ReSplat and start a local web server:
 
    ```sh
    npm run develop
@@ -48,13 +50,13 @@ To initialize a local development environment for SuperSplat, ensure you have [N
 
 5. Navigate to `http://localhost:3000`
 
-When changes to the source are detected, SuperSplat is rebuilt automatically. Simply refresh your browser to see your changes.
+When changes to the source are detected, ReSplat is rebuilt automatically. Simply refresh your browser to see your changes.
 
-## Localizing the SuperSplat Editor
+## Localizing the ReSplat Editor
 
 The currently supported languages are available here:
 
-https://github.com/playcanvas/supersplat/tree/main/static/locales
+https://github.com/playcanvas/ReSplat/tree/main/static/locales
 
 ### Adding a New Language
 
@@ -62,7 +64,7 @@ https://github.com/playcanvas/supersplat/tree/main/static/locales
 
 2. Add the locale to the list here:
 
-   https://github.com/playcanvas/supersplat/blob/main/src/ui/localization.ts
+   https://github.com/playcanvas/ReSplat/blob/main/src/ui/localization.ts
 
 ### Testing Translations
 
@@ -84,8 +86,8 @@ To test your translations:
 
 ## Contributors
 
-SuperSplat is made possible by our amazing open source community:
+ReSplat is made possible by our amazing open source community:
 
-<a href="https://github.com/playcanvas/supersplat/graphs/contributors">
-  <img src="https://contrib.rocks/image?repo=playcanvas/supersplat" />
+<a href="https://github.com/playcanvas/ReSplat/graphs/contributors">
+  <img src="https://contrib.rocks/image?repo=playcanvas/ReSplat" />
 </a>

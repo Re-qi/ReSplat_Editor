@@ -13,9 +13,9 @@ import { localize } from './ui/localization';
 type FilePickerAcceptType = unknown;
 
 const SuperFileType: FilePickerAcceptType[] = [{
-    description: 'SuperSplat document',
+    description: 'ReSplat document',
     accept: {
-        'application/x-supersplat': ['.ssproj']
+        'application/x-ReSplat': ['.ssproj']
     }
 }];
 
@@ -241,7 +241,7 @@ const registerDocEvents = (scene: Scene, events: Events) => {
         } else {
             try {
                 const fileHandles = await window.showOpenFilePicker({
-                    id: 'SuperSplatDocumentOpen',
+                    id: 'ReSplatDocumentOpen',
                     multiple: false,
                     types: SuperFileType
                 });
@@ -316,7 +316,7 @@ const registerDocEvents = (scene: Scene, events: Events) => {
         if (window.showSaveFilePicker) {
             try {
                 const handle = await window.showSaveFilePicker({
-                    id: 'SuperSplatDocumentSave',
+                    id: 'ReSplatDocumentSave',
                     types: SuperFileType,
                     suggestedName: 'scene.ssproj'
                 });

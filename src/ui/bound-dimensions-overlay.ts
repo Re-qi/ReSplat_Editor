@@ -4,6 +4,9 @@ import { Vec3 } from 'playcanvas';
 import { Events } from '../events';
 import { Scene } from '../scene';
 import { Splat } from '../splat';
+import { BoxShape } from '../box-shape';
+import { SphereShape } from '../sphere-shape';
+import { BlockingPlane } from '../blocking-plane';
 
 const corners = Array.from({ length: 8 }, () => new Vec3());
 const screenCorners = Array.from({ length: 8 }, () => new Vec3());
@@ -60,11 +63,20 @@ class BoundDimensionsOverlay {
         }
 
         events.on('prerender', () => {
-            const selection = events.invoke('selection') as Splat;
+            const selection = events.invoke('splatSelection');
 
-            if (!selection ||
+            if (!(selection instanceof Splat) ||
                 !selection.visible ||
                 !events.invoke('camera.boundDimensions')) {
+                svg.classList.add('hidden');
+                return;
+            }
+
+            // Hide bounds when gizmo is controlling a shape
+            const currentGizmoTarget = events.invoke('selection');
+            if (currentGizmoTarget && (currentGizmoTarget instanceof BoxShape ||
+                currentGizmoTarget instanceof SphereShape ||
+                currentGizmoTarget instanceof BlockingPlane)) {
                 svg.classList.add('hidden');
                 return;
             }

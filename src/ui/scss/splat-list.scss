@@ -2,18 +2,24 @@
 
 .splat-list {
     min-height: 80px;
-    padding: 4px 0px;
+    padding: 0px;
+    width: 322px;
 
     .splat-item {
         display: flex;
         flex-direction: row;
         padding: 2px;
+        width: 316px;
 
-        &:hover:not(.selected).visible {
+        &:hover.visible {
             cursor: pointer;
         }
 
         &.selected {
+            background-color: $bcg-darker;
+        }
+
+        &.multi-selected {
             background-color: $bcg-darker;
         }
 
@@ -71,6 +77,7 @@
             color: $text-secondary;
 
             cursor: pointer;
+            margin: 0 5px;
 
             &:hover {
                 color: $text-primary;

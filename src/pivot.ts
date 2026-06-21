@@ -62,6 +62,7 @@ const registerPivotEvents = (events: Events) => {
 
     // pivot mode
     let origin: PivotOrigin = 'center';
+    let originLocked = false;
 
     const setOrigin = (o: PivotOrigin) => {
         if (o !== origin) {
@@ -79,7 +80,13 @@ const registerPivotEvents = (events: Events) => {
     });
 
     events.on('pivot.toggleOrigin', () => {
+        if (originLocked) return;
         setOrigin(origin === 'center' ? 'boundCenter' : 'center');
+    });
+
+    // Lock/unlock origin toggle (used by point cloud group selection)
+    events.on('pivot.lockOrigin', (locked: boolean) => {
+        originLocked = locked;
     });
 };
 

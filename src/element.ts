@@ -27,11 +27,18 @@ class Element {
     type: ElementType;
     scene: Scene = null;
     uid: number;
+    numSelected: number = 0;
 
     constructor(type: ElementType) {
         this.type = type;
         this.uid = nextUid++;
     }
+
+    get visible(): boolean {
+        return true;
+    }
+
+    set visible(value: boolean) {}
 
     destroy() {
         if (this.scene) {

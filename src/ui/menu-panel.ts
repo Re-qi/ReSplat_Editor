@@ -4,7 +4,7 @@ type Direction = 'left' | 'right' | 'top' | 'bottom';
 
 type MenuItem = {
     text?: string;
-    icon?: string | Element;
+    icon?: string | Element | HTMLElement;
     extra?: string | Element;
     subMenu?: MenuPanel;
 
@@ -46,7 +46,7 @@ const isString = (value: any) => {
     return !value || typeof value === 'string' || value instanceof String;
 };
 
-const createIcon = (icon: string | Element) => {
+const createIcon = (icon: string | Element | HTMLElement) => {
     return isString(icon) ?
         new Label({ class: 'menu-row-icon', text: icon && String.fromCodePoint(parseInt(icon as string, 16)) }) :
         icon;

@@ -8,6 +8,6 @@ import { version as appVersion } from '../package.json';
 
 // print out versions of dependent packages
 // NOTE: add dummy style reference to prevent tree shaking
-console.log(`SuperSplat v${appVersion} | SplatTransform v${stVersion} (${stRevision}) | Engine v${engineVersion} (${engineRevision}) | PCUI v${pcuiVersion} (${pcuiRevision})`);
+console.log(`ReSplat v${appVersion} | SplatTransform v${stVersion} (${stRevision}) | Engine v${engineVersion} (${engineRevision}) | PCUI v${pcuiVersion} (${pcuiRevision})`);
 
 main();

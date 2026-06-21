@@ -95,6 +95,11 @@ class MeasureTool {
         canvasContainer.append(selectToolbar);
 
         const gizmo = new TranslateGizmo(scene.camera.camera, scene.gizmoLayer);
+
+        // only allow left mouse button to control the gizmo
+        gizmo.mouseButtons[1] = false;
+        gizmo.mouseButtons[2] = false;
+
         const entity = new Entity('measureGizmoPivot');
         const transformHandler = new MeasureTransformHandler();
 
@@ -154,8 +159,8 @@ class MeasureTool {
             events.invoke('pivot').end();
         });
 
-        events.on('selection.changed', (selection: Splat) => {
-            splat = selection;
+        events.on('selection.changed', (selection: any) => {
+            splat = selection instanceof Splat ? selection : null;
             if (active) {
                 // for now we always deactivate the tool so the current transform handler remains in place
                 events.fire('tool.deactivate');
@@ -238,7 +243,7 @@ class MeasureTool {
 
         const endScale = () => {
             const top = new EntityTransformOp({
-                splat: splat,
+                element: splat,
                 oldt: new Transform(origP, origR, origS),
                 newt: new Transform(splat.entity.getLocalPosition(), splat.entity.getLocalRotation(), splat.entity.getLocalScale())
             });
@@ -288,7 +293,7 @@ class MeasureTool {
             }
         };
 
-        const pointermove = (e: PointerEvent) => {
+        const pointermove = (_e: PointerEvent) => {
             clicked = false;
         };
 

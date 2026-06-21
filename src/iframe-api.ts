@@ -1,6 +1,6 @@
 import { Events } from './events';
 
-const IS_SCENE_DIRTY = 'supersplat:is-scene-dirty';
+const IS_SCENE_DIRTY = 'ReSplat:is-scene-dirty';
 
 interface IsSceneDirtyQuery {
     type: typeof IS_SCENE_DIRTY;

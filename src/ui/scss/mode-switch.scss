@@ -1,0 +1,117 @@
+@use 'colors.scss' as *;
+
+#mode-switch {
+    position: absolute;
+    right: 453px;
+    top: 24px;
+    height: 54px;
+    padding: 0px 8px;
+    border-radius: 8px;
+
+    background-color: $bcg-dark;
+
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+
+    transition: transform 0.3s ease;
+
+    &>.mode-switch-btn {
+        width: 38px;
+        height: 38px;
+        margin: 1px 1px;
+        padding: 0px;
+        border: 0px;
+        border-radius: 2px;
+        box-sizing: border-box;
+        background-color: $bcg-dark;
+
+        display: flex;
+        align-items: center;
+        justify-content: center;
+
+        cursor: pointer;
+        transition: color 100ms, opacity 100ms, box-shadow 100ms;
+
+        svg {
+            display: flex;
+            color: $clr-default;
+            fill: currentColor;
+            width: 24px !important;
+            height: 24px !important;
+        }
+
+        &:hover {
+            box-shadow: 0 0 2px 1px rgb(255 102 0 / 30%);
+        }
+
+        &:active {
+            background-color: $bcg-darkest;
+            box-shadow: none;
+        }
+
+        &.active {
+            svg {
+                color: $clr-hilight;
+            }
+        }
+
+    }
+
+    .mode-switch-text {
+        display: none;
+    }
+
+    &.scene-has-scrollbar {
+        right: 463px;
+    }
+
+    &.scene-collapsed {
+        transform: translateX(344px);
+    }
+
+    #depth-cycle-popup {
+        position: absolute;
+        top: calc(100% + 4px);
+        right: 0;
+        width: 250px;
+        height: 28px;
+        padding: 0px 8px;
+        border-radius: 6px;
+        background-color: $bcg-dark;
+        display: flex;
+        flex-direction: row;
+        align-items: center;
+        white-space: nowrap;
+
+        .depth-cycle-popup-label {
+            margin-right: 6px;
+            color: $text-secondary;
+            font-size: 11px;
+        }
+
+        .depth-cycle-popup-slider {
+            flex: 1;
+            margin: 0px;
+
+            .pcui-numeric-input {
+                display: flex;
+                width: 20px;
+                box-sizing: content-box;
+
+                input {
+                    width: 25px;
+                }
+            }
+
+            & > .pcui-slider-container {
+                & > .pcui-slider-bar {
+                    & > .pcui-slider-handle {
+                        background-color: $clr-default;
+                        border-radius: 3px;
+                    }
+                }
+            }
+        }
+    }
+}

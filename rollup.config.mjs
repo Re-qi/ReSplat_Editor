@@ -31,7 +31,7 @@ const outputHeader = () => {
     const RESET_OUT = '\x1b[0m';
 
     const title = [
-        'Building SuperSplat',
+        'Building ReSplat',
         `type ${BOLD_OUT}${BUILD_TYPE}${REGULAR_OUT}`
     ].map(l => `${BLUE_OUT}${l}`).join('\n');
     console.log(`${BLUE_OUT}${title}${RESET_OUT}\n`);

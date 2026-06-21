@@ -50,8 +50,9 @@ class Shortcuts {
         const shortcuts = this.shortcuts;
 
         const handleEvent = (e: KeyboardEvent, down: boolean, capture: boolean) => {
-            // skip if focus is elsewhere (input fields, modals, etc.)
-            if (e.target !== document.body) return;
+            // skip if focus is on text input fields (but allow buttons, containers, canvas, body)
+            const target = e.target as HTMLElement;
+            if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement || target instanceof HTMLSelectElement) return;
 
             const isCtrlKey = e.code.startsWith('Control');
             const isShiftKey = e.code.startsWith('Shift');

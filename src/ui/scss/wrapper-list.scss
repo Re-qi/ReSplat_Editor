@@ -1,0 +1,129 @@
+@use 'colors.scss' as *;
+
+.wrapper-list-section {
+    // Inherits from #scene-panel context
+    width: 316px;
+
+    > .panel-header {
+        display: flex;
+        flex-direction: row;
+        align-items: center;
+        padding: 2px;
+        width: 316px;
+        height: 24px;
+        background-color: $bcg-dark;
+
+        > .panel-header-icon {
+            font-family: pc-icon;
+            font-weight: bold;
+            font-size: 13px;
+            color: $clr-hilight;
+            
+            // 统一设置图标大小和边距
+            width: 16px;
+            height: 16px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin: 0 4px;
+
+            > svg {
+                width: 16px !important;
+                height: 16px !important;
+            }
+        }
+
+        > .panel-header-label {
+            color: $text-primary;
+            font-weight: bold;
+            flex-grow: 1;
+            text-transform: uppercase;
+            margin: 0 4px;
+        }
+    }
+}
+
+.wrapper-list-list {
+    max-height: 150px;
+    overflow: hidden auto;
+    width: 322px;
+}
+
+.wrapper-list-item {
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    padding: 2px 2px;
+    height: 24px;
+    width: 316px;
+    background-color: $bcg-primary;
+    cursor: pointer;
+
+    &:hover:not(.selected) {
+        background-color: $bcg-dark;
+    }
+
+    &.selected {
+        background-color: $bcg-darker;
+        .wrapper-list-item-name {
+            color: $text-primary;
+        }
+    }
+
+    &.visible {
+        .wrapper-list-item-name {
+            color: $text-primary;
+        }
+    }
+
+    &:not(.visible) {
+        .wrapper-list-item-name {
+            color: $text-secondary;
+        }
+    }
+}
+
+.wrapper-list-item-name {
+    flex-grow: 1;
+    flex-shrink: 1;
+    color: $text-primary;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.wrapper-list-item-visible {
+    flex-grow: 0;
+    flex-shrink: 0;
+    width: 24px;
+    height: 24px;
+    line-height: 24px;
+    color: $text-secondary;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+
+    &:hover {
+        color: $text-primary;
+    }
+}
+
+.wrapper-list-item-delete {
+    flex-grow: 0;
+    flex-shrink: 0;
+    padding: 4px;
+    width: 16px;
+    height: 16px;
+    line-height: 16px;
+    color: $text-secondary;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    margin: 0 5px;
+
+    &:hover {
+        color: #e74c3c;
+    }
+}

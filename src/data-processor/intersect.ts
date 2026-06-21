@@ -27,11 +27,11 @@ type RectOptions = {
 };
 
 type SphereOptions = {
-    sphere: { x: number, y: number, z: number, radius: number };
+    sphere: { x: number, y: number, z: number, radiusX: number, radiusY: number, radiusZ: number, rx?: number, ry?: number, rz?: number, rw?: number };
 };
 
 type BoxOptions = {
-    box: { x: number, y: number, z: number, lenx: number, leny: number, lenz: number };
+    box: { x: number, y: number, z: number, lenx: number, leny: number, lenz: number, rx?: number, ry?: number, rz?: number, rw?: number };
 };
 
 type IntersectOptions = MaskOptions | RectOptions | SphereOptions | BoxOptions;
@@ -171,12 +171,26 @@ class Intersect {
                     sphereOptions.sphere.x,
                     sphereOptions.sphere.y,
                     sphereOptions.sphere.z,
-                    sphereOptions.sphere.radius
+                    0
+                ],
+                sphere_radii: [
+                    sphereOptions.sphere.radiusX,
+                    sphereOptions.sphere.radiusY,
+                    sphereOptions.sphere.radiusZ,
+                    0
+                ],
+                sphere_rotation: [
+                    sphereOptions.sphere.rx ?? 0,
+                    sphereOptions.sphere.ry ?? 0,
+                    sphereOptions.sphere.rz ?? 0,
+                    sphereOptions.sphere.rw ?? 1
                 ]
             });
         } else {
             resolve(scope, {
-                sphere_params: [0, 0, 0, 0]
+                sphere_params: [0, 0, 0, 0],
+                sphere_radii: [0, 0, 0, 0],
+                sphere_rotation: [0, 0, 0, 1]
             });
         }
 
@@ -195,12 +209,19 @@ class Intersect {
                     boxOptions.box.leny * 0.5,
                     boxOptions.box.lenz * 0.5,
                     0
+                ],
+                box_rotation: [
+                    boxOptions.box.rx ?? 0,
+                    boxOptions.box.ry ?? 0,
+                    boxOptions.box.rz ?? 0,
+                    boxOptions.box.rw ?? 1
                 ]
             });
         } else {
             resolve(scope, {
                 box_params: [0, 0, 0, 0],
-                aabb_params: [0, 0, 0, 0]
+                aabb_params: [0, 0, 0, 0],
+                box_rotation: [0, 0, 0, 1]
             });
         }
 

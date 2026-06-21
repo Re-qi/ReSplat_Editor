@@ -12,7 +12,7 @@ interface ShortcutDisplayItem {
 }
 
 interface HintDisplayItem {
-    displayKey: string;   // what to show in the key column
+    displayKey: string | (() => string);   // what to show in the key column (function for lazy i18n)
     localeKey: string;    // localization key for the action description
 }
 
@@ -39,7 +39,8 @@ const popupConfig: Record<string, CategoryConfig> = {
             { displayKey: 'W / A / S / D', localeKey: 'popup.shortcuts.fly-movement' },
             { displayKey: 'Q / E', localeKey: 'popup.shortcuts.fly-vertical' },
             { displayKey: 'Shift', localeKey: 'popup.shortcuts.fly-speed-fast' },
-            { displayKey: 'Alt', localeKey: 'popup.shortcuts.fly-speed-slow' }
+            { displayKey: 'Alt', localeKey: 'popup.shortcuts.fly-speed-slow' },
+            { displayKey: () => localize('popup.shortcuts.mouse-hint'), localeKey: 'popup.shortcuts.fly-mouse-hint' }
         ]
     },
     show: {
@@ -58,7 +59,10 @@ const popupConfig: Record<string, CategoryConfig> = {
             { id: 'select.all', localeKey: 'popup.shortcuts.select-all' },
             { id: 'select.none', localeKey: 'popup.shortcuts.deselect-all' },
             { id: 'select.invert', localeKey: 'popup.shortcuts.invert-selection' },
-            { id: 'select.delete', localeKey: 'popup.shortcuts.delete-selected-splats' }
+            { id: 'select.delete', localeKey: 'popup.shortcuts.delete-selected-splats' },
+            { id: 'select.duplicate', localeKey: 'popup.shortcuts.duplicate-selected-splats' },
+            { id: 'select.separate', localeKey: 'popup.shortcuts.separate-selected-splats' },
+            { id: 'select.merge', localeKey: 'popup.shortcuts.merge-selected-splats' }
         ],
         hints: [
             { displayKey: 'Shift', localeKey: 'popup.shortcuts.add-to-selection' },
@@ -101,7 +105,6 @@ const popupConfig: Record<string, CategoryConfig> = {
         shortcuts: [
             { id: 'edit.undo', localeKey: 'popup.shortcuts.undo' },
             { id: 'edit.redo', localeKey: 'popup.shortcuts.redo' },
-            { id: 'dataPanel.toggle', localeKey: 'popup.shortcuts.toggle-data-panel' },
             { id: 'timelinePanel.toggle', localeKey: 'popup.shortcuts.toggle-timeline-panel' }
         ]
     }
@@ -202,9 +205,11 @@ class ShortcutsPopup extends Container {
             // Add hints for this category (non-shortcut display items)
             if (config.hints) {
                 for (const hint of config.hints) {
+                    const keyText = typeof hint.displayKey === 'function' ? hint.displayKey() : hint.displayKey;
+
                     const key = new Label({
                         class: 'shortcut-key',
-                        text: hint.displayKey
+                        text: keyText
                     });
 
                     const action = new Label({

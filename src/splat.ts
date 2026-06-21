@@ -16,6 +16,9 @@ import {
 } from 'playcanvas';
 
 import { Element, ElementType } from './element';
+import { BoxShape } from './box-shape';
+import { SphereShape } from './sphere-shape';
+import { BlockingPlane } from './blocking-plane';
 import { Serializer } from './serializer';
 import { vertexShader, fragmentShader, gsplatCenter } from './shaders/splat-shader';
 import { State, SplatState } from './splat-state';
@@ -90,10 +93,7 @@ class Splat extends Element {
 
         this.entity = new Entity('splatEntitiy');
         this.entity.setLocalRotation(rotation);
-        this.entity.addComponent('gsplat', {
-            asset,
-            unified: false
-        });
+        this.entity.addComponent('gsplat', { asset });
 
         const instance = this.entity.gsplat.instance;
 
@@ -312,7 +312,10 @@ class Splat extends Element {
 
     onPreRender() {
         const events = this.scene.events;
-        const selected = this.scene.camera.renderOverlays && events.invoke('selection') === this;
+        const isSceneSelection = events.invoke('splatSelection') === this;
+        const hasSelectedGaussians = this.numSelected > 0;
+        const renderOverlays = this.scene.camera.renderOverlays;
+        const selected = renderOverlays && (isSceneSelection || hasSelectedGaussians);
         const cameraMode = events.invoke('camera.mode');
         const cameraOverlay = events.invoke('camera.overlay');
 
@@ -350,21 +353,40 @@ class Splat extends Element {
 
         material.setParameter('saturation', this.saturation);
         material.setParameter('transformPalette', this.transformPalette.texture);
+        
+        // Set display mode
+        const displayMode = events.invoke('view.displayMode') || 'color';
+        material.setParameter('displayMode', displayMode === 'depth' ? 1 : 0);
+
+        // Set camera near and far for depth mode
+        material.setParameter('near_clip', this.scene.camera.near);
+        material.setParameter('far_clip', this.scene.camera.far);
+
+        // Set depth cycle length for depth mode
+        material.setParameter('depthCycleLength', events.invoke('view.depthCycleLength') || 50);
 
         if (this.visible && selected) {
-            // render bounding box
+            // render bounding box (use selection bound only when a point-cloud group is active)
             if (events.invoke('camera.bound')) {
-                const bound = this.localBound;
-                const scale = new Mat4().setTRS(bound.center, Quat.IDENTITY, bound.halfExtents);
-                scale.mul2(this.entity.getWorldTransform(), scale);
+                // Hide bounds when gizmo is controlling a shape
+                const gizmoTarget = events.invoke('selection');
+                const gizmoOnShape = gizmoTarget instanceof BoxShape ||
+                    gizmoTarget instanceof SphereShape ||
+                    gizmoTarget instanceof BlockingPlane;
+                if (!gizmoOnShape) {
+                    const groupActive = events.invoke('pointCloudGroup.activeGroup') as boolean;
+                    const bound = (groupActive && this.numSelected > 0) ? this.selectionBound : this.localBound;
+                    const scale = new Mat4().setTRS(bound.center, Quat.IDENTITY, bound.halfExtents);
+                    scale.mul2(this.entity.getWorldTransform(), scale);
 
-                for (let i = 0; i < boundingPoints.length / 2; i++) {
-                    const a = boundingPoints[i * 2];
-                    const b = boundingPoints[i * 2 + 1];
-                    scale.transformPoint(a, veca);
-                    scale.transformPoint(b, vecb);
+                    for (let i = 0; i < boundingPoints.length / 2; i++) {
+                        const a = boundingPoints[i * 2];
+                        const b = boundingPoints[i * 2 + 1];
+                        scale.transformPoint(a, veca);
+                        scale.transformPoint(b, vecb);
 
-                    this.scene.app.drawLine(veca, vecb, Color.WHITE, true, this.scene.worldLayer);
+                        this.scene.app.drawLine(veca, vecb, Color.WHITE, true, this.scene.worldLayer);
+                    }
                 }
             }
         }

@@ -10,9 +10,10 @@ const vertexShader = /* glsl */ `
 `;
 
 const fragmentShader = /* glsl */ `
-    // ray-box intersection in box space
-    bool intersectBox(out float t0, out float t1, out int axis0, out int axis1, vec3 pos, vec3 dir, vec3 boxCen, vec3 boxLen)
+    // ray-box intersection in local space (axis-aligned box from -0.5 to 0.5)
+    bool intersectBoxLocal(out float t0, out float t1, out int axis0, out int axis1, vec3 pos, vec3 dir)
     {
+        vec3 boxLen = vec3(0.5);
         bvec3 validDir = notEqual(dir, vec3(0.0));
         vec3 absDir = abs(dir);
         vec3 signDir = sign(dir);
@@ -22,13 +23,12 @@ const fragmentShader = /* glsl */ `
             validDir.z ? 1.0 / absDir.z : 0.0
         ) * signDir;
 
-        vec3 n = m * (pos - boxCen);
+        vec3 n = m * pos;
         vec3 k = abs(m) * boxLen;
 
         vec3 v0 = -n - k;
         vec3 v1 = -n + k;
 
-        // replace invalid axes with -inf and +inf so the tests below ignore them
         v0 = mix(vec3(-1.0 / 0.0000001), v0, validDir);
         v1 = mix(vec3(1.0 / 0.0000001), v1, validDir);
 
@@ -52,8 +52,8 @@ const fragmentShader = /* glsl */ `
 
     uniform sampler2D blueNoiseTex32;
     uniform mat4 matrix_viewProjection;
-    uniform vec3 boxCen;
-    uniform vec3 boxLen;
+    uniform mat4 matrix_model;
+    uniform mat4 matrix_model_inv;
 
     uniform vec3 near_origin;
     uniform vec3 near_x;
@@ -64,6 +64,7 @@ const fragmentShader = /* glsl */ `
     uniform vec3 far_y;
 
     uniform vec2 targetSize;
+    uniform vec3 shapeColor;
 
     bool writeDepth(float alpha) {
         ivec2 uv = ivec2(gl_FragCoord.xy);
@@ -71,37 +72,64 @@ const fragmentShader = /* glsl */ `
         return alpha > texelFetch(blueNoiseTex32, uv % size, 0).y;
     }
 
-    bool strips(vec3 pos, int axis) {
-        bvec3 b = lessThan(fract(pos * 2.0 + vec3(0.015)), vec3(0.03));
-        b[axis] = false;
-        return any(b);
+    bool edgeStrips(vec3 pos, int axis) {
+        // Only draw lines at the outer edges of each face, not at the center
+        // pos is in local space [-0.5, 0.5]
+        float edgeThreshold = 0.015;
+        vec3 absPos = abs(pos);
+        // Check if close to any edge (near 0.5)
+        vec3 edgeDist = abs(absPos - 0.5);
+        bvec3 onEdge = lessThan(edgeDist, vec3(edgeThreshold));
+        onEdge[axis] = false;
+        return any(onEdge);
+    }
+
+    bool internalGrid(vec3 worldPos, int faceAxis) {
+        // Fixed-size internal grid in world space, unaffected by box scaling
+        // Only draw grid lines on the two axes parallel to the face (not the face normal axis)
+        float gridSize = 1.0;
+        float lineWidth = 0.02;
+        vec3 p = abs(worldPos);
+        vec3 f = fract(p / gridSize);
+        bvec3 onLine = lessThan(f, vec3(lineWidth / gridSize));
+        // Disable grid lines along the face normal axis to avoid concentric rings
+        onLine[faceAxis] = false;
+        return any(onLine);
     }
 
     void main() {
         vec2 clip = gl_FragCoord.xy / targetSize;
         vec3 worldNear = near_origin + near_x * clip.x + near_y * clip.y;
         vec3 worldFar = far_origin + far_x * clip.x + far_y * clip.y;
-        vec3 rayDir = normalize(worldFar - worldNear);
+        vec3 worldDir = normalize(worldFar - worldNear);
+
+        // Transform ray into box local space
+        vec3 localNear = (matrix_model_inv * vec4(worldNear, 1.0)).xyz;
+        vec3 localFar = (matrix_model_inv * vec4(worldFar, 1.0)).xyz;
+        vec3 localDir = normalize(localFar - localNear);
 
         float t0, t1;
         int axis0, axis1;
-        if (!intersectBox(t0, t1, axis0, axis1, worldNear, rayDir, boxCen, boxLen)) {
-            gl_FragColor = vec4(1.0, 0.0, 0.0, 0.6);
-            return;
+        if (!intersectBoxLocal(t0, t1, axis0, axis1, localNear, localDir)) {
+            discard;
         }
 
-        vec3 frontPos = worldNear + rayDir * t0;
-        bool front = t0 > 0.0 && strips(frontPos - boxCen, axis0);
+        vec3 localFront = localNear + localDir * t0;
+        bool frontGrid = t0 > 0.0 ? internalGrid((matrix_model * vec4(localFront, 1.0)).xyz, axis0) : false;
+        bool front = t0 > 0.0 && (edgeStrips(localFront, axis0) || frontGrid);
 
-        vec3 backPos = worldNear + rayDir * t1;
-        bool back = strips(backPos - boxCen, axis1);
+        vec3 localBack = localNear + localDir * t1;
+        bool backGrid = internalGrid((matrix_model * vec4(localBack, 1.0)).xyz, axis1);
+        bool back = edgeStrips(localBack, axis1) || backGrid;
 
         if (front) {
-            gl_FragColor = vec4(1.0, 1.0, 1.0, 0.6);
-            gl_FragDepth = writeDepth(0.6) ? calcDepth(frontPos, matrix_viewProjection) : 1.0;
+            vec3 worldFront = (matrix_model * vec4(localFront, 1.0)).xyz;
+            gl_FragColor = vec4(shapeColor, 0.6);
+            gl_FragDepth = writeDepth(0.6) ? calcDepth(worldFront, matrix_viewProjection) : 1.0;
         } else if (back) {
-            gl_FragColor = vec4(0.0, 0.0, 0.0, 0.6);
-            gl_FragDepth = writeDepth(0.6) ? calcDepth(backPos, matrix_viewProjection) : 1.0;
+            vec3 worldBack = (matrix_model * vec4(localBack, 1.0)).xyz;
+            gl_FragColor = vec4(shapeColor * 0.0, 0.6);
+            gl_FragDepth = writeDepth(0.6) ? calcDepth(worldBack, matrix_viewProjection) : 1.0;
         } else {
             discard;
         }

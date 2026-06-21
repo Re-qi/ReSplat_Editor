@@ -21,5 +21,13 @@
         height: 38px;
         padding: 0px 16px;
         border-radius: 2px;
+
+        &.active {
+            color: $clr-hilight;
+        }
+    }
+
+    .select-toolbar-input {
+        width: 70px;
     }
 }

@@ -12,6 +12,7 @@
     left: 24px;
     height: 50px;
     border-radius: 8px;
+    border-bottom-left-radius: 0;
 
     overflow: hidden;
 
@@ -20,10 +21,6 @@
     display: flex;
     flex-direction: row;
     align-items: center;
-}
-
-#menu-arrow {
-    display: none;
 }
 
 #menu-container {
@@ -35,21 +32,6 @@
     display: flex;
     flex-direction: row;
     flex-grow: 1;
-}
-
-.menu-icon {
-    width: 16px;
-    height: 16px;
-    padding: 16px 10px;
-    margin: 0px;
-    flex-grow: 1;
-    color: $text-secondary;
-
-    cursor: pointer;
-    &:hover {
-        color: $text-primary;
-        background-color: $bcg-dark;
-    }
 }
 
 .menu-option {
@@ -69,22 +51,32 @@
     }
 }
 
-.collapsed {
-    #menu-bar {
-        width: auto;
-        height: auto;
+#menu-bar-options-btn {
+    width: 38px;
+    height: 38px;
+    margin: 6px 4px;
+    padding: 0;
+    border: 0;
+    border-radius: 2px;
+    border-bottom-left-radius: 0;
+    background-color: transparent;
+
+    &::before {
+        font-size: 16px !important;
+        line-height: 100%;
+        color: $text-secondary;
     }
 
-    #menu-collapse {
-        display: none;
+    &:hover {
+        background-color: $bcg-dark;
+        &::before {
+            color: $text-primary;
+        }
     }
 
-    #menu-arrow {
-        display: block;
-        padding: 10px;
-    }
-
-    .menu-option {
-        display: none;
+    &.active {
+        &::before {
+            color: $clr-hilight;
+        }
     }
 }

@@ -27,6 +27,18 @@ class PointerController {
             camera.look(dx, dy);
         };
 
+        // Move along camera forward direction on XZ plane (no Y movement)
+        const flyMoveForward = (dy: number) => {
+            const worldTransform = camera.worldTransform;
+            const zAxis = worldTransform.getZ();
+            // Project to XZ plane (zero out Y component)
+            zAxis.y = 0;
+            zAxis.normalize();
+            moveVec.copy(zAxis).mulScalar(dy * 0.01);
+            const p = camera.focalPoint.add(moveVec);
+            camera.setFocalPoint(p);
+        };
+
         const pan = (x: number, y: number, dx: number, dy: number) => {
             // For panning to work at any zoom level, we use screen point to world projection
             // to work out how far we need to pan the pivotEntity in world space
@@ -68,7 +80,8 @@ class PointerController {
                 pressedButton = event.button;
                 x = event.offsetX;
                 y = event.offsetY;
-                if (pressedButton === 1) {
+                // Swap middle and right button behavior
+                if (pressedButton === 2) {
                     mmbStartX = x;
                     mmbStartY = y;
                     mmbDragged = false;
@@ -95,8 +108,9 @@ class PointerController {
             if (event.pointerType === 'mouse') {
                 // Only release if this is the button that was initially pressed
                 if (event.button === pressedButton) {
-                    // MMB tap (no significant movement) -> focus on cursor point (orbit only; fly uses MMB for zoom)
-                    if (pressedButton === 1 && camera.controlMode === 'orbit' && !mmbDragged) {
+                    // Swap middle and right button behavior: right button tap now focuses
+                    // Only pick focal point in orbit mode (not fly mode) to avoid creating selection shapes
+                    if (pressedButton === 2 && !mmbDragged && camera.controlMode !== 'fly' && event.shiftKey) {
                         camera.pickFocalPoint(event.offsetX / target.clientWidth, event.offsetY / target.clientHeight);
                     }
                     pressedButton = -1;
@@ -132,16 +146,26 @@ class PointerController {
                 y = event.offsetY;
 
                 if (camera.controlMode === 'fly') {
-                    // Fly mode: left-drag to look around, middle to zoom, right works same as orbit
+                    // Fly mode:
+                    // - left button: move forward/backward along camera direction (no pitch change)
+                    // - middle button: pan, Alt/Meta -> zoom
+                    // - right button: orbit, Shift -> pan, Ctrl -> zoom
                     if (pressedButton === 0) {
-                        look(dx, dy);
+                        look(dx, 0);
+                        flyMoveForward(dy);
                     } else if (pressedButton === 1) {
-                        zoom(dy * -0.02);
-                    } else if (pressedButton === 2) {
-                        // Right button: same behavior as orbit mode
-                        const mod = event.shiftKey || event.ctrlKey ? 'look' :
-                            (event.altKey || event.metaKey ? 'zoom' : 'pan');
+                        // Middle button in fly mode: pan (Shift/Ctrl no longer changes behavior)
+                        const mod = event.altKey || event.metaKey ? 'zoom' : 'pan';
 
+                        if (mod === 'zoom') {
+                            zoom(dy * -0.02);
+                        } else {
+                            pan(x, y, dx, dy);
+                        }
+                    } else if (pressedButton === 2) {
+                        // Right button in fly mode: look only (no position change)
+                        const mod = event.shiftKey ? 'pan' :
+                            (event.ctrlKey ? 'zoom' : 'look');
                         if (mod === 'look') {
                             look(dx, dy);
                         } else if (mod === 'zoom') {
@@ -153,10 +177,10 @@ class PointerController {
                 } else {
                     // Orbit mode:
                     // - left button: orbit
-                    // - middle button (Blender-style): orbit, Shift -> pan, Ctrl -> zoom
+                    // - middle button: pan, Alt/Meta -> zoom
+                    // - right button: orbit, Shift -> pan, Ctrl -> zoom (Blender-style)
                     //   (gated on a small drag threshold so a tap can be used to focus on release)
-                    // - right button: pan, Shift/Ctrl -> orbit, Alt/Meta -> zoom
-                    if (pressedButton === 1 && !mmbDragged) {
+                    if (pressedButton === 2 && !mmbDragged) {
                         if (dist(event.offsetX, event.offsetY, mmbStartX, mmbStartY) < CLICK_DRAG_THRESHOLD) {
                             return;
                         }
@@ -164,10 +188,11 @@ class PointerController {
                     }
 
                     let mod: 'orbit' | 'pan' | 'zoom';
-                    if (pressedButton === 2) {
-                        mod = event.shiftKey || event.ctrlKey ? 'orbit' :
-                            (event.altKey || event.metaKey ? 'zoom' : 'pan');
-                    } else if (pressedButton === 1) {
+                    if (pressedButton === 1) {
+                        // Middle button: pan (Shift/Ctrl no longer changes behavior)
+                        mod = event.altKey || event.metaKey ? 'zoom' : 'pan';
+                    } else if (pressedButton === 2) {
+                        // Right button now behaves like old middle button (Blender-style)
                         mod = event.shiftKey ? 'pan' :
                             (event.ctrlKey ? 'zoom' : 'orbit');
                     } else {
@@ -279,13 +304,22 @@ class PointerController {
             const wheelDelta = event.shiftKey && deltaY === 0 ? deltaX : deltaY;
 
             if (camera.controlMode === 'fly') {
-                // Fly mode: wheel moves forward/backward by moving focal point
-                const factor = camera.flySpeed * 0.01;
-                const worldTransform = camera.mainCamera.getWorldTransform();
-                const zAxis = worldTransform.getZ();
-                moveVec.copy(zAxis).mulScalar(wheelDelta * factor);
-                const p = camera.focalPoint.add(moveVec);
-                camera.setFocalPoint(p);
+                // Fly mode: when left or right mouse button is held, adjust fly speed
+                // otherwise, behave like orbit camera (zoom/pan/orbit)
+                const leftOrRightHeld = (event.buttons & 3) !== 0; // 1=left, 2=right
+                if (leftOrRightHeld) {
+                    const delta = -wheelDelta * 0.005;
+                    const newSpeed = Math.max(0.1, Math.min(30, camera.flySpeed + delta));
+                    camera.scene.events.fire('camera.setFlySpeed', newSpeed);
+                } else if (burstIsWheel) {
+                    zoom(wheelDelta * -0.002);
+                } else if (event.ctrlKey || event.metaKey) {
+                    zoom(deltaY * -0.02);
+                } else if (event.shiftKey) {
+                    pan(event.offsetX, event.offsetY, deltaX, deltaY);
+                } else {
+                    orbit(deltaX, deltaY);
+                }
             } else if (burstIsWheel) {
                 zoom(wheelDelta * -0.002);
             } else if (event.ctrlKey || event.metaKey) {
@@ -389,6 +423,18 @@ class PointerController {
         this.update = (deltaTime: number) => {
             if (camera.controlMode !== 'fly') return;
 
+            // Safety check: fly movement should only happen when a mouse button is held.
+            // This prevents camera drift if fly state variables get out of sync with
+            // the actual mouse button state (e.g. after window focus changes, PCUI
+            // component interactions that swallow mousedown events, etc.)
+            const mouseHeld = events.invoke('mouse.buttonsPressed') > 0;
+            if (!mouseHeld) {
+                if (flyForward || flyBackward || flyLeft || flyRight || flyUp || flyDown) {
+                    flyForward = flyBackward = flyLeft = flyRight = flyUp = flyDown = false;
+                }
+                return;
+            }
+
             // Fly mode: WASD for movement, Q/E for up/down - moves focal point
             const forward = (flyForward ? 1 : 0) - (flyBackward ? 1 : 0);
             const strafe = (flyRight ? 1 : 0) - (flyLeft ? 1 : 0);
@@ -402,11 +448,9 @@ class PointerController {
 
                 moveVec.set(0, 0, 0);
 
-                // Forward/backward along horizontal forward direction (fixed Y)
+                // Forward/backward along camera look direction
                 if (forward) {
                     const zAxis = worldTransform.getZ();
-                    zAxis.y = 0;
-                    zAxis.normalize();
                     moveVec.add(zAxis.mulScalar(-forward * factor));
                 }
 

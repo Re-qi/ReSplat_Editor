@@ -5,17 +5,18 @@ import { DataPanel } from './data-panel';
 import { Events } from '../events';
 import { AboutPopup } from './about-popup';
 import { BottomToolbar } from './bottom-toolbar';
-import { ColorPanel } from './color-panel';
+import { CameraModeSwitch } from './camera-mode-switch';
 import { ExportPopup } from './export-popup';
+import { FixPlyDialog } from './fix-ply-dialog';
 import { ImageSettingsDialog } from './image-settings-dialog';
-import { localize, localizeInit } from './localization';
+import { localize } from './localization';
 import { Menu } from './menu';
 import { ModeToggle } from './mode-toggle';
-import logo from './playcanvas-logo.png';
+import { ModeSwitch } from './mode-switch';
+import { OverlayToggle } from './overlay-toggle';
+// import logo from './playcanvas-logo.png';
 import { Popup, ShowOptions } from './popup';
 import { Progress } from './progress';
-import { PublishSettingsDialog } from './publish-settings-dialog';
-import { RightToolbar } from './right-toolbar';
 import { ScenePanel } from './scene-panel';
 import { ShortcutsPopup } from './shortcuts-popup';
 import { Spinner } from './spinner';
@@ -24,7 +25,7 @@ import { TimelinePanel } from './timeline-panel';
 import { Tooltips } from './tooltips';
 import { VideoSettingsDialog } from './video-settings-dialog';
 import { ViewCube } from './view-cube';
-import { ViewPanel } from './view-panel';
+
 import { version } from '../../package.json';
 
 // ts compiler and vscode find this type, but eslint does not
@@ -44,10 +45,10 @@ class EditorUI {
 
     constructor(events: Events) {
         // favicon
-        const link = document.createElement('link');
-        link.rel = 'icon';
-        link.href = logo;
-        document.head.appendChild(link);
+        // const link = document.createElement('link');
+        // link.rel = 'icon';
+        // link.href = logo;
+        // document.head.appendChild(link);
 
         // app
         const appContainer = new Container({
@@ -76,7 +77,7 @@ class EditorUI {
         // app label
         const appLabel = new Label({
             id: 'app-label',
-            text: `SUPERSPLAT v${version}`
+            text: `RESPLAT v${version}`
         });
 
         // cursor label
@@ -120,24 +121,24 @@ class EditorUI {
         tooltipsContainer.append(tooltips);
 
         // bottom toolbar
-        const scenePanel = new ScenePanel(events, tooltips);
-        const viewPanel = new ViewPanel(events, tooltips);
-        const colorPanel = new ColorPanel(events, tooltips);
+        const scenePanel = new ScenePanel(events, tooltips, canvasContainer);
         const bottomToolbar = new BottomToolbar(events, tooltips);
-        const rightToolbar = new RightToolbar(events, tooltips);
         const modeToggle = new ModeToggle(events, tooltips);
-        const menu = new Menu(events);
+        const modeSwitch = new ModeSwitch(events, tooltips);
+        const overlayToggle = new OverlayToggle(events, tooltips);
+        const cameraModeSwitch = new CameraModeSwitch(events, tooltips);
+        const menu = new Menu(events, tooltips);
 
         canvasContainer.dom.appendChild(canvas);
         canvasContainer.append(appLabel);
         canvasContainer.append(cursorLabel);
         canvasContainer.append(toolsContainer);
         canvasContainer.append(scenePanel);
-        canvasContainer.append(viewPanel);
-        canvasContainer.append(colorPanel);
         canvasContainer.append(bottomToolbar);
-        canvasContainer.append(rightToolbar);
         canvasContainer.append(modeToggle);
+        canvasContainer.append(overlayToggle);
+        canvasContainer.append(cameraModeSwitch);
+        canvasContainer.append(modeSwitch);
         canvasContainer.append(menu);
 
         // view axes container
@@ -171,7 +172,7 @@ class EditorUI {
 
         editorContainer.append(mainContainer);
 
-        tooltips.register(cursorLabel, localize('cursor.click-to-copy'), 'top');
+        tooltips.register(cursorLabel, localize('cursor.click-to-copy'), 'bottom');
 
         // message popup
         const popup = new Popup(tooltips);
@@ -182,9 +183,6 @@ class EditorUI {
         // export popup
         const exportPopup = new ExportPopup(events);
 
-        // publish settings
-        const publishSettingsDialog = new PublishSettingsDialog(events);
-
         // image settings
         const imageSettingsDialog = new ImageSettingsDialog(events);
 
@@ -194,9 +192,12 @@ class EditorUI {
         // about popup
         const aboutPopup = new AboutPopup();
 
+        // fix ply dialog
+        const fixPlyDialog = new FixPlyDialog(events);
+
         topContainer.append(popup);
         topContainer.append(exportPopup);
-        topContainer.append(publishSettingsDialog);
+        topContainer.append(fixPlyDialog);
         topContainer.append(imageSettingsDialog);
         topContainer.append(videoSettingsDialog);
         topContainer.append(shortcutsPopup);
@@ -224,25 +225,8 @@ class EditorUI {
             return exportPopup.show(exportType, splatNames, showFilenameEdit);
         });
 
-        events.function('show.publishSettingsDialog', async () => {
-            // show popup if user isn't logged in
-            const userStatus = await events.invoke('publish.userStatus');
-            if (!userStatus) {
-                await events.invoke('showPopup', {
-                    type: 'error',
-                    header: localize('popup.error'),
-                    message: localize('popup.publish.please-log-in')
-                });
-                return false;
-            }
-
-            // get user publish settings
-            const publishSettings = await publishSettingsDialog.show(userStatus);
-
-            // do publish
-            if (publishSettings) {
-                await events.invoke('scene.publish', publishSettings);
-            }
+        events.function('show.fixPlyDialog', () => {
+            return fixPlyDialog.show();
         });
 
         events.function('show.imageSettingsDialog', async () => {
@@ -300,14 +284,14 @@ class EditorUI {
                         }];
                     }
 
-                    const suggested = `${removeExtension(docName ?? 'supersplat')}${fileExtension}`;
+                    const suggested = `${removeExtension(docName ?? 'ReSplat')}${fileExtension}`;
 
                     let writable;
                     let fileHandle: FileSystemFileHandle | undefined;
 
                     if (window.showSaveFilePicker) {
                         fileHandle = await window.showSaveFilePicker({
-                            id: 'SuperSplatVideoFileExport',
+                            id: 'ReSplatVideoFileExport',
                             types: filePickerTypes,
                             suggestedName: suggested
                         });

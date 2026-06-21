@@ -10,22 +10,20 @@ const vertexShader = /* glsl */ `
 `;
 
 const fragmentShader = /* glsl */ `
-    bool intersectSphere(out float t0, out float t1, vec3 pos, vec3 dir, vec4 sphere) {
-        vec3 L = sphere.xyz - pos;
-        float tca = dot(L, dir);
-
-        float d2 = sphere.w * sphere.w - (dot(L, L) - tca * tca);
+    // Ray-sphere intersection in local space (unit sphere at origin, radius 0.5)
+    bool intersectSphereLocal(out float t0, out float t1, vec3 pos, vec3 dir) {
+        float r = 0.5;
+        float tca = dot(-pos, dir);
+        float d2 = r * r - (dot(pos, pos) - tca * tca);
         if (d2 <= 0.0) {
             return false;
         }
-
         float thc = sqrt(d2);
         t0 = tca - thc;
         t1 = tca + thc;
         if (t1 <= 0.0) {
             return false;
         }
-
         return true;
     }
 
@@ -42,7 +40,8 @@ const fragmentShader = /* glsl */ `
 
     uniform sampler2D blueNoiseTex32;
     uniform mat4 matrix_viewProjection;
-    uniform vec4 sphere;
+    uniform mat4 matrix_model;
+    uniform mat4 matrix_model_inv;
 
     uniform vec3 near_origin;
     uniform vec3 near_x;
@@ -53,6 +52,7 @@ const fragmentShader = /* glsl */ `
     uniform vec3 far_y;
 
     uniform vec2 targetSize;
+    uniform vec3 shapeColor;
 
     bool writeDepth(float alpha) {
         vec2 uv = fract(gl_FragCoord.xy / 32.0);
@@ -63,7 +63,7 @@ const fragmentShader = /* glsl */ `
     bool strips(vec3 lp) {
         vec2 ae = calcAzimuthElev(normalize(lp));
 
-        float spacing = 180.0 / (2.0 * 3.14159 * sphere.w);
+        float spacing = 180.0 / (2.0 * 3.14159 * 0.5);
         float size = 0.03;
         return fract(ae.x / spacing) < size ||
                fract(ae.y / spacing) < size;
@@ -74,25 +74,30 @@ const fragmentShader = /* glsl */ `
         vec3 worldNear = near_origin + near_x * clip.x + near_y * clip.y;
         vec3 worldFar = far_origin + far_x * clip.x + far_y * clip.y;
 
-        vec3 rayDir = normalize(worldFar - worldNear);
+        // Transform ray into local space for ellipsoid intersection
+        vec3 localNear = (matrix_model_inv * vec4(worldNear, 1.0)).xyz;
+        vec3 localFar = (matrix_model_inv * vec4(worldFar, 1.0)).xyz;
+        vec3 localDir = normalize(localFar - localNear);
 
         float t0, t1;
-        if (!intersectSphere(t0, t1, worldNear, rayDir, sphere)) {
+        if (!intersectSphereLocal(t0, t1, localNear, localDir)) {
             discard;
         }
 
-        vec3 frontPos = worldNear + rayDir * t0;
-        bool front = t0 > 0.0 && strips(frontPos - sphere.xyz);
+        vec3 localFront = localNear + localDir * t0;
+        bool front = t0 > 0.0 && strips(localFront);
 
-        vec3 backPos = worldNear + rayDir * t1;
-        bool back = strips(backPos - sphere.xyz);
+        vec3 localBack = localNear + localDir * t1;
+        bool back = strips(localBack);
 
         if (front) {
-            gl_FragColor = vec4(1.0, 1.0, 1.0, 0.6);
-            gl_FragDepth = writeDepth(0.6) ? calcDepth(frontPos, matrix_viewProjection) : 1.0;
+            vec3 worldFront = (matrix_model * vec4(localFront, 1.0)).xyz;
+            gl_FragColor = vec4(shapeColor, 0.6);
+            gl_FragDepth = writeDepth(0.6) ? calcDepth(worldFront, matrix_viewProjection) : 1.0;
         } else if (back) {
-            gl_FragColor = vec4(0.0, 0.0, 0.0, 0.6);
-            gl_FragDepth = writeDepth(0.6) ? calcDepth(backPos, matrix_viewProjection) : 1.0;
+            vec3 worldBack = (matrix_model * vec4(localBack, 1.0)).xyz;
+            gl_FragColor = vec4(shapeColor * 0.0, 0.6);
+            gl_FragDepth = writeDepth(0.6) ? calcDepth(worldBack, matrix_viewProjection) : 1.0;
         } else {
             discard;
         }

@@ -6,6 +6,10 @@ import { localize } from './localization';
 import { Tooltips } from './tooltips';
 import { SetSplatColorAdjustmentOp } from '../edit-ops';
 import { Splat } from '../splat';
+import { SphereShape } from '../sphere-shape';
+import { BoxShape } from '../box-shape';
+import { BlockingPlane } from '../blocking-plane';
+import { Element } from '../element';
 
 // pcui slider doesn't include start and end events
 class MyFancySliderInput extends SliderInput {
@@ -21,12 +25,13 @@ class MyFancySliderInput extends SliderInput {
 }
 
 class ColorPanel extends Container {
-    constructor(events: Events, tooltips: Tooltips, args = {}) {
+    constructor(events: Events, tooltips: Tooltips, args: any = {}) {
+        const embedded = args.embedded;
         args = {
             ...args,
             id: 'color-panel',
-            class: 'panel',
-            hidden: true
+            class: embedded ? '' : 'panel',
+            hidden: embedded ? false : true
         };
 
         super(args);
@@ -54,6 +59,13 @@ class ColorPanel extends Container {
 
         header.append(icon);
         header.append(label);
+
+        const reset = new Label({
+            class: 'panel-header-button',
+            text: '\uE304'
+        });
+
+        header.append(reset);
 
         // tint
 
@@ -206,21 +218,6 @@ class ColorPanel extends Container {
         transparencyRow.append(transparencyLabel);
         transparencyRow.append(transparencySlider);
 
-        // control row
-
-        const controlRow = new Container({
-            class: 'color-panel-control-row'
-        });
-
-        const reset = new Label({
-            class: 'panel-header-button',
-            text: '\uE304'
-        });
-
-        controlRow.append(new Label({ class: 'panel-header-spacer' }));
-        controlRow.append(reset);
-        controlRow.append(new Label({ class: 'panel-header-spacer' }));
-
         this.append(header);
         this.append(tintRow);
         this.append(temperatureRow);
@@ -229,13 +226,12 @@ class ColorPanel extends Container {
         this.append(blackPointRow);
         this.append(whitePointRow);
         this.append(transparencyRow);
-        this.append(new Label({ class: 'panel-header-spacer' }));
-        this.append(controlRow);
 
         // handle ui updates
 
         let suppress = false;
         let selected: Splat = null;
+        let selectedShape: SphereShape | BoxShape | BlockingPlane | null = null;
         let op: SetSplatColorAdjustmentOp = null;
 
         const updateUIFromState = (splat: Splat) => {
@@ -249,6 +245,36 @@ class ColorPanel extends Container {
             whitePointSlider.value = splat ? splat.whitePoint : 1;
             transparencySlider.value = splat ? Math.log(splat.transparency) : 0;
             suppress = false;
+        };
+
+        const updateShapeUIFromState = (shape: SphereShape | BoxShape | BlockingPlane | null) => {
+            if (suppress) return;
+            suppress = true;
+            if (shape) {
+                tintPicker.value = [shape.color.r, shape.color.g, shape.color.b];
+            } else {
+                tintPicker.value = [1, 1, 1];
+            }
+            // Hide splat-specific controls when shape is selected
+            const isShape = !!shape;
+            temperatureRow.hidden = isShape;
+            saturationRow.hidden = isShape;
+            brightnessRow.hidden = isShape;
+            blackPointRow.hidden = isShape;
+            whitePointRow.hidden = isShape;
+            transparencyRow.hidden = isShape;
+            suppress = false;
+        };
+
+        const startShapeOp = () => {
+            if (selectedShape) {
+                // Directly modify shape color, no undo op for now
+                // Could add ShapeColorOp later if needed
+            }
+        };
+
+        const endShapeOp = () => {
+            // No undo op registration for shape color
         };
 
         const start = () => {
@@ -312,10 +338,28 @@ class ColorPanel extends Container {
             slider.on('slide:start', start);
             slider.on('slide:end', end);
         });
-        tintPicker.on('picker:color:start', start);
-        tintPicker.on('picker:color:end', end);
+        tintPicker.on('picker:color:start', () => {
+            if (selectedShape) {
+                startShapeOp();
+            } else {
+                start();
+            }
+        });
+        tintPicker.on('picker:color:end', () => {
+            if (selectedShape) {
+                endShapeOp();
+            } else {
+                end();
+            }
+        });
 
         tintPicker.on('change', (value: number[]) => {
+            // Handle shape color change
+            if (selectedShape) {
+                selectedShape.color = new Color(value[0], value[1], value[2]);
+                return;
+            }
+            // Handle splat color change
             updateOp((op) => {
                 op.newState.tintClr.set(value[0], value[1], value[2]);
             });
@@ -366,7 +410,10 @@ class ColorPanel extends Container {
         });
 
         reset.on('click', () => {
-            if (selected) {
+            if (selectedShape) {
+                selectedShape.color = new Color(1, 1, 1);
+                updateShapeUIFromState(selectedShape);
+            } else if (selected) {
                 const op = new SetSplatColorAdjustmentOp({
                     splat: selected,
                     newState: {
@@ -393,9 +440,24 @@ class ColorPanel extends Container {
             }
         });
 
-        events.on('selection.changed', (splat) => {
-            selected = splat;
-            updateUIFromState(splat);
+        events.on('selection.changed', (element: Element) => {
+            if (element instanceof Splat) {
+                selected = element;
+                updateUIFromState(selected);
+            } else {
+                selected = null;
+                updateUIFromState(null);
+            }
+        });
+
+        events.on('selection.shapeChanged', (element: Element) => {
+            if (element instanceof SphereShape || element instanceof BoxShape || element instanceof BlockingPlane) {
+                selectedShape = element as SphereShape | BoxShape | BlockingPlane;
+                updateShapeUIFromState(selectedShape);
+            } else {
+                selectedShape = null;
+                updateShapeUIFromState(null);
+            }
         });
 
         events.on('splat.tintClr', updateUIFromState);
@@ -408,32 +470,34 @@ class ColorPanel extends Container {
 
         tooltips.register(reset, localize('panel.colors.reset'), 'bottom');
 
-        // handle panel visibility
+        // handle panel visibility (skip in embedded mode, managed by scene-panel)
 
-        const setVisible = (visible: boolean) => {
-            if (visible === this.hidden) {
-                this.hidden = !visible;
-                events.fire('colorPanel.visible', visible);
-            }
-        };
+        if (!embedded) {
+            const setVisible = (visible: boolean) => {
+                if (visible === this.hidden) {
+                    this.hidden = !visible;
+                    events.fire('colorPanel.visible', visible);
+                }
+            };
 
-        events.function('colorPanel.visible', () => {
-            return !this.hidden;
-        });
+            events.function('colorPanel.visible', () => {
+                return !this.hidden;
+            });
 
-        events.on('colorPanel.setVisible', (visible: boolean) => {
-            setVisible(visible);
-        });
+            events.on('colorPanel.setVisible', (visible: boolean) => {
+                setVisible(visible);
+            });
 
-        events.on('colorPanel.toggleVisible', () => {
-            setVisible(this.hidden);
-        });
+            events.on('colorPanel.toggleVisible', () => {
+                setVisible(this.hidden);
+            });
 
-        events.on('viewPanel.visible', (visible: boolean) => {
-            if (visible) {
-                setVisible(false);
-            }
-        });
+            events.on('viewPanel.visible', (visible: boolean) => {
+                if (visible) {
+                    setVisible(false);
+                }
+            });
+        }
     }
 }
 

@@ -78,6 +78,10 @@
     color: $text-dark;
 }
 
+.context-menu {
+    z-index: 1000;
+}
+
 .menu-row-separator {
     height: 1px;
     background-color: $bcg-light;

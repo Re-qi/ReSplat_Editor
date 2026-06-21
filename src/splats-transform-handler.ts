@@ -25,7 +25,7 @@ class SplatsTransformHandler implements TransformHandler {
     constructor(events: Events) {
         this.events = events;
 
-        events.on('pivot.started', (pivot: Pivot) => {
+        events.on('pivot.started', (_pivot: Pivot) => {
             if (this.splat) {
                 this.start();
             }
@@ -37,7 +37,7 @@ class SplatsTransformHandler implements TransformHandler {
             }
         });
 
-        events.on('pivot.ended', (pivot: Pivot) => {
+        events.on('pivot.ended', (_pivot: Pivot) => {
             if (this.splat) {
                 this.end();
             }
@@ -49,7 +49,7 @@ class SplatsTransformHandler implements TransformHandler {
             }
         });
 
-        events.on('pivot.origin', (mode: 'center' | 'boundCenter') => {
+        events.on('pivot.origin', (_mode: 'center' | 'boundCenter') => {
             if (this.splat) {
                 this.placePivot();
             }
@@ -73,7 +73,8 @@ class SplatsTransformHandler implements TransformHandler {
     }
 
     activate() {
-        this.splat = this.events.invoke('selection') as Splat;
+        const selection = this.events.invoke('splatSelection');
+        this.splat = selection instanceof Splat ? selection : null;
         if (this.splat) {
             this.placePivot();
         }

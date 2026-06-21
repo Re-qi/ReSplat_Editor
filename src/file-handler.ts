@@ -6,15 +6,15 @@ import { Events } from './events';
 import { BrowserFileSystem, MappedReadFileSystem } from './io';
 import { Scene } from './scene';
 import { Splat } from './splat';
-import { serializePly, serializePlyCompressed, SerializeSettings, serializeSog, serializeSplat, serializeViewer, SogSettings, ViewerExportSettings } from './splat-serialize';
+import { serializePly, serializePlyCompressed, serializeStandardPly, SerializeSettings, serializeSog, serializeSplat, serializeViewer, SogSettings, ViewerExportSettings } from './splat-serialize';
 import { localize } from './ui/localization';
 
 // ts compiler and vscode find this type, but eslint does not
 type FilePickerAcceptType = unknown;
 
-type ExportType = 'ply' | 'splat' | 'sog' | 'viewer';
+type ExportType = 'ply' | 'standardPly' | 'splat' | 'sog' | 'viewer';
 
-type FileType = 'ply' | 'compressedPly' | 'splat' | 'sog' | 'htmlViewer' | 'packageViewer';
+type FileType = 'ply' | 'compressedPly' | 'standardPly' | 'splat' | 'sog' | 'htmlViewer' | 'packageViewer';
 
 interface SceneExportOptions {
     filename: string;
@@ -40,6 +40,12 @@ const filePickerTypes: { [key: string]: FilePickerAcceptType } = {
     },
     'compressedPly': {
         description: 'Compressed Gaussian Splat PLY File',
+        accept: {
+            'application/ply': ['.ply']
+        }
+    },
+    'standardPly': {
+        description: 'Standard Gaussian Splat PLY File',
         accept: {
             'application/ply': ['.ply']
         }
@@ -423,7 +429,7 @@ const initFileHandler = (scene: Scene, events: Events, dropTarget: HTMLElement) 
         } else {
             try {
                 const handles = await window.showOpenFilePicker({
-                    id: 'SuperSplatFileImport',
+                    id: 'ReSplatFileImport',
                     multiple: true,
                     excludeAcceptAllOption: false,
                     types: [
@@ -461,7 +467,7 @@ const initFileHandler = (scene: Scene, events: Events, dropTarget: HTMLElement) 
     events.function('scene.openAnimation', async () => {
         try {
             const handle = await window.showDirectoryPicker({
-                id: 'SuperSplatFileOpenAnimation',
+                id: 'ReSplatFileOpenAnimation',
                 mode: 'readwrite'
             });
 
@@ -501,12 +507,13 @@ const initFileHandler = (scene: Scene, events: Events, dropTarget: HTMLElement) 
         const fileType: FileType =
             (exportType === 'viewer') ? (options.viewerExportSettings!.type === 'zip' ? 'packageViewer' : 'htmlViewer') :
                 (exportType === 'ply') ? (options.compressedPly ? 'compressedPly' : 'ply') :
-                    (exportType === 'sog') ? 'sog' : 'splat';
+                    (exportType === 'standardPly') ? 'standardPly' :
+                        (exportType === 'sog') ? 'sog' : 'splat';
 
         if (hasFilePicker) {
             try {
                 const fileHandle = await window.showSaveFilePicker({
-                    id: 'SuperSplatFileExport',
+                    id: 'ReSplatFileExport',
                     types: [filePickerTypes[fileType]],
                     suggestedName: options.filename
                 });
@@ -550,6 +557,9 @@ const initFileHandler = (scene: Scene, events: Events, dropTarget: HTMLElement) 
                     serializeSettings.minOpacity = 1 / 255;
                     serializeSettings.removeInvalid = true;
                     await serializePlyCompressed(splats, serializeSettings, fs);
+                    break;
+                case 'standardPly':
+                    await serializeStandardPly(splats, serializeSettings, fs);
                     break;
                 case 'splat':
                     await serializeSplat(splats, serializeSettings, fs);

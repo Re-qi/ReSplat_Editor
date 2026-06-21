@@ -1,22 +1,33 @@
 <!DOCTYPE html>
+<!-- Powered by supersplat-2.27.0 (https://github.com/playcanvas/supersplat) -->
 <html>
     <head>
-        <title>SuperSplat</title>
+        <title>ReSplat</title>
         <meta charset="utf-8" />
         <base href="__BASE_HREF__">
         <link rel="manifest" href="./manifest.json">
         <link rel="stylesheet" href="./index.css">
         <link rel="shortcut icon" href="#">
-        <meta name="description" content="SuperSplat is an advanced browser-based editor for manipulating and optimizing 3D Gaussian Splats. It is open source and engine agnostic." />
+        <meta name="description" content="ReSplat is an advanced browser-based editor for manipulating and optimizing 3D Gaussian Splats. It is open source and engine agnostic." />
         <meta name="viewport" content="width=device-width, user-scalable=no, minimum-scale=1.0, maximum-scale=1.0" />
 
         <!-- Service worker -->
         <script>
+            // For development: unregister service workers to avoid stale cache issues
+            if ('serviceWorker' in navigator) {
+                navigator.serviceWorker.getRegistrations().then(function(registrations) {
+                    for(let registration of registrations) {
+                        registration.unregister();
+                        console.log('ServiceWorker unregistered to clear cache');
+                    }
+                });
+            }
+            
             const sw = navigator.serviceWorker;
             if (sw) {
-                sw.register('./sw.js')
-                    .then(reg => console.log('service worker registered', reg))
-                    .catch(err => console.log('failed to register service worker', err));
+                // sw.register('./sw.js')
+                //     .then(reg => console.log('service worker registered', reg))
+                //     .catch(err => console.log('failed to register service worker', err));
             }
         </script>
     </head>

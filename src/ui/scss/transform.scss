@@ -20,10 +20,44 @@
 }
 
 .transform-label {
-    width: 70px;
+    width: 34px;
     flex-shrink: 0;
     flex-grow: 0;
     margin: 0px;
+}
+
+// 位置和旋转行标签保持70px宽度
+#transform > div:nth-child(1) > .transform-label,
+#transform > div:nth-child(2) > .transform-label {
+    width: 70px;
+}
+
+.transform-lock-btn {
+    width: 28px;
+    height: 22px;
+    flex-shrink: 0;
+    flex-grow: 0;
+    margin: 0px 4px;
+    padding: 0px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: 3px;
+    cursor: pointer;
+    color: $text-primary;
+    transition: background-color 0.15s, border-color 0.15s, color 0.15s;
+
+    &:hover {
+        background-color: $bcg-dark;
+    }
+
+    & > svg {
+        width: 16px;
+        height: 16px;
+        fill: currentColor;
+    }
 }
 
 .transform-expand {

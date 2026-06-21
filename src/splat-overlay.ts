@@ -76,11 +76,20 @@ class SplatOverlay extends Element {
             layers: [scene.gizmoLayer.id]
         });
 
-        scene.events.on('selection.changed', (selection: Splat) => {
-            if (selection) {
+        scene.events.on('selection.changed', (selection: any) => {
+            if (selection instanceof Splat) {
                 this.attach(selection);
-            } else {
+            } else if (!this.splat || this.splat.numSelected === 0) {
                 this.detach();
+            }
+        });
+
+        // Re-attach when gaussians become selected on a splat whose
+        // state changed (e.g. via Set/Add sphere/box operations),
+        // even if that splat is not the current scene selection.
+        scene.events.on('splat.stateChanged', (splat: Splat) => {
+            if (!this.splat && splat.numSelected > 0) {
+                this.attach(splat);
             }
         });
     }

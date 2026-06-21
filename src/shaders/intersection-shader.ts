@@ -27,11 +27,14 @@ const fragmentShader = /* glsl */ `
     uniform vec4 rect_params;                       // rect x, y, width, height
 
     // sphere params
-    uniform vec4 sphere_params;                     // sphere x, y, z, radius
+    uniform vec4 sphere_params;                     // sphere x, y, z
+    uniform vec4 sphere_radii;                      // sphere radiusX, radiusY, radiusZ
+    uniform vec4 sphere_rotation;                   // quaternion x, y, z, w
 
     // box params
     uniform vec4 box_params;                     // box x, y, z
     uniform vec4 aabb_params;                    // len x, y, z
+    uniform vec4 box_rotation;                   // quaternion x, y, z, w
 
     void main(void) {
         // calculate output id
@@ -86,19 +89,32 @@ const fragmentShader = /* glsl */ `
                     // select by rect
                     clr[i] = all(greaterThan(ndc.xy * vec2(1.0, -1.0), rect_params.xy)) && all(lessThan(ndc.xy * vec2(1.0, -1.0), rect_params.zw)) ? 1.0 : 0.0;
                 } else if (mode == 2) {
-                    // select by sphere
-                    clr[i] = length(world - sphere_params.xyz) < sphere_params.w ? 1.0 : 0.0;
+                    // select by oriented ellipsoid
+                    vec3 relativePosition = world - sphere_params.xyz;
+
+                    // Apply inverse rotation using quaternion conjugate
+                    // Standard formula: v' = v + 2*cross(qConj.xyz, cross(qConj.xyz, v) + qConj.w*v)
+                    vec4 qConj = vec4(-sphere_rotation.xyz, sphere_rotation.w);
+                    vec3 localPos = relativePosition + 2.0 * cross(qConj.xyz, cross(qConj.xyz, relativePosition) + qConj.w * relativePosition);
+
+                    vec3 d = localPos / sphere_radii.xyz;
+                    clr[i] = length(d) < 1.0 ? 1.0 : 0.0;
                 } else if (mode == 3) {
-                    // select by box
+                    // select by oriented box
                     vec3 relativePosition = world - box_params.xyz;
+
+                    // Apply inverse rotation using quaternion conjugate
+                    vec4 qConj = vec4(-box_rotation.xyz, box_rotation.w);
+                    vec3 localPos = relativePosition + 2.0 * cross(qConj.xyz, cross(qConj.xyz, relativePosition) + qConj.w * relativePosition);
+
                     bool isInsideCube = true;
-                    if (relativePosition.x < -aabb_params.x || relativePosition.x > aabb_params.x) {
+                    if (localPos.x < -aabb_params.x || localPos.x > aabb_params.x) {
                         isInsideCube = false;
                     }
-                    if (relativePosition.y < -aabb_params.y || relativePosition.y > aabb_params.y) {
+                    if (localPos.y < -aabb_params.y || localPos.y > aabb_params.y) {
                         isInsideCube = false;
                     }
-                    if (relativePosition.z < -aabb_params.z || relativePosition.z > aabb_params.z) {
+                    if (localPos.z < -aabb_params.z || localPos.z > aabb_params.z) {
                         isInsideCube = false;
                     }
                     clr[i] = isInsideCube ? 1.0 : 0.0;

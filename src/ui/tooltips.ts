@@ -68,6 +68,10 @@ class Tooltips extends Container {
                 } else if (tooltipRect.right > window.innerWidth) {
                     style.left = `${parseFloat(style.left) - (tooltipRect.right - window.innerWidth)}px`;
                 }
+                if (tooltipRect.bottom > window.innerHeight) {
+                    style.top = `${rect.top}px`;
+                    style.transform = 'translate(-50%, calc(-100% - 10px))';
+                }
             };
 
             const startTimer = (fn: () => void) => {

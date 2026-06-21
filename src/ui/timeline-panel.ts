@@ -6,7 +6,7 @@ import { localize, formatTooltipWithShortcut } from './localization';
 import { Tooltips } from './tooltips';
 
 class Ticks extends Container {
-    constructor(events: Events, tooltips: Tooltips, args = {}) {
+    constructor(events: Events, _tooltips: Tooltips, args = {}) {
         args = {
             ...args,
             id: 'ticks'
@@ -432,7 +432,7 @@ class TimelinePanel extends Container {
         });
 
         // cancel animation playback if user interacts with camera
-        events.on('camera.controller', (type: string) => {
+        events.on('camera.controller', (_type: string) => {
             if (events.invoke('timeline.playing')) {
                 // stop
             }
@@ -451,14 +451,14 @@ class TimelinePanel extends Container {
             return text;
         };
 
-        tooltips.register(prev, tooltip('tooltip.timeline.prev-frame', 'timeline.prevFrame'), 'top');
-        tooltips.register(play, tooltip('tooltip.timeline.play', 'timeline.togglePlay'), 'top');
-        tooltips.register(next, tooltip('tooltip.timeline.next-frame', 'timeline.nextFrame'), 'top');
-        tooltips.register(addKey, tooltip('tooltip.timeline.add-key', 'track.addKey'), 'top');
-        tooltips.register(removeKey, tooltip('tooltip.timeline.remove-key', 'track.removeKey'), 'top');
-        tooltips.register(speed, localize('tooltip.timeline.frame-rate'), 'top');
-        tooltips.register(frames, localize('tooltip.timeline.total-frames'), 'top');
-        tooltips.register(smoothness, localize('tooltip.timeline.smoothness'), 'top');
+        tooltips.register(prev, tooltip('tooltip.timeline.prev-frame', 'timeline.prevFrame'), 'bottom');
+        tooltips.register(play, tooltip('tooltip.timeline.play', 'timeline.togglePlay'), 'bottom');
+        tooltips.register(next, tooltip('tooltip.timeline.next-frame', 'timeline.nextFrame'), 'bottom');
+        tooltips.register(addKey, tooltip('tooltip.timeline.add-key', 'track.addKey'), 'bottom');
+        tooltips.register(removeKey, tooltip('tooltip.timeline.remove-key', 'track.removeKey'), 'bottom');
+        tooltips.register(speed, localize('tooltip.timeline.frame-rate'), 'bottom');
+        tooltips.register(frames, localize('tooltip.timeline.total-frames'), 'bottom');
+        tooltips.register(smoothness, localize('tooltip.timeline.smoothness'), 'bottom');
     }
 }
 

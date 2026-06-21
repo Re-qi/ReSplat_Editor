@@ -177,10 +177,33 @@ class SplatList extends Container {
         let soloMode = false;
         const savedVisibility = new Map<Splat, boolean>();
 
+        // Three-stage click interaction state per splat item
+        // Stage 0: not clicked → first click selects
+        // Stage 1: selected → second click switches gizmo or deselects
+        // Stage 2: gizmo on splat → third click deselects
+        const clickStages = new Map<Splat, number>();
+
+        // Ctrl+drag selection state
+        let isDragging = false;
+        let dragStartSplat: Splat | null = null;
+
         // edit input used during renames
         const edit = new TextInput({
             id: 'splat-edit'
         });
+
+        // Update visual state of multi-selected items
+        const updateMultiSelectVisuals = () => {
+            const multiSelected = events.invoke('multiSplatSelection') as Splat[];
+            const multiSelectedSet = new Set(multiSelected);
+            items.forEach((item, splat) => {
+                if (multiSelectedSet.has(splat)) {
+                    item.class.add('multi-selected');
+                } else {
+                    item.class.remove('multi-selected');
+                }
+            });
+        };
 
         events.on('scene.elementAdded', (element: Element) => {
             if (element.type === ElementType.splat) {
@@ -223,32 +246,49 @@ class SplatList extends Container {
             }
         });
 
-        events.on('selection.changed', (selection: Splat, prev: Splat) => {
+        events.on('selection.changed', (selection: Element, prev: Element) => {
             items.forEach((value, key) => {
                 value.selected = key === selection;
             });
 
+            // Reset click stages for splats that don't match the new selection
+            for (const [splat] of clickStages) {
+                if (splat !== selection) {
+                    clickStages.delete(splat);
+                }
+            }
+
             if (soloMode) {
-                if (prev) {
+                if (prev instanceof Splat) {
                     prev.visible = false;
                 }
-                if (selection) {
+                if (selection instanceof Splat) {
                     selection.visible = true;
                 }
             }
         });
 
+        // Update multi-select visuals when multi-selection changes
+        events.on('multiSplatSelection.changed', () => {
+            updateMultiSelectVisuals();
+        });
+
+        // Reset all click stages when a shape is selected
+        events.on('selection.shapeChanged', () => {
+            clickStages.clear();
+        });
+
         events.on('scene.solo', (value: boolean) => {
             soloMode = value;
-            const selection = events.invoke('selection') as Splat;
+            const selection = events.invoke('splatSelection');
 
             if (soloMode) {
-                items.forEach((item, splat) => {
+                items.forEach((_item, splat) => {
                     savedVisibility.set(splat, splat.visible);
                     splat.visible = splat === selection;
                 });
             } else {
-                items.forEach((item, splat) => {
+                items.forEach((_item, splat) => {
                     const wasVisible = savedVisibility.get(splat);
                     splat.visible = wasVisible !== undefined ? wasVisible : true;
                 });
@@ -270,17 +310,98 @@ class SplatList extends Container {
             }
         });
 
-        this.on('click', (item: SplatItem) => {
+        this.on('click', (item: SplatItem, event: MouseEvent) => {
             for (const [key, value] of items) {
                 if (item === value) {
                     if (soloMode && !key.visible) {
                         key.visible = true;
                     }
-                    events.fire('selection', key);
+
+                    // Ctrl+click: toggle multi-selection
+                    if (event.ctrlKey || event.metaKey) {
+                        events.fire('selection.toggleSplat', key);
+                        clickStages.set(key, 1);
+                        break;
+                    }
+
+                    const stage = clickStages.get(key) ?? 0;
+                    const gizmoOnThisSplat = events.invoke('selection') === key;
+
+                    if (stage === 0) {
+                        // Stage 1: first click → select this splat
+                        events.fire('selection', key);
+                        clickStages.set(key, 1);
+                    } else if (stage === 1) {
+                        if (!gizmoOnThisSplat) {
+                            // Stage 2a: gizmo not on splat → switch gizmo to splat
+                            events.fire('selection', key);
+                            clickStages.set(key, 2);
+                        } else {
+                            // Stage 2b: gizmo already on splat → deselect
+                            events.fire('selection.clearSplat');
+                            clickStages.delete(key);
+                        }
+                    } else {
+                        // Stage 3+: deselect
+                        events.fire('selection.clearSplat');
+                        clickStages.delete(key);
+                    }
+
+                    // Clear stages for all other splats
+                    for (const [otherKey] of items) {
+                        if (otherKey !== key) {
+                            clickStages.delete(otherKey);
+                        }
+                    }
+
                     break;
                 }
             }
         });
+
+        // Ctrl+drag: continuous selection support
+        this.dom.addEventListener('pointerdown', (e: PointerEvent) => {
+            if (!(e.ctrlKey || e.metaKey)) return;
+
+            // Find which splat item was clicked
+            for (const [splat, item] of items) {
+                if (item.dom.contains(e.target as Node)) {
+                    isDragging = true;
+                    dragStartSplat = splat;
+                    (e.target as HTMLElement).setPointerCapture?.(e.pointerId);
+                    break;
+                }
+            }
+        });
+
+        this.dom.addEventListener('pointermove', (e: PointerEvent) => {
+            if (!isDragging || !dragStartSplat) return;
+            if (!(e.ctrlKey || e.metaKey)) {
+                // Ctrl released during drag — cancel
+                isDragging = false;
+                dragStartSplat = null;
+                return;
+            }
+
+            // Find which splat item the pointer is over
+            const element = document.elementFromPoint(e.clientX, e.clientY);
+            for (const [splat, item] of items) {
+                if (item.dom.contains(element)) {
+                    if (splat !== dragStartSplat) {
+                        events.fire('selection.addSplatRange', dragStartSplat, splat);
+                    }
+                    break;
+                }
+            }
+        });
+
+        const endDrag = () => {
+            isDragging = false;
+            dragStartSplat = null;
+        };
+
+        this.dom.addEventListener('pointerup', endDrag);
+        this.dom.addEventListener('pointercancel', endDrag);
 
         this.on('removeClicked', async (item: SplatItem) => {
             let splat;
@@ -311,8 +432,8 @@ class SplatList extends Container {
         super._onAppendChild(element);
 
         if (element instanceof SplatItem) {
-            element.on('click', () => {
-                this.emit('click', element);
+            element.on('click', (evt: MouseEvent) => {
+                this.emit('click', element, evt);
             });
 
             element.on('removeClicked', () => {

@@ -20,6 +20,20 @@
             font-weight: bold;
             font-size: 13px;
             color: $clr-hilight;
+            
+            // 统一设置图标大小和边距
+            width: 16px;
+            height: 16px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin: 0 4px;
+            
+            // 针对 SVG 元素，使用 !important 覆盖 SVG 内联属性
+            svg {
+                width: 16px !important;
+                height: 16px !important;
+            }
         }
 
         & > .panel-header-label {
@@ -27,6 +41,7 @@
             font-weight: bold;
             flex-grow: 1;
             text-transform: uppercase;
+            margin: 0 4px;
         }
     }
 
@@ -48,6 +63,7 @@
 
         svg {
             color: $clr-hilight;
+            fill: currentColor;
         }
     
         &:hover {

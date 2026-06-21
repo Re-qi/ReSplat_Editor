@@ -7,12 +7,13 @@ import { localize, formatTooltipWithShortcut } from './localization';
 import { Tooltips } from './tooltips';
 
 class ViewPanel extends Container {
-    constructor(events: Events, tooltips: Tooltips, args = {}) {
+    constructor(events: Events, tooltips: Tooltips, args: any = {}) {
+        const embedded = args.embedded;
         args = {
             ...args,
             id: 'view-panel',
-            class: 'panel',
-            hidden: true
+            class: embedded ? '' : 'panel',
+            hidden: embedded ? false : true
         };
 
         super(args);
@@ -65,19 +66,19 @@ class ViewPanel extends Container {
         const selectedClrPicker = new ColorPicker({
             class: 'view-panel-row-picker',
             channels: 4,
-            value: [0, 0, 0, 1]
+            value: [0, 0, 0, 0.502]
         });
 
         const unselectedClrPicker = new ColorPicker({
             class: 'view-panel-row-picker',
             channels: 4,
-            value: [0, 0, 0, 1]
+            value: [0, 0, 0, 0.502]
         });
 
         const lockedClrPicker = new ColorPicker({
             class: 'view-panel-row-picker',
             channels: 4,
-            value: [0, 0, 0, 1]
+            value: [0, 0, 0, 0.502]
         });
 
         const toArray = (clr: Color) => {
@@ -355,32 +356,34 @@ class ViewPanel extends Container {
         this.append(showBoundDimensionsRow);
         this.append(showCameraPosesRow);
 
-        // handle panel visibility
+        // handle panel visibility (skip in embedded mode, managed by scene-panel)
 
-        const setVisible = (visible: boolean) => {
-            if (visible === this.hidden) {
-                this.hidden = !visible;
-                events.fire('viewPanel.visible', visible);
-            }
-        };
+        if (!embedded) {
+            const setVisible = (visible: boolean) => {
+                if (visible === this.hidden) {
+                    this.hidden = !visible;
+                    events.fire('viewPanel.visible', visible);
+                }
+            };
 
-        events.function('viewPanel.visible', () => {
-            return !this.hidden;
-        });
+            events.function('viewPanel.visible', () => {
+                return !this.hidden;
+            });
 
-        events.on('viewPanel.setVisible', (visible: boolean) => {
-            setVisible(visible);
-        });
+            events.on('viewPanel.setVisible', (visible: boolean) => {
+                setVisible(visible);
+            });
 
-        events.on('viewPanel.toggleVisible', () => {
-            setVisible(this.hidden);
-        });
+            events.on('viewPanel.toggleVisible', () => {
+                setVisible(this.hidden);
+            });
 
-        events.on('colorPanel.visible', (visible: boolean) => {
-            if (visible) {
-                setVisible(false);
-            }
-        });
+            events.on('colorPanel.visible', (visible: boolean) => {
+                if (visible) {
+                    setVisible(false);
+                }
+            });
+        }
 
         // sh bands
 
@@ -514,11 +517,11 @@ class ViewPanel extends Container {
         // tooltips
         const shortcutManager: ShortcutManager = events.invoke('shortcutManager');
         const shortcut = shortcutManager.formatShortcut('grid.toggleVisible');
-        tooltips.register(showGridLabel, formatTooltipWithShortcut(localize('panel.view-options.show-grid'), shortcut), 'left');
-        tooltips.register(bgClrPicker, localize('panel.view-options.background-color'), 'left');
-        tooltips.register(selectedClrPicker, localize('panel.view-options.selected-color'), 'top');
-        tooltips.register(unselectedClrPicker, localize('panel.view-options.unselected-color'), 'top');
-        tooltips.register(lockedClrPicker, localize('panel.view-options.locked-color'), 'top');
+        tooltips.register(showGridLabel, formatTooltipWithShortcut(localize('panel.view-options.show-grid'), shortcut), 'bottom');
+        tooltips.register(bgClrPicker, localize('panel.view-options.background-color'), 'bottom');
+        tooltips.register(selectedClrPicker, localize('panel.view-options.selected-color'), 'bottom');
+        tooltips.register(unselectedClrPicker, localize('panel.view-options.unselected-color'), 'bottom');
+        tooltips.register(lockedClrPicker, localize('panel.view-options.locked-color'), 'bottom');
     }
 }
 

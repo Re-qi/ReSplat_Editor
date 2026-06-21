@@ -1,0 +1,128 @@
+@use 'colors.scss' as *;
+
+.point-cloud-group-section {
+    // Inherits from #scene-panel context
+    width: 316px;
+
+    > .panel-header {
+        display: flex;
+        flex-direction: row;
+        align-items: center;
+        padding: 2px;
+        width: 316px;
+        background-color: $bcg-dark;
+
+        > .panel-header-icon {
+            font-family: pc-icon;
+            font-weight: bold;
+            font-size: 13px;
+            color: $clr-hilight;
+            
+            // 统一设置图标大小和边距
+            width: 16px;
+            height: 16px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin: 0 4px;
+
+            > svg {
+                width: 16px !important;
+                height: 16px !important;
+            }
+        }
+
+        > .panel-header-label {
+            color: $text-primary;
+            font-weight: bold;
+            flex-grow: 1;
+            text-transform: uppercase;
+            margin: 0 4px;
+        }
+    }
+}
+
+.point-cloud-group-list {
+    max-height: 150px;
+    overflow: hidden auto;
+    width: 322px;
+}
+
+.point-cloud-group-item {
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    padding: 2px;
+    height: 24px;
+    width: 316px;
+    background-color: $bcg-primary;
+    cursor: pointer;
+
+    &:hover:not(.selected) {
+        background-color: $bcg-dark;
+    }
+
+    &.selected {
+        background-color: $bcg-darker;
+
+        .point-cloud-group-item-name {
+            color: $text-primary;
+        }
+    }
+}
+
+.point-cloud-group-item-name {
+    flex-grow: 1;
+    flex-shrink: 1;
+    color: $text-primary;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.point-cloud-group-delete-btn {
+    flex-grow: 0;
+    flex-shrink: 0;
+    padding: 4px;
+    width: 16px;
+    height: 16px;
+    line-height: 16px;
+    color: $text-secondary;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    margin: 0 5px;
+
+    &:hover {
+        color: $text-primary;
+    }
+}
+
+.point-cloud-group-edit {
+    width: 100%;
+}
+
+.point-cloud-group-toolbar {
+    position: absolute;
+    left: 50%;
+    bottom: 100px;
+    height: 54px;
+    transform: translate(-50%, 0);
+    padding: 0px 8px;
+    border-radius: 8px;
+    background-color: $bcg-primary;
+    z-index: 100;
+
+    &:not(.pcui-hidden) {
+        display: flex;
+    }
+    flex-direction: row;
+    align-items: center;
+}
+
+.point-cloud-group-toolbar-btn {
+    height: 38px;
+    padding: 0px 16px;
+    border-radius: 2px;
+}

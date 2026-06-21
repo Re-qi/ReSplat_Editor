@@ -1,32 +1,34 @@
-import { Container, Element, Label } from '@playcanvas/pcui';
+import { Button, Container, Element, Label } from '@playcanvas/pcui';
 
 import { Events } from '../events';
 import { recentFiles } from '../recent-files';
 import { ShortcutManager } from '../shortcut-manager';
 import { localize } from './localization';
 import { MenuPanel, MenuItem } from './menu-panel';
-import arrowSvg from './svg/arrow.svg';
-import collapseSvg from './svg/collapse.svg';
+import { Tooltips } from './tooltips';
 import selectDelete from './svg/delete.svg';
 import sceneExport from './svg/export.svg';
 import sceneImport from './svg/import.svg';
 import sceneNew from './svg/new.svg';
 import sceneOpen from './svg/open.svg';
-import scenePublish from './svg/publish.svg';
 import sceneSave from './svg/save.svg';
+import wrenchIcon from './svg/wrench.svg';
 import selectAll from './svg/select-all.svg';
+import iterationCw from './svg/iteration-cw.svg';
 import selectDuplicate from './svg/select-duplicate.svg';
 import selectInverse from './svg/select-inverse.svg';
 import selectLock from './svg/select-lock.svg';
 import selectNone from './svg/select-none.svg';
 import selectSeparate from './svg/select-separate.svg';
 import selectUnlock from './svg/select-unlock.svg';
+import squaresUnite from './svg/squares-unite.svg';
 
 const createSvg = (svgString: string) => {
     const decodedStr = decodeURIComponent(svgString.substring('data:image/svg+xml,'.length));
-    return new Element({
-        dom: new DOMParser().parseFromString(decodedStr, 'image/svg+xml').documentElement
-    });
+    const svg = new DOMParser().parseFromString(decodedStr, 'image/svg+xml').documentElement;
+    svg.setAttribute('width', '16');
+    svg.setAttribute('height', '16');
+    return new Element({ dom: svg });
 };
 
 const getOpenRecentItems = async (events: Events) => {
@@ -51,7 +53,7 @@ const getOpenRecentItems = async (events: Events) => {
 };
 
 class Menu extends Container {
-    constructor(events: Events, args = {}) {
+    constructor(events: Events, tooltips: Tooltips, args = {}) {
         args = {
             ...args,
             id: 'menu'
@@ -87,25 +89,6 @@ class Menu extends Container {
             class: 'menu-option'
         });
 
-        const toggleCollapsed = () => {
-            document.body.classList.toggle('collapsed');
-        };
-
-        // collapse menu on mobile
-        if (document.body.clientWidth < 600) {
-            toggleCollapsed();
-        }
-
-        const collapse = createSvg(collapseSvg);
-        collapse.dom.classList.add('menu-icon');
-        collapse.dom.setAttribute('id', 'menu-collapse');
-        collapse.dom.addEventListener('click', toggleCollapsed);
-
-        const arrow = createSvg(arrowSvg);
-        arrow.dom.classList.add('menu-icon');
-        arrow.dom.setAttribute('id', 'menu-arrow');
-        arrow.dom.addEventListener('click', toggleCollapsed);
-
         const buttonsContainer = new Container({
             id: 'menu-bar-options'
         });
@@ -113,8 +96,21 @@ class Menu extends Container {
         buttonsContainer.append(selection);
         buttonsContainer.append(render);
         buttonsContainer.append(help);
-        buttonsContainer.append(collapse);
-        buttonsContainer.append(arrow);
+
+        const viewOptions = new Button({
+            id: 'menu-bar-options-btn',
+            icon: 'E283'
+        });
+
+        buttonsContainer.append(viewOptions);
+
+        tooltips.register(viewOptions, localize('tooltip.right-toolbar.view-options'), 'bottom');
+
+        viewOptions.on('click', () => events.fire('viewPanel.toggleVisible'));
+
+        events.on('viewPanel.visible', (visible: boolean) => {
+            viewOptions.class[visible ? 'add' : 'remove']('active');
+        });
 
         menubar.append(buttonsContainer);
 
@@ -126,6 +122,11 @@ class Menu extends Container {
             icon: createSvg(sceneExport),
             isEnabled: () => !events.invoke('scene.empty'),
             onSelect: () => events.invoke('scene.export', 'ply')
+        }, {
+            text: localize('menu.file.export.standard-ply'),
+            icon: createSvg(sceneExport),
+            isEnabled: () => !events.invoke('scene.empty'),
+            onSelect: () => events.invoke('scene.export', 'standardPly')
         }, {
             text: localize('menu.file.export.splat'),
             icon: createSvg(sceneExport),
@@ -198,10 +199,9 @@ class Menu extends Container {
             icon: createSvg(sceneExport),
             subMenu: exportMenuPanel
         }, {
-            text: localize('menu.file.publish', { ellipsis: true }),
-            icon: createSvg(scenePublish),
-            isEnabled: () => !events.invoke('scene.empty'),
-            onSelect: async () => await events.invoke('show.publishSettingsDialog')
+            text: localize('menu.file.fix-ply', { ellipsis: true }),
+            icon: createSvg(wrenchIcon),
+            onSelect: async () => await events.invoke('ply.fix')
         }]);
 
         const selectionMenuPanel = new MenuPanel([{
@@ -240,19 +240,28 @@ class Menu extends Container {
             onSelect: () => events.fire('select.delete')
         }, {
             text: localize('menu.select.reset'),
+            icon: createSvg(iterationCw),
             onSelect: () => events.fire('scene.reset')
         }, {
             // separator
         }, {
             text: localize('menu.select.duplicate'),
             icon: createSvg(selectDuplicate),
-            isEnabled: () => events.invoke('selection.splats'),
+            extra: shortcutManager.formatShortcut('select.duplicate'),
+            isEnabled: () => events.invoke('selection.hasSplat'),
             onSelect: () => events.fire('select.duplicate')
         }, {
             text: localize('menu.select.separate'),
             icon: createSvg(selectSeparate),
+            extra: shortcutManager.formatShortcut('select.separate'),
             isEnabled: () => events.invoke('selection.splats'),
             onSelect: () => events.fire('select.separate')
+        }, {
+            text: localize('menu.select.merge'),
+            icon: createSvg(squaresUnite),
+            extra: shortcutManager.formatShortcut('select.merge'),
+            isEnabled: () => events.invoke('multiSplatSelection.count') >= 2,
+            onSelect: () => events.fire('select.merge')
         }]);
 
         const renderMenuPanel = new MenuPanel([{
@@ -290,7 +299,7 @@ class Menu extends Container {
         }, {
             text: localize('menu.help.user-guide'),
             icon: 'E232',
-            onSelect: () => window.open('https://developer.playcanvas.com/user-manual/gaussian-splatting/editing/supersplat/', '_blank')?.focus()
+            onSelect: () => window.open('https://developer.playcanvas.com/user-manual/gaussian-splatting/editing/ReSplat/', '_blank')?.focus()
         }, {
             text: localize('menu.help.shortcuts'),
             icon: 'E136',
@@ -310,11 +319,11 @@ class Menu extends Container {
         }, {
             text: localize('menu.help.github-repo'),
             icon: 'E259',
-            onSelect: () => window.open('https://github.com/playcanvas/supersplat', '_blank')?.focus()
+            onSelect: () => window.open('https://github.com/playcanvas/ReSplat', '_blank')?.focus()
         }, {
             text: localize('menu.help.log-issue'),
             icon: 'E336',
-            onSelect: () => window.open('https://github.com/playcanvas/supersplat/issues', '_blank')?.focus()
+            onSelect: () => window.open('https://github.com/playcanvas/ReSplat/issues', '_blank')?.focus()
         }, {
             // separator
         }, {
@@ -354,7 +363,7 @@ class Menu extends Container {
                 });
             };
 
-            option.dom.addEventListener('pointerdown', (event: PointerEvent) => {
+            option.dom.addEventListener('pointerdown', () => {
                 if (!option.menuPanel.hidden) {
                     option.menuPanel.hidden = true;
                 } else {
@@ -362,7 +371,7 @@ class Menu extends Container {
                 }
             });
 
-            option.dom.addEventListener('pointerenter', (event: PointerEvent) => {
+            option.dom.addEventListener('pointerenter', () => {
                 if (!options.every(opt => opt.menuPanel.hidden)) {
                     activate();
                 }

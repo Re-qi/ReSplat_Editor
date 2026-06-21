@@ -12,9 +12,7 @@
     display: block;
     box-sizing: border-box;
     max-width: min(260px, calc(100vw - 24px));
-    white-space: normal;
-    overflow-wrap: break-word;
-    word-wrap: break-word;
+    white-space: nowrap;
 
     color: $clr-default;
     margin: 0;

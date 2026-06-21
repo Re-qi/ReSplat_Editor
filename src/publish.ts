@@ -44,6 +44,7 @@ type User = {
 };
 
 type Scene = {
+    id: string;
     hash: string;
     title: string;
     description: string;
@@ -62,6 +63,7 @@ type PublishSettings = {
     listed: boolean;
     serializeSettings: SerializeSettings;
     experienceSettings: ExperienceSettings;
+    overwriteId?: string;
     overwriteHash?: string;
     overrideModel?: boolean;
     overrideAnimation?: boolean;
@@ -95,8 +97,8 @@ const fetchSceneList = async (user: User) => {
     return (await response.json()).result as Scene[];
 };
 
-const fetchSceneSettings = async (user: User, sceneHash: string): Promise<ExperienceSettings> => {
-    const response = await fetch(`${user.apiServer}/splats/${sceneHash}/settings`, {
+const fetchSceneSettings = async (user: User, sceneId: string): Promise<ExperienceSettings> => {
+    const response = await fetch(`${user.apiServer}/splats/${sceneId}/settings`, {
         method: 'GET',
         headers: {
             'Authorization': `Bearer ${user.token}`
@@ -108,8 +110,8 @@ const fetchSceneSettings = async (user: User, sceneHash: string): Promise<Experi
     return await response.json() as ExperienceSettings;
 };
 
-const updateSceneSettings = async (user: User, sceneHash: string, settings: ExperienceSettings) => {
-    const response = await fetch(`${user.apiServer}/splats/${sceneHash}/settings`, {
+const updateSceneSettings = async (user: User, sceneId: string, settings: ExperienceSettings) => {
+    const response = await fetch(`${user.apiServer}/splats/${sceneId}/settings`, {
         method: 'PUT',
         body: JSON.stringify(settings),
         headers: {
@@ -265,7 +267,7 @@ class PublishWriter implements Writer {
                 }
             });
 
-            const doRepublish = () => fetch(`${user.apiServer}/splats/${publishSettings.overwriteHash}/republish`, {
+            const doRepublish = () => fetch(`${user.apiServer}/splats/${publishSettings.overwriteId}/republish`, {
                 method: 'PUT',
                 body: JSON.stringify({
                     s3Key: startJson.key,
@@ -279,7 +281,7 @@ class PublishWriter implements Writer {
                 }
             });
 
-            const publishResponse = await (publishSettings.overwriteHash ? doRepublish() : doPublish());
+            const publishResponse = await (publishSettings.overwriteId ? doRepublish() : doPublish());
 
             if (!publishResponse.ok) {
                 let msg;
@@ -324,7 +326,7 @@ const registerPublishEvents = (events: Events) => {
                 setTimeout(resolve, 10);
             });
 
-            const { overwriteHash, overrideAnimation } = publishSettings;
+            const { overwriteId, overwriteHash, overrideAnimation } = publishSettings;
             const overrideModel = publishSettings.overrideModel ?? true;
 
             const mergeAnimation = (target: ExperienceSettings, source: ExperienceSettings) => {
@@ -332,15 +334,15 @@ const registerPublishEvents = (events: Events) => {
                 target.startMode = source.startMode;
             };
 
-            if (overwriteHash && !overrideModel) {
+            if (overwriteId && !overrideModel) {
                 if (!overrideAnimation) {
                     throw new Error('No overrides selected');
                 }
 
                 // animation-only update: fetch existing settings, merge animation, PUT settings
-                const existingSettings = await fetchSceneSettings(publishSettings.user, overwriteHash);
+                const existingSettings = await fetchSceneSettings(publishSettings.user, overwriteId);
                 mergeAnimation(existingSettings, publishSettings.experienceSettings);
-                await updateSceneSettings(publishSettings.user, overwriteHash, existingSettings);
+                await updateSceneSettings(publishSettings.user, overwriteId, existingSettings);
 
                 await events.invoke('showPopup', {
                     type: 'info',
@@ -350,9 +352,9 @@ const registerPublishEvents = (events: Events) => {
                 });
             } else {
                 // new scene or model override: upload PLY and publish/republish
-                if (overwriteHash) {
+                if (overwriteId) {
                     // republishing with model override: merge with existing settings
-                    const existingSettings = await fetchSceneSettings(publishSettings.user, overwriteHash);
+                    const existingSettings = await fetchSceneSettings(publishSettings.user, overwriteId);
                     if (overrideAnimation) {
                         mergeAnimation(existingSettings, publishSettings.experienceSettings);
                     }

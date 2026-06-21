@@ -11,6 +11,10 @@
         display: flex;
     }
 
+    & > .panel-header:nth-child(1) {
+        height: 24px;
+    }
+
     & > .view-panel-row {
         display: flex;
         flex-direction: row;

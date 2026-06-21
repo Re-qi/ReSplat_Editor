@@ -90,8 +90,8 @@ class StatusBar extends Container {
             return text;
         };
 
-        tooltips.register(timelineButton, tooltip('tooltip.status-bar.timeline', 'timelinePanel.toggle'), 'top');
-        tooltips.register(splatDataButton, tooltip('tooltip.status-bar.splat-data', 'dataPanel.toggle'), 'top');
+        tooltips.register(timelineButton, tooltip('tooltip.status-bar.timeline', 'timelinePanel.toggle'), 'bottom');
+        tooltips.register(splatDataButton, tooltip('tooltip.status-bar.splat-data', 'dataPanel.toggle'), 'bottom');
 
         // Handle keyboard shortcuts for panel toggles
         events.on('dataPanel.toggle', () => {
