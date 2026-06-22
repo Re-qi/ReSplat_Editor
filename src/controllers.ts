@@ -279,12 +279,18 @@ class PointerController {
             if (typeof e.wheelDeltaX === 'number' && e.wheelDeltaX !== 0) {
                 return e.wheelDeltaX % 120 === 0;
             }
-            // Last-resort fallback for browsers without wheelDelta*.
+            // Fallback for browsers where wheelDelta* is unavailable or 0.
+            // delta{X,Y} values: physical wheels produce near-integer values
+            // (e.g. 100, 125) even with smoothing applied. Trackpads produce
+            // continuously varying fractional values on both axes.
             const { deltaX, deltaY } = event;
             if (deltaX !== 0 && deltaY !== 0) {
                 return false;
             }
-            return Number.isInteger(deltaX) && Number.isInteger(deltaY);
+            // Check if delta values are close to integers (within 1% of 1.0).
+            // Smooth scrolling / DPI scaling can add slight fractional offsets.
+            const isNearInteger = (v: number) => Math.abs(v % 1) < 0.01 || Math.abs(v % 1) > 0.99;
+            return (deltaX === 0 || isNearInteger(deltaX)) && (deltaY === 0 || isNearInteger(deltaY));
         };
 
         const wheel = (event: WheelEvent) => {
