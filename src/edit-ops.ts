@@ -503,21 +503,31 @@ class MergeOp {
     private captureAndRemapGroups() {
         let offset = 0;
 
+        console.log('[MergeOp] captureAndRemapGroups: sourceSplats count =', this.sourceSplats.length);
+
         for (const splat of this.sourceSplats) {
             // Count non-deleted gaussians and build index mapping
             const state = splat.splatData.getProp('state') as Uint8Array;
+            const totalCount = state.length;
             const indexMapping = new Map<number, number>();
             let nonDeletedCount = 0;
+            let deletedCount = 0;
 
             for (let i = 0; i < state.length; i++) {
                 if ((state[i] & State.deleted) === 0) {
                     indexMapping.set(i, offset + nonDeletedCount);
                     nonDeletedCount++;
+                } else {
+                    deletedCount++;
                 }
             }
 
+            console.log(`[MergeOp] splat="${splat.filename}" total=${totalCount} nonDeleted=${nonDeletedCount} deleted=${deletedCount} offset=${offset}`);
+
             // Get groups for this source splat
             const groups = this.scene.events.invoke('pointCloudGroup.getGroupsForSplat', splat) as SerializedGroupData[] | undefined;
+
+            console.log(`[MergeOp] groups for "${splat.filename}":`, groups ? groups.length : 'NONE');
 
             if (groups && groups.length > 0) {
                 // Store original groups for undo
@@ -529,11 +539,20 @@ class MergeOp {
                 // Remap group indices to merged splat indices
                 for (const group of groups) {
                     const remappedIndices: number[] = [];
+                    let skippedCount = 0;
                     for (let j = 0; j < group.indices.length; j++) {
                         const newIndex = indexMapping.get(group.indices[j]);
                         if (newIndex !== undefined) {
                             remappedIndices.push(newIndex);
+                        } else {
+                            skippedCount++;
                         }
+                    }
+
+                    console.log(`[MergeOp] group "${group.name}": original=${group.indices.length} remapped=${remappedIndices.length} skipped=${skippedCount}`);
+                    if (remappedIndices.length > 0 && remappedIndices.length <= 10) {
+                        console.log(`  original indices: [${Array.from(group.indices.slice(0, 10)).join(', ')}]`);
+                        console.log(`  remapped indices: [${remappedIndices.join(', ')}]`);
                     }
 
                     if (remappedIndices.length > 0) {
@@ -547,9 +566,14 @@ class MergeOp {
 
             offset += nonDeletedCount;
         }
+
+        console.log('[MergeOp] total mergedGroupsData count =', this.mergedGroupsData.length);
     }
 
     async do() {
+        console.log('[MergeOp.do] starting, mergedGroupsData count =', this.mergedGroupsData.length);
+        console.log('[MergeOp.do] mergedSplat numSplats =', this.mergedSplat ? this.mergedSplat.splatData.numSplats : 'null (will load)');
+
         // Remove source splats from scene (but keep references)
         for (const splat of this.sourceSplats) {
             this.scene.remove(splat);
@@ -566,8 +590,11 @@ class MergeOp {
 
         await this.scene.add(this.mergedSplat);
 
+        console.log('[MergeOp.do] mergedSplat loaded, numSplats =', this.mergedSplat.splatData.numSplats);
+
         // Add remapped groups to merged splat
         if (this.mergedGroupsData.length > 0 && this.mergedSplat) {
+            console.log('[MergeOp.do] firing addGroupsForSplat with groups:', this.mergedGroupsData.map(g => ({ name: g.name, indicesLen: g.indices.length })));
             this.scene.events.fire('pointCloudGroup.addGroupsForSplat', this.mergedSplat, this.mergedGroupsData);
         }
     }

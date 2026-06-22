@@ -246,12 +246,29 @@ class PointCloudGroup extends Container {
 
         // Add groups for a specific splat from serialized data
         events.on('pointCloudGroup.addGroupsForSplat', (splat: Splat, groupsData: { name: string; indices: Uint32Array }[]) => {
+            console.log(`[PointCloudGroup.addGroupsForSplat] splat="${splat.filename}" numSplats=${splat.splatData.numSplats} groups=${groupsData.length}`);
             for (const gd of groupsData) {
                 const numSplats = splat.splatData.numSplats;
                 const indexSet = new Set<number>();
+                let minIdx = Infinity, maxIdx = -1;
                 for (let i = 0; i < gd.indices.length; i++) {
                     indexSet.add(gd.indices[i]);
+                    if (gd.indices[i] < minIdx) minIdx = gd.indices[i];
+                    if (gd.indices[i] > maxIdx) maxIdx = gd.indices[i];
                 }
+                console.log(`  group "${gd.name}": indices=${gd.indices.length} range=[${minIdx}, ${maxIdx}] maxSplatIdx=${numSplats - 1}`);
+                
+                // Validate indices are within range
+                const outOfRange: number[] = [];
+                for (let i = 0; i < gd.indices.length; i++) {
+                    if (gd.indices[i] >= numSplats) {
+                        outOfRange.push(gd.indices[i]);
+                    }
+                }
+                if (outOfRange.length > 0) {
+                    console.warn(`  WARNING: ${outOfRange.length} indices out of range for "${gd.name}"! Examples: [${outOfRange.slice(0, 10).join(', ')}]`);
+                }
+
                 const ranges = IndexRanges.fromPredicate(numSplats, (i: number) => indexSet.has(i));
 
                 const groupData: PointCloudGroupData = {
@@ -263,9 +280,14 @@ class PointCloudGroup extends Container {
                 this.groups.push(groupData);
             }
 
+            console.log(`[PointCloudGroup.addGroupsForSplat] total groups in this.groups = ${this.groups.length}`);
+
             // Re-render if this splat is currently displayed
             if (this.currentSplat === splat) {
+                console.log('[PointCloudGroup.addGroupsForSplat] rendering groups for current splat');
                 this.renderGroupsForSplat(splat);
+            } else {
+                console.log(`[PointCloudGroup.addGroupsForSplat] currentSplat=${this.currentSplat?.filename || 'null'}, not rendering`);
             }
         });
 
