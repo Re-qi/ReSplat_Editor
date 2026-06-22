@@ -175,7 +175,6 @@ Building on SuperSplat, this project **redesigns the interaction logic**, drawin
 
 > **Language Note**: The developer's native language is Chinese, so the **Chinese UI is fully reviewed and optimized**. Other languages are machine-translated and have not been manually proofread. Community contributions for translation improvements are welcome.
 
-![ReSplat Editor](https://github.com/user-attachments/assets/b6cbb5cc-d3cc-4385-8c71-ab2807fd4fba)
 
 ---
 
