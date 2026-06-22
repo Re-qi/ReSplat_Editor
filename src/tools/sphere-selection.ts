@@ -4,12 +4,12 @@ import { TranslateGizmo, Vec3 } from 'playcanvas';
 import { AddShapeOp, EntityTransformOp } from '../edit-ops';
 import { Element } from '../element';
 import { Events } from '../events';
-import { localize } from '../ui/localization';
 import { Pivot } from '../pivot';
 import { Scene } from '../scene';
 import { SphereShape } from '../sphere-shape';
 import { Splat } from '../splat';
 import { Transform } from '../transform';
+import { localize } from '../ui/localization';
 
 // Tools that have their own select-toolbar and would visually overlap with the wrapper toolbar
 const toolsWithToolbar = new Set(['opacitySelection', 'sizeSelection', 'eyedropperSelection', 'floodSelection', 'measure']);
@@ -109,11 +109,13 @@ class SphereSelection {
         events.on('camera.focalPointPicked', (details: { splat: Splat, position: Vec3 }) => {
             if (!this.active) return;
 
+            // eslint-disable-next-line no-use-before-define
             createSphere(details.position);
         });
 
         // Additional event to create a sphere when tool icon is clicked while already active
         events.on('sphereSelection.create', () => {
+            // eslint-disable-next-line no-use-before-define
             createSphere(scene.camera.focalPoint.clone());
         });
 

@@ -1,10 +1,10 @@
 import { ScaleGizmo } from 'playcanvas';
 
 import { TransformTool } from './transform-tool';
+import { BlockingPlane } from '../blocking-plane';
+import { BoxShape } from '../box-shape';
 import { Events } from '../events';
 import { Scene } from '../scene';
-import { BoxShape } from '../box-shape';
-import { BlockingPlane } from '../blocking-plane';
 import { SphereShape } from '../sphere-shape';
 import { Splat } from '../splat';
 

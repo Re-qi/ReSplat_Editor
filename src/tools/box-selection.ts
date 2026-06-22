@@ -1,15 +1,15 @@
 import { Button, Container } from '@playcanvas/pcui';
 import { TranslateGizmo, Vec3 } from 'playcanvas';
 
-import { AddShapeOp, EntityTransformOp } from '../edit-ops';
 import { BoxShape } from '../box-shape';
+import { AddShapeOp, EntityTransformOp } from '../edit-ops';
 import { Element } from '../element';
 import { Events } from '../events';
-import { localize } from '../ui/localization';
 import { Pivot } from '../pivot';
 import { Scene } from '../scene';
 import { Splat } from '../splat';
 import { Transform } from '../transform';
+import { localize } from '../ui/localization';
 
 // Tools that have their own select-toolbar and would visually overlap with the wrapper toolbar
 const toolsWithToolbar = new Set(['opacitySelection', 'sizeSelection', 'eyedropperSelection', 'floodSelection', 'measure']);
@@ -112,11 +112,13 @@ class BoxSelection {
         events.on('camera.focalPointPicked', (details: { splat: Splat, position: Vec3 }) => {
             if (!this.active) return;
 
+            // eslint-disable-next-line no-use-before-define
             createBox(details.position);
         });
 
         // Additional event to create a box when tool icon is clicked while already active
         events.on('boxSelection.create', () => {
+            // eslint-disable-next-line no-use-before-define
             createBox(scene.camera.focalPoint.clone());
         });
 

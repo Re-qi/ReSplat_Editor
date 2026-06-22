@@ -5,16 +5,14 @@ import { recentFiles } from '../recent-files';
 import { ShortcutManager } from '../shortcut-manager';
 import { localize } from './localization';
 import { MenuPanel, MenuItem } from './menu-panel';
-import { Tooltips } from './tooltips';
 import selectDelete from './svg/delete.svg';
 import sceneExport from './svg/export.svg';
 import sceneImport from './svg/import.svg';
+import iterationCw from './svg/iteration-cw.svg';
 import sceneNew from './svg/new.svg';
 import sceneOpen from './svg/open.svg';
 import sceneSave from './svg/save.svg';
-import wrenchIcon from './svg/wrench.svg';
 import selectAll from './svg/select-all.svg';
-import iterationCw from './svg/iteration-cw.svg';
 import selectDuplicate from './svg/select-duplicate.svg';
 import selectInverse from './svg/select-inverse.svg';
 import selectLock from './svg/select-lock.svg';
@@ -22,6 +20,8 @@ import selectNone from './svg/select-none.svg';
 import selectSeparate from './svg/select-separate.svg';
 import selectUnlock from './svg/select-unlock.svg';
 import squaresUnite from './svg/squares-unite.svg';
+import wrenchIcon from './svg/wrench.svg';
+import { Tooltips } from './tooltips';
 
 const createSvg = (svgString: string) => {
     const decodedStr = decodeURIComponent(svgString.substring('data:image/svg+xml,'.length));

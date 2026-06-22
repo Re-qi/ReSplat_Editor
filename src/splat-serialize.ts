@@ -667,7 +667,7 @@ const serializeStandardPly = async (splats: Splat[], serializeSettings: Serializ
 
     // Create SingleSplat reader for properties that exist in source
     // We need to request all properties we want to read
-    const propsToRead = props.map(p => p.name).filter(name => {
+    const propsToRead = props.map(p => p.name).filter((name) => {
         // Always try to read these core properties
         if (['x', 'y', 'z', 'f_dc_0', 'f_dc_1', 'f_dc_2', 'opacity',
             'scale_0', 'scale_1', 'scale_2',

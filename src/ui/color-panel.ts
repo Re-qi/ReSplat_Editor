@@ -4,12 +4,12 @@ import { Color } from 'playcanvas';
 import { Events } from '../events';
 import { localize } from './localization';
 import { Tooltips } from './tooltips';
-import { SetSplatColorAdjustmentOp } from '../edit-ops';
-import { Splat } from '../splat';
-import { SphereShape } from '../sphere-shape';
-import { BoxShape } from '../box-shape';
 import { BlockingPlane } from '../blocking-plane';
+import { BoxShape } from '../box-shape';
+import { SetSplatColorAdjustmentOp } from '../edit-ops';
 import { Element } from '../element';
+import { SphereShape } from '../sphere-shape';
+import { Splat } from '../splat';
 
 // pcui slider doesn't include start and end events
 class MyFancySliderInput extends SliderInput {
@@ -31,7 +31,7 @@ class ColorPanel extends Container {
             ...args,
             id: 'color-panel',
             class: embedded ? '' : 'panel',
-            hidden: embedded ? false : true
+            hidden: !embedded
         };
 
         super(args);

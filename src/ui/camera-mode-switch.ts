@@ -58,10 +58,12 @@ class CameraModeSwitch extends Container {
 
         orbitMode.on('click', () => {
             events.fire('camera.setControlMode', 'orbit');
+            // eslint-disable-next-line no-use-before-define
             showSpeedPopup();
         });
         flyMode.on('click', () => {
             events.fire('camera.setControlMode', 'fly');
+            // eslint-disable-next-line no-use-before-define
             showSpeedPopup();
         });
 
@@ -165,7 +167,9 @@ class CameraModeSwitch extends Container {
         events.on('camera.flySpeed', (value: number) => {
             suppressChange = true;
             speedSlider.value = value;
-            setTimeout(() => { suppressChange = false; }, 0);
+            setTimeout(() => {
+                suppressChange = false;
+            }, 0);
             if (currentControlMode !== 'fly') return;
             showSpeedPopup();
         });

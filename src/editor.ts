@@ -9,9 +9,9 @@ import { Element, ElementType } from './element';
 import { Events } from './events';
 import { MappedReadFileSystem } from './io';
 import { Scene } from './scene';
+import { SphereShape } from './sphere-shape';
 import { Splat } from './splat';
 import { serializePly } from './splat-serialize';
-import { SphereShape } from './sphere-shape';
 
 const removeExtension = (filename: string) => {
     return filename.substring(0, filename.length - path.getExtension(filename).length);
@@ -331,7 +331,7 @@ const registerEditorEvents = (events: Events, editHistory: EditHistory, scene: S
         });
     });
 
-    const intersectCenters = async (splat: Splat, op: 'add'|'remove'|'set', options: any) => {
+    const intersectCenters = (splat: Splat, op: 'add'|'remove'|'set', options: any) => {
         // run the GPU intersect inside one queued task so the gpu readback is
         // ordered relative to other queued history ops (rapid drag + undo,
         // drag-while-camera-settling, etc).
@@ -377,13 +377,13 @@ const registerEditorEvents = (events: Events, editHistory: EditHistory, scene: S
             return {
                 box: { x: p.x, y: p.y, z: p.z, lenx: selection.lenX, leny: selection.lenY, lenz: selection.lenZ, rx: r.x, ry: r.y, rz: r.z, rw: r.w }
             };
-        } else {
-            const p = selection.pivot.getPosition();
-            const r = selection.pivot.getLocalRotation();
-            return {
-                sphere: { x: p.x, y: p.y, z: p.z, radiusX: selection.radiusX, radiusY: selection.radiusY, radiusZ: selection.radiusZ, rx: r.x, ry: r.y, rz: r.z, rw: r.w }
-            };
         }
+        const p = selection.pivot.getPosition();
+        const r = selection.pivot.getLocalRotation();
+        return {
+            sphere: { x: p.x, y: p.y, z: p.z, radiusX: selection.radiusX, radiusY: selection.radiusY, radiusZ: selection.radiusZ, rx: r.x, ry: r.y, rz: r.z, rw: r.w }
+        };
+
     };
 
     events.on('select.bySphere', async (op: 'add'|'remove'|'set', sphere: number[]) => {
@@ -429,7 +429,7 @@ const registerEditorEvents = (events: Events, editHistory: EditHistory, scene: S
 
                 const numSplats = splatData.numSplats;
                 const mask = new Uint8Array(numSplats);
-                
+
                 // Convert normalized rect to pixel coordinates
                 const sx1 = rect.start.x * width;
                 const sy1 = rect.start.y * height;
@@ -445,7 +445,7 @@ const registerEditorEvents = (events: Events, editHistory: EditHistory, scene: S
                     mat.transformVec4(vec4, vec4);
                     const px = (vec4.x / vec4.w * 0.5 + 0.5) * width;
                     const py = (-vec4.y / vec4.w * 0.5 + 0.5) * height;
-                    
+
                     if (px >= minX && px <= maxX && py >= minY && py <= maxY) {
                         // Check if splat is blocked by any blocking plane
                         worldPos.set(x[i], y[i], z[i]);
@@ -472,10 +472,10 @@ const registerEditorEvents = (events: Events, editHistory: EditHistory, scene: S
                 const x = splat.splatData.getProp('x');
                 const y = splat.splatData.getProp('y');
                 const z = splat.splatData.getProp('z');
-                
+
                 const filteredIds = new Set<number>();
                 const uniqueIds = new Set(pick);
-                
+
                 for (const pickId of uniqueIds) {
                     if (pickId !== undefined && pickId !== 0xffffffff && x && y && z && pickId < x.length) {
                         worldPos.set(x[pickId], y[pickId], z[pickId]);
@@ -500,8 +500,8 @@ const registerEditorEvents = (events: Events, editHistory: EditHistory, scene: S
 
         // When a bound shape is selected, restrict flood fill to points inside the shape
         const shapeSel = events.invoke('shapeSelection');
-        const boundOptions = (shapeSel instanceof BoxShape || shapeSel instanceof SphereShape)
-            ? getBoundIntersectOptions(shapeSel) : null;
+        const boundOptions = (shapeSel instanceof BoxShape || shapeSel instanceof SphereShape) ?
+            getBoundIntersectOptions(shapeSel) : null;
 
         for (const splat of selectedSplats()) {
             if (mode === 'centers' || overlay) {
@@ -515,9 +515,11 @@ const registerEditorEvents = (events: Events, editHistory: EditHistory, scene: S
                 maskTexture.setSource(canvas);
 
                 if (boundOptions) {
+                    // Capture local copy to avoid no-loop-func
+                    const mt = maskTexture;
                     // Two-pass: flood mask AND bound mask
                     scene.commandQueue.enqueue(async () => {
-                        const floodData = await scene.dataProcessor.intersect({ mask: maskTexture }, splat);
+                        const floodData = await scene.dataProcessor.intersect({ mask: mt }, splat);
                         const boundData = await scene.dataProcessor.intersect(boundOptions, splat);
                         for (let i = 0; i < floodData.length; i++) {
                             floodData[i] = floodData[i] && boundData[i];
@@ -721,8 +723,8 @@ const registerEditorEvents = (events: Events, editHistory: EditHistory, scene: S
 
         // When a bound shape is selected, only match colors within the shape
         const shapeSel = events.invoke('shapeSelection');
-        const boundOptions = (shapeSel instanceof BoxShape || shapeSel instanceof SphereShape)
-            ? getBoundIntersectOptions(shapeSel) : null;
+        const boundOptions = (shapeSel instanceof BoxShape || shapeSel instanceof SphereShape) ?
+            getBoundIntersectOptions(shapeSel) : null;
 
         // Clamp normalized coordinates to valid range
         const nx = Math.max(0, Math.min(1, point.x));
@@ -852,8 +854,8 @@ const registerEditorEvents = (events: Events, editHistory: EditHistory, scene: S
 
         const opacityThreshold = Math.min(1, Math.max(0, Number.isFinite(threshold) ? threshold : 0));
         const shapeSel = events.invoke('shapeSelection');
-        const boundOptions = (shapeSel instanceof BoxShape || shapeSel instanceof SphereShape)
-            ? getBoundIntersectOptions(shapeSel) : null;
+        const boundOptions = (shapeSel instanceof BoxShape || shapeSel instanceof SphereShape) ?
+            getBoundIntersectOptions(shapeSel) : null;
 
         splats.forEach((splat) => {
             const opacities = splat.splatData.getProp('opacity') as Float32Array;
@@ -895,8 +897,8 @@ const registerEditorEvents = (events: Events, editHistory: EditHistory, scene: S
 
         const sizeThreshold = Math.max(0, Number.isFinite(threshold) ? threshold : 0);
         const shapeSel = events.invoke('shapeSelection');
-        const boundOptions = (shapeSel instanceof BoxShape || shapeSel instanceof SphereShape)
-            ? getBoundIntersectOptions(shapeSel) : null;
+        const boundOptions = (shapeSel instanceof BoxShape || shapeSel instanceof SphereShape) ?
+            getBoundIntersectOptions(shapeSel) : null;
 
         splats.forEach((splat) => {
             const sizeX = splat.splatData.getProp('scale_0') as Float32Array;

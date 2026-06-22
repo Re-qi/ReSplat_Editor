@@ -8,8 +8,8 @@ import { CommandQueue } from './command-queue';
 import { registerDocEvents } from './doc';
 import { EditHistory } from './edit-history';
 import { AddShapeOp, SelectOp } from './edit-ops';
-import { ElementType } from './element';
 import { registerEditorEvents } from './editor';
+import { ElementType } from './element';
 import { Events } from './events';
 import { initFileHandler } from './file-handler';
 import { registerIframeApi } from './iframe-api';
@@ -18,9 +18,9 @@ import { registerPlySequenceEvents } from './ply-sequence';
 import { registerRenderEvents } from './render';
 import { Scene } from './scene';
 import { getSceneConfig } from './scene-config';
-import { Splat } from './splat';
 import { registerSelectionEvents } from './selection';
 import { ShortcutManager } from './shortcut-manager';
+import { Splat } from './splat';
 import { registerTimelineEvents } from './timeline';
 import { BoxSelection } from './tools/box-selection';
 import { BrushSelection } from './tools/brush-selection';
@@ -138,28 +138,28 @@ const main = async () => {
     events.function('mouse.buttonsPressed', () => mouseButtonsPressed);
     const flyKeyState: Record<string, boolean> = {};
     const releaseFlyKeys = () => {
-        if (flyKeyState['w']) {
-            flyKeyState['w'] = false;
+        if (flyKeyState.w) {
+            flyKeyState.w = false;
             events.fire('camera.fly.forward', false);
         }
-        if (flyKeyState['a']) {
-            flyKeyState['a'] = false;
+        if (flyKeyState.a) {
+            flyKeyState.a = false;
             events.fire('camera.fly.left', false);
         }
-        if (flyKeyState['s']) {
-            flyKeyState['s'] = false;
+        if (flyKeyState.s) {
+            flyKeyState.s = false;
             events.fire('camera.fly.backward', false);
         }
-        if (flyKeyState['d']) {
-            flyKeyState['d'] = false;
+        if (flyKeyState.d) {
+            flyKeyState.d = false;
             events.fire('camera.fly.right', false);
         }
-        if (flyKeyState['q']) {
-            flyKeyState['q'] = false;
+        if (flyKeyState.q) {
+            flyKeyState.q = false;
             events.fire('camera.fly.down', false);
         }
-        if (flyKeyState['e']) {
-            flyKeyState['e'] = false;
+        if (flyKeyState.e) {
+            flyKeyState.e = false;
             events.fire('camera.fly.up', false);
         }
     };
@@ -237,22 +237,22 @@ const main = async () => {
         } else {
             // Mouse pressed → camera fly control
             if (key === 'w') {
-                flyKeyState['w'] = true;
+                flyKeyState.w = true;
                 events.fire('camera.fly.forward', true);
             } else if (key === 'a') {
-                flyKeyState['a'] = true;
+                flyKeyState.a = true;
                 events.fire('camera.fly.left', true);
             } else if (key === 's') {
-                flyKeyState['s'] = true;
+                flyKeyState.s = true;
                 events.fire('camera.fly.backward', true);
             } else if (key === 'd') {
-                flyKeyState['d'] = true;
+                flyKeyState.d = true;
                 events.fire('camera.fly.right', true);
             } else if (key === 'q') {
-                flyKeyState['q'] = true;
+                flyKeyState.q = true;
                 events.fire('camera.fly.down', true);
             } else if (key === 'e') {
-                flyKeyState['e'] = true;
+                flyKeyState.e = true;
                 events.fire('camera.fly.up', true);
             }
             // R/Q do nothing when mouse is pressed
@@ -272,23 +272,23 @@ const main = async () => {
         e.preventDefault();
         e.stopPropagation();
 
-        if (key === 'w' && flyKeyState['w']) {
-            flyKeyState['w'] = false;
+        if (key === 'w' && flyKeyState.w) {
+            flyKeyState.w = false;
             events.fire('camera.fly.forward', false);
-        } else if (key === 'a' && flyKeyState['a']) {
-            flyKeyState['a'] = false;
+        } else if (key === 'a' && flyKeyState.a) {
+            flyKeyState.a = false;
             events.fire('camera.fly.left', false);
-        } else if (key === 's' && flyKeyState['s']) {
-            flyKeyState['s'] = false;
+        } else if (key === 's' && flyKeyState.s) {
+            flyKeyState.s = false;
             events.fire('camera.fly.backward', false);
-        } else if (key === 'd' && flyKeyState['d']) {
-            flyKeyState['d'] = false;
+        } else if (key === 'd' && flyKeyState.d) {
+            flyKeyState.d = false;
             events.fire('camera.fly.right', false);
-        } else if (key === 'q' && flyKeyState['q']) {
-            flyKeyState['q'] = false;
+        } else if (key === 'q' && flyKeyState.q) {
+            flyKeyState.q = false;
             events.fire('camera.fly.down', false);
-        } else if (key === 'e' && flyKeyState['e']) {
-            flyKeyState['e'] = false;
+        } else if (key === 'e' && flyKeyState.e) {
+            flyKeyState.e = false;
             events.fire('camera.fly.up', false);
         }
     }, true);
@@ -333,7 +333,7 @@ const main = async () => {
     const selectedClr = new Color();
     const unselectedClr = new Color();
     const lockedClr = new Color();
-    
+
     // display mode: color or depth
     let displayMode: 'color' | 'depth' = 'color';
 
@@ -382,13 +382,13 @@ const main = async () => {
     events.function('lockedClr', () => {
         return lockedClr;
     });
-    
+
     // display mode
     events.on('view.displayMode', (mode: 'color' | 'depth') => {
         displayMode = mode;
         scene.forceRender = true;
     });
-    
+
     events.function('view.displayMode', () => {
         return displayMode;
     });
@@ -613,7 +613,7 @@ const main = async () => {
         const sel = events.invoke('shapeSelection') as BlockingPlane;
         if (sel instanceof BlockingPlane) {
             const splats = scene.getElementsByType(ElementType.splat) as Splat[];
-            splats.forEach(splat => {
+            splats.forEach((splat) => {
                 const x = splat.splatData.getProp('x') as Float32Array;
                 const y = splat.splatData.getProp('y') as Float32Array;
                 const z = splat.splatData.getProp('z') as Float32Array;

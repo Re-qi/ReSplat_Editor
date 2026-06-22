@@ -3,22 +3,22 @@ import { Button, Element, Container } from '@playcanvas/pcui';
 import { Events } from '../events';
 import { ShortcutManager } from '../shortcut-manager';
 import { localize, formatTooltipWithShortcut } from './localization';
+import coordSpaceSvg from './svg/compass.svg';
+import translateSvg from './svg/move.svg';
+import originSvg from './svg/origin.svg';
 import redoSvg from './svg/redo.svg';
+import rotateSvg from './svg/rotate.svg';
+import measureSvg from './svg/ruler.svg';
+import scaleSvg from './svg/scale.svg';
 import brushSvg from './svg/select-brush.svg';
 import eyedropperSvg from './svg/select-eyedropper.svg';
 import floodSvg from './svg/select-flood.svg';
+import sizeSvg from './svg/select-inverse.svg';
 import lassoSvg from './svg/select-lasso.svg';
 import opacitySvg from './svg/select-opacity.svg';
 import pickerSvg from './svg/select-picker.svg';
 import polygonSvg from './svg/select-poly.svg';
-import sizeSvg from './svg/select-inverse.svg';
 import undoSvg from './svg/undo.svg';
-import translateSvg from './svg/move.svg';
-import rotateSvg from './svg/rotate.svg';
-import scaleSvg from './svg/scale.svg';
-import measureSvg from './svg/ruler.svg';
-import coordSpaceSvg from './svg/compass.svg';
-import originSvg from './svg/origin.svg';
 import { Tooltips } from './tooltips';
 
 const createSvg = (svgString: string) => {
@@ -258,8 +258,11 @@ class BottomToolbar extends Container {
         const cleanupLongPressDrag = () => {
             isLongPressDrag = false;
             isLongPress = false;
+            // eslint-disable-next-line no-use-before-define
             hideFloodPopup();
+            // eslint-disable-next-line no-use-before-define
             document.removeEventListener('mouseup', onDocMouseUpCapture, true);
+            // eslint-disable-next-line no-use-before-define
             document.removeEventListener('mousemove', onDocMouseMoveCapture, true);
             // Reset all popup button hover states
             for (const btn of popupButtonActions) {
@@ -431,6 +434,7 @@ class BottomToolbar extends Container {
                 updateFloodSvg(toolName);
                 // 更新 tooltip
                 tooltips.unregister(flood);
+                // eslint-disable-next-line no-use-before-define
                 tooltips.register(flood, tooltip(floodTooltipMap[toolName], `tool.${toolName}`));
             }
         });
