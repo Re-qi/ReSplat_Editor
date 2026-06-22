@@ -323,14 +323,14 @@ class Splat extends Element {
         const isSceneSelection = events.invoke('splatSelection') === this;
         const hasSelectedGaussians = this.numSelected > 0;
         const renderOverlays = this.scene.camera.renderOverlays;
-        const selected = renderOverlays && (isSceneSelection || hasSelectedGaussians);
+        const hasSelection = isSceneSelection || hasSelectedGaussians;
+        const selected = renderOverlays && hasSelection;
         const cameraMode = events.invoke('camera.mode');
-        const cameraOverlay = events.invoke('camera.overlay');
 
-        // configure rings rendering
+        // configure rings rendering - rings show whenever there's a selection, regardless of overlay
         const material = this.entity.gsplat.instance.material;
         material.setParameter('outlineMode', events.invoke('view.outlineSelection') ? 1 : 0);
-        material.setParameter('ringSize', (selected && cameraOverlay && cameraMode === 'rings') ? 0.04 : 0);
+        material.setParameter('ringSize', (hasSelection && cameraMode === 'rings') ? 0.04 : 0);
 
         // configure colors
         const selectedClr = events.invoke('selectedClr');

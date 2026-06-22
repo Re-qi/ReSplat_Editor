@@ -5,8 +5,8 @@ import { localize } from './localization';
 import centersSvg from './svg/centers.svg';
 import chevronDownSvg from './svg/chevron-down.svg';
 import chevronUpSvg from './svg/chevron-up.svg';
-import circleSvg from './svg/circle.svg';
 import ringsSvg from './svg/rings.svg';
+import circleSvg from './svg/circle.svg';
 import { Tooltips } from './tooltips';
 
 const createSvg = (svgString: string) => {
@@ -134,118 +134,8 @@ class ModeToggle extends Container {
 
         this.dom.addEventListener('pointerdown', (event) => {
             event.stopPropagation();
+            dropdownMenu.hidden = !dropdownMenu.hidden;
         });
-
-        // ---- Long-press / drag-to-select interaction ----
-        // Hold down on mode-toggle → after 200ms (or right-drag ≥20px) → open
-        // dropdown → drag to an item → release to select that mode.
-        let longPressTimer: ReturnType<typeof setTimeout> | null = null;
-        let isLongPressDrag = false;
-        let dragStartX = 0;
-        const SWIPE_THRESHOLD = 20;
-
-        const modeActions: Array<{ element: HTMLElement; mode: string }> = [
-            { element: splatOption.dom, mode: 'splat' },
-            { element: centersOption.dom, mode: 'centers' },
-            { element: ringsOption.dom, mode: 'rings' }
-        ];
-
-        const findModeItemAtPoint = (x: number, y: number) => {
-            const el = document.elementFromPoint(x, y);
-            if (!el) return null;
-            for (const item of modeActions) {
-                if (item.element === el || item.element.contains(el)) {
-                    return item;
-                }
-            }
-            return null;
-        };
-
-        const cleanupDrag = () => {
-            isLongPressDrag = false;
-            dropdownMenu.hidden = true;
-            // eslint-disable-next-line no-use-before-define
-            document.removeEventListener('mouseup', onDocMouseUpCapture, true);
-            // eslint-disable-next-line no-use-before-define
-            document.removeEventListener('mousemove', onDocMouseMove, true);
-            for (const item of modeActions) {
-                item.element.classList.remove('longpress-hover');
-            }
-        };
-
-        const onDocMouseMove = (e: MouseEvent) => {
-            const hovered = findModeItemAtPoint(e.clientX, e.clientY);
-            for (const item of modeActions) {
-                item.element.classList.toggle('longpress-hover', item === hovered);
-            }
-        };
-
-        const onDocMouseUpCapture = (e: MouseEvent) => {
-            if (e.button !== 0) return;
-            const hit = findModeItemAtPoint(e.clientX, e.clientY);
-            if (hit) {
-                events.fire('camera.setMode', hit.mode);
-            }
-            cleanupDrag();
-        };
-
-        const startDrag = () => {
-            if (longPressTimer) {
-                clearTimeout(longPressTimer);
-                longPressTimer = null;
-            }
-            isLongPressDrag = true;
-            dropdownMenu.hidden = false;
-            document.addEventListener('mouseup', onDocMouseUpCapture, true);
-            document.addEventListener('mousemove', onDocMouseMove, true);
-        };
-
-        this.dom.addEventListener('mousedown', (e) => {
-            if (e.button !== 0) return;
-            isLongPressDrag = false;
-            dragStartX = e.clientX;
-            longPressTimer = setTimeout(startDrag, 200);
-        });
-
-        this.dom.addEventListener('mousemove', (e) => {
-            if (isLongPressDrag || !longPressTimer) return;
-            if (e.clientX - dragStartX >= SWIPE_THRESHOLD) {
-                startDrag();
-                // highlight item under cursor after popup shown
-                const hovered = findModeItemAtPoint(e.clientX, e.clientY);
-                for (const item of modeActions) {
-                    item.element.classList.toggle('longpress-hover', item === hovered);
-                }
-            }
-        });
-
-        this.dom.addEventListener('mouseup', (e) => {
-            if (e.button !== 0) return;
-            if (isLongPressDrag) return;
-            if (longPressTimer) {
-                clearTimeout(longPressTimer);
-                longPressTimer = null;
-                // Short click: toggle dropdown
-                dropdownMenu.hidden = !dropdownMenu.hidden;
-            }
-        });
-
-        this.dom.addEventListener('mouseleave', () => {
-            if (longPressTimer) {
-                clearTimeout(longPressTimer);
-                longPressTimer = null;
-            }
-        });
-
-        // Click outside closes dropdown (skip during drag)
-        document.addEventListener('pointerdown', (e) => {
-            if (isLongPressDrag) return;
-            if (!this.dom.contains(e.target as Node)) {
-                dropdownMenu.hidden = true;
-            }
-        });
-
-        // ---- Click handlers for dropdown items (for normal click users) ----
 
         centersOption.dom.addEventListener('pointerdown', (event) => {
             event.stopPropagation();
@@ -262,6 +152,10 @@ class ModeToggle extends Container {
         splatOption.dom.addEventListener('pointerdown', (event) => {
             event.stopPropagation();
             events.fire('camera.setMode', 'splat');
+            dropdownMenu.hidden = true;
+        });
+
+        document.addEventListener('pointerdown', () => {
             dropdownMenu.hidden = true;
         });
 

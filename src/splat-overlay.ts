@@ -190,7 +190,6 @@ class SplatOverlay extends Element {
         return splat &&
             events.invoke('camera.splatSize') > 0 &&
             scene.camera.renderOverlays &&
-            events.invoke('camera.overlay') &&
             events.invoke('camera.mode') === 'centers';
     }
 }
