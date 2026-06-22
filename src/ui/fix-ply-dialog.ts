@@ -218,7 +218,7 @@ class FixPlyDialog extends Container {
 
                     if (selectedFile) {
                         resolve({ source: 'file', file: selectedFile });
-                        return;
+
                     }
                 };
             }).finally(() => {

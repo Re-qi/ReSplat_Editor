@@ -34,7 +34,6 @@ class ScenePanel extends Container {
         });
 
 
-
         const sceneHeader = new Container({
             class: 'panel-header'
         });

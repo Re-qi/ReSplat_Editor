@@ -59,7 +59,7 @@ const defaultShortcuts: Record<string, ShortcutBinding> = {
     'bottomToolbar.toggle': { keys: ['t'] },
     'scenePanel.toggle': { keys: ['n'] },
 
-    'camera.toggleOverlay': { keys: ['z'], alt: 'required', capture: true },
+    'camera.toggleOverlay': { keys: ['z'], alt: 'required', capture: true }
 
     // Camera fly keys - handled by main.ts for conditional mouse state checking
     // (W/A/S/D/Q/E are intercepted there to switch tools when no mouse is pressed)

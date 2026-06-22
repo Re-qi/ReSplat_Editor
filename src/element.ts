@@ -34,11 +34,11 @@ class Element {
         this.uid = nextUid++;
     }
 
+    set visible(value: boolean) {}
+
     get visible(): boolean {
         return true;
     }
-
-    set visible(value: boolean) {}
 
     destroy() {
         if (this.scene) {

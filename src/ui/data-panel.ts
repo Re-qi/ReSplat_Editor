@@ -289,7 +289,6 @@ class DataPanel extends Container {
             // with no active row to indicate it.
             if (allProps.length > 0 && !allProps.includes(selectedDataProp)) {
                 selectedDataProp = allProps[0];
-                // eslint-disable-next-line no-use-before-define
                 inputs.mode = propModeFor(selectedDataProp) ?? 0;
             }
 
@@ -306,13 +305,12 @@ class DataPanel extends Container {
 
                 item.addEventListener('click', () => {
                     selectedDataProp = prop;
-                    // eslint-disable-next-line no-use-before-define
                     inputs.mode = propModeFor(prop) ?? 0;
                     dataListBox.dom.querySelectorAll('.data-list-item').forEach((el) => {
                         el.classList.remove('active');
                     });
                     item.classList.add('active');
-                    tick(); // eslint-disable-line no-use-before-define
+                    tick();
                 });
 
                 dataListBox.dom.appendChild(item);
@@ -478,7 +476,6 @@ class DataPanel extends Container {
                         logScale: inputs.logScale
                     });
 
-                    // eslint-disable-next-line no-use-before-define
                     refreshRange();
                 } catch (err) {
                     // clear lastHash so the next tick with the same inputs retries

@@ -16,8 +16,8 @@ import {
 
 import { Element, ElementType } from './element';
 import { Serializer } from './serializer';
-import { Transform } from './transform';
 import { vertexShader, fragmentShader } from './shaders/blocking-plane-shader';
+import { Transform } from './transform';
 
 class BlockingPlane extends Element {
     _sizeX = 4;

@@ -16,8 +16,8 @@ import {
 
 import { Element, ElementType } from './element';
 import { Serializer } from './serializer';
-import { Transform } from './transform';
 import { vertexShader, fragmentShader } from './shaders/sphere-shape-shader';
+import { Transform } from './transform';
 
 class SphereShape extends Element {
     _radius = 1;
