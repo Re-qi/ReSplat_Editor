@@ -230,6 +230,45 @@ class PointCloudGroup extends Container {
             return this._activeGroup;
         });
 
+        // Get serializable group data for a specific splat
+        events.function('pointCloudGroup.getGroupsForSplat', (splat: Splat) => {
+            return this.groups
+                .filter(g => g.splat === splat)
+                .map(g => {
+                    const ids: number[] = [];
+                    g.ranges.forEach(i => ids.push(i));
+                    return {
+                        name: g.name,
+                        indices: new Uint32Array(ids).sort()
+                    };
+                });
+        });
+
+        // Add groups for a specific splat from serialized data
+        events.on('pointCloudGroup.addGroupsForSplat', (splat: Splat, groupsData: { name: string; indices: Uint32Array }[]) => {
+            for (const gd of groupsData) {
+                const numSplats = splat.splatData.numSplats;
+                const indexSet = new Set<number>();
+                for (let i = 0; i < gd.indices.length; i++) {
+                    indexSet.add(gd.indices[i]);
+                }
+                const ranges = IndexRanges.fromPredicate(numSplats, (i: number) => indexSet.has(i));
+
+                const groupData: PointCloudGroupData = {
+                    name: gd.name,
+                    splat: splat,
+                    ranges: ranges
+                };
+
+                this.groups.push(groupData);
+            }
+
+            // Re-render if this splat is currently displayed
+            if (this.currentSplat === splat) {
+                this.renderGroupsForSplat(splat);
+            }
+        });
+
         // Selection changed: show groups only for currently selected splat
         const updateVisibility = (splat: any) => {
             if (splat instanceof Splat) {

@@ -194,8 +194,11 @@ class Splat extends Element {
             await this.updateLocalBounds();
         }
 
-        this.scene.forceRender = true;
-        this.scene.events.fire('splat.stateChanged', this);
+        // Check if scene still exists after async operation (splat may have been removed)
+        if (this.scene) {
+            this.scene.forceRender = true;
+            this.scene.events.fire('splat.stateChanged', this);
+        }
     }
 
     async updatePositions() {
@@ -215,8 +218,11 @@ class Splat extends Element {
 
         await this.updateSorting();
 
-        this.scene.forceRender = true;
-        this.scene.events.fire('splat.positionsChanged', this);
+        // Check if scene still exists after async operation (splat may have been removed)
+        if (this.scene) {
+            this.scene.forceRender = true;
+            this.scene.events.fire('splat.positionsChanged', this);
+        }
     }
 
     async updateSorting() {
@@ -249,7 +255,9 @@ class Splat extends Element {
     set name(newName: string) {
         if (newName !== this.name) {
             this._name = newName;
-            this.scene.events.fire('splat.name', this);
+            if (this.scene) {
+                this.scene.events.fire('splat.name', this);
+            }
         }
     }
 
@@ -414,19 +422,26 @@ class Splat extends Element {
 
         this.updateWorldBound();
 
-        this.scene.events.fire('splat.moved', this);
+        if (this.scene) {
+            this.scene.events.fire('splat.moved', this);
+        }
     }
 
     // calculate both selection and local bounds (async, callers must await)
     async updateLocalBounds(): Promise<void> {
         await this.scene.dataProcessor.calcBound(this, this.selectionBoundStorage, this.localBoundStorage);
-        this.updateWorldBound();
+        // Check if scene still exists after async operation (splat may have been removed)
+        if (this.scene) {
+            this.updateWorldBound();
+        }
     }
 
     // update world bound from local bound (synchronous)
     private updateWorldBound() {
         this.worldBoundStorage.setFromTransformedAabb(this.localBoundStorage, this.entity.getWorldTransform());
-        this.scene.boundDirty = true;
+        if (this.scene) {
+            this.scene.boundDirty = true;
+        }
     }
 
     // get the selection bound

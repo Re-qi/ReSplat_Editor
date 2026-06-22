@@ -473,6 +473,135 @@ class AddShapeOp {
     }
 }
 
+interface SerializedGroupData {
+    name: string;
+    indices: Uint32Array;
+}
+
+class MergeOp {
+    name = 'merge';
+    scene: Scene;
+    sourceSplats: Splat[];
+    mergedSplat: Splat | null;
+    mergedFilename: string;
+    mergedData: Uint8Array | null;
+    sourceGroupsData: Map<Splat, SerializedGroupData[]>;
+    mergedGroupsData: SerializedGroupData[];
+
+    constructor(scene: Scene, sourceSplats: Splat[], mergedFilename: string, mergedData: Uint8Array) {
+        this.scene = scene;
+        this.sourceSplats = sourceSplats;
+        this.mergedSplat = null;
+        this.mergedFilename = mergedFilename;
+        this.mergedData = mergedData;
+        this.sourceGroupsData = new Map();
+        this.mergedGroupsData = [];
+
+        this.captureAndRemapGroups();
+    }
+
+    private captureAndRemapGroups() {
+        let offset = 0;
+
+        for (const splat of this.sourceSplats) {
+            // Count non-deleted gaussians and build index mapping
+            const state = splat.splatData.getProp('state') as Uint8Array;
+            const indexMapping = new Map<number, number>();
+            let nonDeletedCount = 0;
+
+            for (let i = 0; i < state.length; i++) {
+                if ((state[i] & State.deleted) === 0) {
+                    indexMapping.set(i, offset + nonDeletedCount);
+                    nonDeletedCount++;
+                }
+            }
+
+            // Get groups for this source splat
+            const groups = this.scene.events.invoke('pointCloudGroup.getGroupsForSplat', splat) as SerializedGroupData[] | undefined;
+
+            if (groups && groups.length > 0) {
+                // Store original groups for undo
+                this.sourceGroupsData.set(splat, groups.map(g => ({
+                    name: g.name,
+                    indices: new Uint32Array(g.indices)
+                })));
+
+                // Remap group indices to merged splat indices
+                for (const group of groups) {
+                    const remappedIndices: number[] = [];
+                    for (let j = 0; j < group.indices.length; j++) {
+                        const newIndex = indexMapping.get(group.indices[j]);
+                        if (newIndex !== undefined) {
+                            remappedIndices.push(newIndex);
+                        }
+                    }
+
+                    if (remappedIndices.length > 0) {
+                        this.mergedGroupsData.push({
+                            name: group.name,
+                            indices: new Uint32Array(remappedIndices).sort()
+                        });
+                    }
+                }
+            }
+
+            offset += nonDeletedCount;
+        }
+    }
+
+    async do() {
+        // Remove source splats from scene (but keep references)
+        for (const splat of this.sourceSplats) {
+            this.scene.remove(splat);
+        }
+
+        // Create and add merged splat if it doesn't exist yet
+        if (!this.mergedSplat) {
+            const { BlobReadSource, MappedReadFileSystem } = await import('./io/read/file-systems');
+            const blob = new Blob([this.mergedData.buffer as ArrayBuffer], { type: 'application/octet-stream' });
+            const fileSystem = new MappedReadFileSystem();
+            fileSystem.addFile(this.mergedFilename, blob);
+            this.mergedSplat = await this.scene.assetLoader.load(this.mergedFilename, fileSystem, undefined, true);
+        }
+
+        await this.scene.add(this.mergedSplat);
+
+        // Add remapped groups to merged splat
+        if (this.mergedGroupsData.length > 0 && this.mergedSplat) {
+            this.scene.events.fire('pointCloudGroup.addGroupsForSplat', this.mergedSplat, this.mergedGroupsData);
+        }
+    }
+
+    async undo() {
+        // Remove merged splat
+        if (this.mergedSplat) {
+            this.scene.remove(this.mergedSplat);
+        }
+
+        // Restore source splats
+        for (const splat of this.sourceSplats) {
+            await this.scene.add(splat);
+        }
+
+        // Restore original groups for source splats
+        for (const [splat, groupsData] of this.sourceGroupsData) {
+            this.scene.events.fire('pointCloudGroup.addGroupsForSplat', splat, groupsData);
+        }
+    }
+
+    destroy() {
+        // Destroy merged splat when operation is destroyed
+        if (this.mergedSplat) {
+            this.mergedSplat.destroy();
+            this.mergedSplat = null;
+        }
+        this.sourceSplats = null;
+        this.mergedData = null;
+        this.sourceGroupsData = null;
+        this.mergedGroupsData = null;
+    }
+}
+
 export {
     EditOp,
     SelectAllOp,
@@ -492,5 +621,6 @@ export {
     MultiOp,
     AddSplatOp,
     SplatRenameOp,
-    AddShapeOp
+    AddShapeOp,
+    MergeOp
 };

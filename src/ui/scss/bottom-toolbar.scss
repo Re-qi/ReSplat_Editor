@@ -118,6 +118,15 @@
         width: 38px;
         height: 38px;
         margin: 0px 1px;
+
+        &.longpress-hover {
+            color: $clr-active;
+            background-color: $clr-hilight !important;
+
+            svg {
+                color: $clr-active;
+            }
+        }
     }
 }
 

@@ -229,9 +229,61 @@ class BottomToolbar extends Container {
         flood.dom.style.position = 'relative';
         flood.dom.appendChild(floodToggle);
 
-        // flood 按钮：短按激活 eyedropper 工具，长按展开子菜单
+        // flood 按钮：短按激活 eyedropper 工具，长按展开子菜单，拖拽到选项松开可触发对应工具
         let longPressTimer: ReturnType<typeof setTimeout> | null = null;
         let isLongPress = false;
+        let isLongPressDrag = false;
+
+        // Map popup button DOM elements to their tool events for drag-to-select
+        const popupButtonActions: Array<{ element: HTMLElement; toolEvent: string }> = [
+            { element: eyedropper.dom, toolEvent: 'tool.eyedropperSelection' },
+            { element: floodPopupBtn.dom, toolEvent: 'tool.floodSelection' },
+            { element: opacity.dom, toolEvent: 'tool.opacitySelection' },
+            { element: size.dom, toolEvent: 'tool.sizeSelection' }
+        ];
+
+        // Find which popup button is under a given cursor position
+        const findPopupButtonAtPoint = (x: number, y: number) => {
+            const el = document.elementFromPoint(x, y);
+            if (!el) return null;
+            for (const btn of popupButtonActions) {
+                if (btn.element === el || btn.element.contains(el)) {
+                    return btn;
+                }
+            }
+            return null;
+        };
+
+        // Clean up long press drag state and remove document-level listeners
+        const cleanupLongPressDrag = () => {
+            isLongPressDrag = false;
+            isLongPress = false;
+            hideFloodPopup();
+            document.removeEventListener('mouseup', onDocMouseUpCapture, true);
+            document.removeEventListener('mousemove', onDocMouseMoveCapture, true);
+            // Reset all popup button hover states
+            for (const btn of popupButtonActions) {
+                btn.element.classList.remove('longpress-hover');
+            }
+        };
+
+        // Document-level mousemove during long press drag: highlight button under cursor
+        const onDocMouseMoveCapture = (e: MouseEvent) => {
+            const hovered = findPopupButtonAtPoint(e.clientX, e.clientY);
+            for (const btn of popupButtonActions) {
+                btn.element.classList.toggle('longpress-hover', btn === hovered);
+            }
+        };
+
+        // Document-level mouseup during long press drag: trigger tool if over a popup button
+        const onDocMouseUpCapture = (e: MouseEvent) => {
+            if (e.button !== 0) return;
+            const btn = findPopupButtonAtPoint(e.clientX, e.clientY);
+            if (btn) {
+                events.fire(btn.toolEvent);
+            }
+            cleanupLongPressDrag();
+        };
 
         const showFloodPopup = () => {
             const floodRect = flood.dom.getBoundingClientRect();
@@ -259,15 +311,46 @@ class BottomToolbar extends Container {
             }
         });
 
+        const startLongPressDrag = () => {
+            isLongPress = true;
+            isLongPressDrag = true;
+            if (longPressTimer) {
+                clearTimeout(longPressTimer);
+                longPressTimer = null;
+            }
+            showFloodPopup();
+            document.addEventListener('mouseup', onDocMouseUpCapture, true);
+            document.addEventListener('mousemove', onDocMouseMoveCapture, true);
+        };
+
+        let dragStartX = 0;
+        const SWIPE_THRESHOLD = 20; // px to drag right before triggering popup
+
         flood.dom.addEventListener('mousedown', (e) => {
             if (e.button !== 0) return;
             // 如果点击的是小三角区域，不触发工具激活
             if (floodToggle.contains(e.target as Node)) return;
             isLongPress = false;
+            isLongPressDrag = false;
+            dragStartX = e.clientX;
+
+            // 长按定时器
             longPressTimer = setTimeout(() => {
-                isLongPress = true;
-                showFloodPopup();
-            }, 500);
+                startLongPressDrag();
+            }, 200);
+        });
+
+        // 在 flood 按钮上监听 mousemove：向右拖动超过阈值立即展开
+        flood.dom.addEventListener('mousemove', (e) => {
+            if (isLongPressDrag || !longPressTimer) return;
+            if (e.clientX - dragStartX >= SWIPE_THRESHOLD) {
+                startLongPressDrag();
+                // 初始化时手动触发一次 hover 高亮
+                const hovered = findPopupButtonAtPoint(e.clientX, e.clientY);
+                for (const btn of popupButtonActions) {
+                    btn.element.classList.toggle('longpress-hover', btn === hovered);
+                }
+            }
         });
 
         flood.dom.addEventListener('mouseup', (e) => {
@@ -278,6 +361,8 @@ class BottomToolbar extends Container {
                 clearTimeout(longPressTimer);
                 longPressTimer = null;
             }
+            // Long press drag: release detection is handled by document capture listener
+            if (isLongPressDrag) return;
             if (!isLongPress) {
                 if (isPopupVisible()) {
                     hideFloodPopup();
@@ -294,9 +379,9 @@ class BottomToolbar extends Container {
             }
         });
 
-        // 点击弹窗外区域关闭弹出列表
+        // 点击弹窗外区域关闭弹出列表（长按拖拽期间不响应此关闭逻辑）
         document.addEventListener('mousedown', (e) => {
-            if (isPopupVisible() && !floodPopup.contains(e.target as Node) && !flood.dom.contains(e.target as Node)) {
+            if (isPopupVisible() && !isLongPressDrag && !floodPopup.contains(e.target as Node) && !flood.dom.contains(e.target as Node)) {
                 hideFloodPopup();
             }
         });

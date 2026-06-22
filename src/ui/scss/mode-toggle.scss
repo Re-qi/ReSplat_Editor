@@ -114,6 +114,16 @@
                 }
             }
 
+            &.longpress-hover {
+                color: #000 !important;
+                background-color: $clr-hilight;
+
+                .mode-dropdown-icon,
+                .pcui-label {
+                    color: #000 !important;
+                }
+            }
+
             .mode-dropdown-icon {
                 width: 12px;
                 height: 12px;

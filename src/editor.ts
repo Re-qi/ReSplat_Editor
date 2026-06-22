@@ -4,7 +4,7 @@ import { Color, Mat4, path, Texture, Vec3, Vec4 } from 'playcanvas';
 import { BlockingPlane } from './blocking-plane';
 import { BoxShape } from './box-shape';
 import { EditHistory } from './edit-history';
-import { SelectAllOp, SelectNoneOp, SelectInvertOp, SelectOp, HideSelectionOp, UnhideAllOp, DeleteSelectionOp, ResetOp, MultiOp, AddSplatOp } from './edit-ops';
+import { SelectAllOp, SelectNoneOp, SelectInvertOp, SelectOp, HideSelectionOp, UnhideAllOp, DeleteSelectionOp, ResetOp, MultiOp, AddSplatOp, MergeOp } from './edit-ops';
 import { Element, ElementType } from './element';
 import { Events } from './events';
 import { MappedReadFileSystem } from './io';
@@ -1001,24 +1001,13 @@ const registerEditorEvents = (events: Events, editHistory: EditHistory, scene: S
         const firstName = removeExtension(multiSelected[0].filename);
         const mergedFilename = `${firstName}_merged.ply`;
 
-        // Wrap PLY in a blob and load it as a new splat
-        const blob = new Blob([data.buffer as ArrayBuffer], { type: 'application/octet-stream' });
-        const fileSystem = new MappedReadFileSystem();
-        fileSystem.addFile(mergedFilename, blob);
-        const mergedSplat = await scene.assetLoader.load(mergedFilename, fileSystem);
-
-        // Remove all original splats from the scene first, then destroy them
-        for (const splat of multiSelected) {
-            scene.remove(splat);
-            splat.destroy();
-        }
-
-        // Add the merged splat to the scene
-        await scene.add(mergedSplat);
+        // Create MergeOp and add to history
+        const mergeOp = new MergeOp(scene, multiSelected, mergedFilename, data);
+        await editHistory.add(mergeOp);
 
         // Clear multi-selection and select the new merged splat
         events.fire('selection.clearMultiSplat');
-        events.fire('selection', mergedSplat);
+        events.fire('selection', mergeOp.mergedSplat);
     });
 
     events.on('scene.reset', () => {
@@ -1034,10 +1023,6 @@ const registerEditorEvents = (events: Events, editHistory: EditHistory, scene: S
     const setCameraMode = (mode: string) => {
         if (mode !== activeMode) {
             activeMode = mode;
-            // Centers/rings modes require overlay to be visible
-            if (mode !== 'splat' && !events.invoke('camera.overlay')) {
-                setCameraOverlay(true);
-            }
             events.fire('camera.mode', activeMode);
         }
     };
