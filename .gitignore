@@ -1,8 +1,11 @@
 node_modules
 dist
-release
 .DS_Store
 .npmrc
 .vscode
 .cursor
 .idea
+.env
+.env.local
+*.log
+Thumbs.db

@@ -163,13 +163,30 @@ const main = async () => {
             events.fire('camera.fly.up', false);
         }
     };
-    document.addEventListener('mousedown', () => {
-        mouseButtonsPressed++;
+    // Track mouse button state using window-level pointer events with capture phase.
+    // window is the highest element in the DOM tree; capture phase on window ensures
+    // this fires before ANY other handler (including PCUI on document/body).
+    // Using e.buttons reads the hardware button bitmap directly — more reliable than
+    // manual increment/decrement which can get out of sync.
+    window.addEventListener('pointerdown', (e: PointerEvent) => {
+        if (e.pointerType === 'mouse') {
+            mouseButtonsPressed = e.buttons;
+        }
     }, true);
-    document.addEventListener('mouseup', () => {
-        mouseButtonsPressed = Math.max(0, mouseButtonsPressed - 1);
-        if (mouseButtonsPressed === 0) {
-            releaseFlyKeys();
+    window.addEventListener('pointerup', (e: PointerEvent) => {
+        if (e.pointerType === 'mouse') {
+            mouseButtonsPressed = e.buttons;
+            if (mouseButtonsPressed === 0) {
+                releaseFlyKeys();
+            }
+        }
+    }, true);
+    // Fallback: sync button state from pointermove.
+    // PCUI's orbit/pan handlers may call stopPropagation on pointermove,
+    // so we register on window in capture phase to always receive it.
+    window.addEventListener('pointermove', (e: PointerEvent) => {
+        if (e.pointerType === 'mouse') {
+            mouseButtonsPressed = e.buttons;
         }
     }, true);
     // Reset mouse state when the pointer leaves the window to prevent stuck state
