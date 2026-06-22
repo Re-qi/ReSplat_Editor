@@ -5,10 +5,10 @@ import { Events } from '../events';
 import { IndexRanges } from '../index-ranges';
 import { Splat } from '../splat';
 import { State } from '../splat-state';
-import { localize } from './localization';
 import deleteSvg from './svg/delete.svg';
 import gripSvg from './svg/grip.svg';
 import newGroupSvg from './svg/new.svg';
+import { localize } from './localization';
 import { Tooltips } from './tooltips';
 
 const createSvg = (svgString: string) => {
@@ -233,15 +233,15 @@ class PointCloudGroup extends Container {
         // Get serializable group data for a specific splat
         events.function('pointCloudGroup.getGroupsForSplat', (splat: Splat) => {
             return this.groups
-            .filter(g => g.splat === splat)
-            .map((g) => {
-                const ids: number[] = [];
-                g.ranges.forEach(i => ids.push(i));
-                return {
-                    name: g.name,
-                    indices: new Uint32Array(ids).sort()
-                };
-            });
+                .filter(g => g.splat === splat)
+                .map(g => {
+                    const ids: number[] = [];
+                    g.ranges.forEach(i => ids.push(i));
+                    return {
+                        name: g.name,
+                        indices: new Uint32Array(ids).sort()
+                    };
+                });
         });
 
         // Add groups for a specific splat from serialized data
@@ -357,7 +357,7 @@ class PointCloudGroup extends Container {
     private renderGroupsForSplat(splat: Splat) {
         // 保存当前选中的组
         const selectedGroups = this.groupItems.filter(item => item.selected).map(item => item.groupData);
-
+        
         this.listContainer.clear();
         this.groupItems = [];
         const splatGroups = this.groups.filter(g => g.splat === splat);
@@ -472,11 +472,11 @@ class PointCloudGroup extends Container {
                 const { splat, ranges } = groupData;
                 const sortedIds: number[] = [];
                 ranges.forEach((i: number) => sortedIds.push(i));
-
+                
                 // Store selected group data for toolbar
                 this.selectedGroupData = groupData;
                 this.toolbar.hidden = false;
-
+                
                 // Listen for state change to update active group state after selection bound is computed
                 const onStateChanged = () => {
                     // Directly set _activeGroup based on clicked item's state

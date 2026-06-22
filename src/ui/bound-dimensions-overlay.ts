@@ -1,12 +1,12 @@
 import { Container } from '@playcanvas/pcui';
 import { Vec3 } from 'playcanvas';
 
-import { BlockingPlane } from '../blocking-plane';
-import { BoxShape } from '../box-shape';
 import { Events } from '../events';
 import { Scene } from '../scene';
-import { SphereShape } from '../sphere-shape';
 import { Splat } from '../splat';
+import { BoxShape } from '../box-shape';
+import { SphereShape } from '../sphere-shape';
+import { BlockingPlane } from '../blocking-plane';
 
 const corners = Array.from({ length: 8 }, () => new Vec3());
 const screenCorners = Array.from({ length: 8 }, () => new Vec3());

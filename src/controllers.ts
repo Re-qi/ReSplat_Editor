@@ -290,9 +290,11 @@ class PointerController {
             // (e.g. 100, 125) even with smoothing applied. Trackpads produce
             // continuously varying fractional values on both axes.
             const { deltaX, deltaY } = event;
-            // Check if delta values are close to integers (within 1% of 1.0).
-            // Smooth scrolling / DPI scaling can add slight fractional offsets.
-            const isNearInteger = (v: number) => Math.abs(v % 1) < 0.01 || Math.abs(v % 1) > 0.99;
+            // Check if delta values are close to integers (within 5% of 1.0).
+            // Smooth scrolling + browser zoom + high-DPI can compound into fractional
+            // errors up to ~0.05. Trackpads produce genuinely fractional deltas (e.g. 3.7)
+            // that are safely outside this threshold.
+            const isNearInteger = (v: number) => Math.abs(v % 1) < 0.05 || Math.abs(v % 1) > 0.95;
             const dyWheel = deltaY === 0 || isNearInteger(deltaY);
             const dxWheel = deltaX === 0 || isNearInteger(deltaX);
             if (!dyWheel || !dxWheel) {

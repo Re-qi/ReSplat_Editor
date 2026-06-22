@@ -5,11 +5,11 @@ import { BoxShape } from '../box-shape';
 import { Element } from '../element';
 import { Events } from '../events';
 import { SphereShape } from '../sphere-shape';
-import { localize } from './localization';
 import deleteSvg from './svg/delete.svg';
 import hiddenSvg from './svg/hidden.svg';
-import selectSphereSvg from './svg/select-sphere.svg';
 import shownSvg from './svg/shown.svg';
+import selectSphereSvg from './svg/select-sphere.svg';
+import { localize } from './localization';
 
 const createSvg = (svgString: string) => {
     const decodedStr = decodeURIComponent(svgString.substring('data:image/svg+xml,'.length));

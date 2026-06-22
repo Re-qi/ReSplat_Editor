@@ -2,9 +2,9 @@ import { Container, Label, SliderInput } from '@playcanvas/pcui';
 
 import { Events } from '../events';
 import { localize } from './localization';
-import circleDashedSvg from './svg/circle-dashed.svg';
-import circleSvg from './svg/circle.svg';
 import { Tooltips } from './tooltips';
+import circleSvg from './svg/circle.svg';
+import circleDashedSvg from './svg/circle-dashed.svg';
 
 const createSvg = (svgString: string) => {
     const decodedStr = decodeURIComponent(svgString.substring('data:image/svg+xml,'.length));

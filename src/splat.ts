@@ -15,12 +15,12 @@ import {
     Vec3
 } from 'playcanvas';
 
-import { BlockingPlane } from './blocking-plane';
-import { BoxShape } from './box-shape';
 import { Element, ElementType } from './element';
+import { BoxShape } from './box-shape';
+import { SphereShape } from './sphere-shape';
+import { BlockingPlane } from './blocking-plane';
 import { Serializer } from './serializer';
 import { vertexShader, fragmentShader, gsplatCenter } from './shaders/splat-shader';
-import { SphereShape } from './sphere-shape';
 import { State, SplatState } from './splat-state';
 import { Transform } from './transform';
 import { TransformPalette } from './transform-palette';
@@ -361,7 +361,7 @@ class Splat extends Element {
 
         material.setParameter('saturation', this.saturation);
         material.setParameter('transformPalette', this.transformPalette.texture);
-
+        
         // Set display mode
         const displayMode = events.invoke('view.displayMode') || 'color';
         material.setParameter('displayMode', displayMode === 'depth' ? 1 : 0);

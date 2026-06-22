@@ -2,8 +2,8 @@ import { Container, Label } from '@playcanvas/pcui';
 
 import { Events } from '../events';
 import { localize } from './localization';
-import squircleDashedSvg from './svg/squircle-dashed.svg';
 import { Tooltips } from './tooltips';
+import squircleDashedSvg from './svg/squircle-dashed.svg';
 
 const createSvg = (svgString: string) => {
     const decodedStr = decodeURIComponent(svgString.substring('data:image/svg+xml,'.length));

@@ -165,9 +165,7 @@ class CameraModeSwitch extends Container {
         events.on('camera.flySpeed', (value: number) => {
             suppressChange = true;
             speedSlider.value = value;
-            setTimeout(() => {
-                suppressChange = false;
-            }, 0);
+            setTimeout(() => { suppressChange = false; }, 0);
             if (currentControlMode !== 'fly') return;
             showSpeedPopup();
         });

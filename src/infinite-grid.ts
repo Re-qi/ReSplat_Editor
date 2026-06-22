@@ -34,12 +34,8 @@ class InfiniteGrid extends Element {
     depthState = new DepthState(FUNC_LESSEQUAL, true);
 
     _visible = true;
-    get visible() {
-        return this._visible;
-    }
-    set visible(value: boolean) {
-        this._visible = value;
-    }
+    get visible() { return this._visible; }
+    set visible(value: boolean) { this._visible = value; }
 
     constructor() {
         super(ElementType.debug);

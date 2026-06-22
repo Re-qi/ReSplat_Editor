@@ -16,8 +16,8 @@ import {
 
 import { Element, ElementType } from './element';
 import { Serializer } from './serializer';
-import { vertexShader, fragmentShader } from './shaders/box-shape-shader';
 import { Transform } from './transform';
+import { vertexShader, fragmentShader } from './shaders/box-shape-shader';
 
 class BoxShape extends Element {
     _lenX = 2;

@@ -4,12 +4,11 @@
  * Fixes depth sorting flickering caused by large coordinate values exceeding float32 precision.
  */
 
-import { MemoryFileSystem } from '@playcanvas/splat-transform';
-import { GSplatData } from 'playcanvas';
-
 import { Events } from './events';
-import { Splat } from './splat';
+import { GSplatData } from 'playcanvas';
+import { MemoryFileSystem } from '@playcanvas/splat-transform';
 import { serializePly } from './splat-serialize';
+import { Splat } from './splat';
 import { localize } from './ui/localization';
 
 const CLIP_BOUND = 5000.0;
@@ -62,24 +61,12 @@ const fixSplatData = (gsplatData: GSplatData): {
         let z = zProp[i] - cz;
 
         let clipped = false;
-        if (x < -CLIP_BOUND) {
-            x = -CLIP_BOUND; clipped = true;
-        }
-        if (x > CLIP_BOUND) {
-            x = CLIP_BOUND; clipped = true;
-        }
-        if (y < -CLIP_BOUND) {
-            y = -CLIP_BOUND; clipped = true;
-        }
-        if (y > CLIP_BOUND) {
-            y = CLIP_BOUND; clipped = true;
-        }
-        if (z < -CLIP_BOUND) {
-            z = -CLIP_BOUND; clipped = true;
-        }
-        if (z > CLIP_BOUND) {
-            z = CLIP_BOUND; clipped = true;
-        }
+        if (x < -CLIP_BOUND) { x = -CLIP_BOUND; clipped = true; }
+        if (x > CLIP_BOUND) { x = CLIP_BOUND; clipped = true; }
+        if (y < -CLIP_BOUND) { y = -CLIP_BOUND; clipped = true; }
+        if (y > CLIP_BOUND) { y = CLIP_BOUND; clipped = true; }
+        if (z < -CLIP_BOUND) { z = -CLIP_BOUND; clipped = true; }
+        if (z > CLIP_BOUND) { z = CLIP_BOUND; clipped = true; }
 
         if (clipped) clippedCount++;
 

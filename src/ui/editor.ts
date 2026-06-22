@@ -11,8 +11,8 @@ import { FixPlyDialog } from './fix-ply-dialog';
 import { ImageSettingsDialog } from './image-settings-dialog';
 import { localize } from './localization';
 import { Menu } from './menu';
-import { ModeSwitch } from './mode-switch';
 import { ModeToggle } from './mode-toggle';
+import { ModeSwitch } from './mode-switch';
 import { OverlayToggle } from './overlay-toggle';
 // import logo from './playcanvas-logo.png';
 import { Popup, ShowOptions } from './popup';
@@ -25,6 +25,7 @@ import { TimelinePanel } from './timeline-panel';
 import { Tooltips } from './tooltips';
 import { VideoSettingsDialog } from './video-settings-dialog';
 import { ViewCube } from './view-cube';
+
 import { version } from '../../package.json';
 
 // ts compiler and vscode find this type, but eslint does not

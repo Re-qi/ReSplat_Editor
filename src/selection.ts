@@ -1,12 +1,13 @@
-import { BlockingPlane } from './blocking-plane';
-import { BoxShape } from './box-shape';
 import { Element, ElementType } from './element';
 import { Events } from './events';
 import { Scene } from './scene';
 import { SphereShape } from './sphere-shape';
+import { BoxShape } from './box-shape';
+import { BlockingPlane } from './blocking-plane';
 import { Splat } from './splat';
 
-const isShape = (element: Element) => element instanceof SphereShape || element instanceof BoxShape || element instanceof BlockingPlane;
+const isShape = (element: Element) =>
+    element instanceof SphereShape || element instanceof BoxShape || element instanceof BlockingPlane;
 
 const registerSelectionEvents = (events: Events, scene: Scene) => {
     let splatSelection: Element | null = null;

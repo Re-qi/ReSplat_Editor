@@ -13,7 +13,7 @@ class ViewPanel extends Container {
             ...args,
             id: 'view-panel',
             class: embedded ? '' : 'panel',
-            hidden: !embedded
+            hidden: embedded ? false : true
         };
 
         super(args);
