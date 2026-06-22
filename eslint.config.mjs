@@ -35,7 +35,6 @@ export default [
             'jsdoc/check-tag-names': 'off',
             'lines-between-class-members': 'off',
             'no-await-in-loop': 'off',
-            'no-use-before-define': 'off',
             'require-atomic-updates': 'off'
         }
     }, {

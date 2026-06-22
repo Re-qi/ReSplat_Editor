@@ -326,6 +326,8 @@ const main = async () => {
         commandQueue
     );
 
+    registerSelectionEvents(events, scene);
+
     // colors
     const bgClr = new Color();
     const selectedClr = new Color();
@@ -771,7 +773,6 @@ const main = async () => {
 
     // register events that need scene or other dependencies
     registerEditorEvents(events, editHistory, scene);
-    registerSelectionEvents(events, scene);
     registerDocEvents(scene, events);
     registerRenderEvents(scene, events);
     initFileHandler(scene, events, editorUI.appContainer.dom);
