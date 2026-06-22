@@ -5,7 +5,7 @@
 [![Github Release](https://img.shields.io/github/v/release/Re-qi/ReSplat)](https://github.com/Re-qi/ReSplat/releases)
 [![License](https://img.shields.io/github/license/Re-qi/ReSplat)](https://github.com/Re-qi/ReSplat/blob/main/LICENSE)
 
-| [在线使用](https://superspl.at/editor) | [用户文档](https://developer.playcanvas.com/user-manual/gaussian-splatting/editing/ReSplat/) | [问题反馈](https://github.com/Re-qi/ReSplat/issues) |
+| [在线使用](https://re-qi.github.io/ReSplat/) | [用户文档](https://developer.playcanvas.com/user-manual/gaussian-splatting/editing/ReSplat/) | [问题反馈](https://github.com/Re-qi/ReSplat/issues) |
 
 ---
 
@@ -163,7 +163,7 @@ ReSplat 重构了原版的选择球与选择盒，并新增了阻挡平面，三
 [![Github Release](https://img.shields.io/github/v/release/Re-qi/ReSplat)](https://github.com/Re-qi/ReSplat/releases)
 [![License](https://img.shields.io/github/license/Re-qi/ReSplat)](https://github.com/Re-qi/ReSplat/blob/main/LICENSE)
 
-| [Live Demo](https://superspl.at/editor) | [User Guide](https://developer.playcanvas.com/user-manual/gaussian-splatting/editing/ReSplat/) | [Issues](https://github.com/Re-qi/ReSplat/issues) |
+| [Live Demo](https://re-qi.github.io/ReSplat/) | [User Guide](https://developer.playcanvas.com/user-manual/gaussian-splatting/editing/ReSplat/) | [Issues](https://github.com/Re-qi/ReSplat/issues) |
 
 ---
 
