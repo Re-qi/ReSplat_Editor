@@ -447,7 +447,7 @@ const main = async () => {
     // Activate move tool by default so gizmo always shows for scene manager selection
     events.fire('tool.move');
 
-    new BoundDimensionsOverlay(events, scene, editorUI.canvasContainer);
+    const boundOverlay = new BoundDimensionsOverlay(events, scene, editorUI.canvasContainer);
 
     // Blocking plane management
     const blockingPlanes: BlockingPlane[] = [];

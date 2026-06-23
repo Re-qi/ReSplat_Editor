@@ -5,8 +5,8 @@ import { localize } from './localization';
 import centersSvg from './svg/centers.svg';
 import chevronDownSvg from './svg/chevron-down.svg';
 import chevronUpSvg from './svg/chevron-up.svg';
-import ringsSvg from './svg/rings.svg';
 import circleSvg from './svg/circle.svg';
+import ringsSvg from './svg/rings.svg';
 import { Tooltips } from './tooltips';
 
 const createSvg = (svgString: string) => {
