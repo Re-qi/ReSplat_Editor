@@ -4,14 +4,16 @@ import { Color, Mat4, path, Texture, Vec3, Vec4 } from 'playcanvas';
 import { BlockingPlane } from './blocking-plane';
 import { BoxShape } from './box-shape';
 import { EditHistory } from './edit-history';
-import { SelectAllOp, SelectNoneOp, SelectInvertOp, SelectOp, HideSelectionOp, UnhideAllOp, DeleteSelectionOp, ResetOp, MultiOp, AddSplatOp, MergeOp } from './edit-ops';
+import { SelectAllOp, SelectNoneOp, SelectInvertOp, SelectOp, StateOp, BitOp, HideSelectionOp, UnhideAllOp, DeleteSelectionOp, ResetOp, MultiOp, AddSplatOp, MergeOp } from './edit-ops';
 import { Element, ElementType } from './element';
 import { Events } from './events';
+import { IndexRanges } from './index-ranges';
 import { MappedReadFileSystem } from './io';
 import { Scene } from './scene';
 import { SphereShape } from './sphere-shape';
 import { Splat } from './splat';
 import { serializePly } from './splat-serialize';
+import { State } from './splat-state';
 
 const removeExtension = (filename: string) => {
     return filename.substring(0, filename.length - path.getExtension(filename).length);
@@ -824,14 +826,19 @@ const registerEditorEvents = (events: Events, editHistory: EditHistory, scene: S
                 }
 
                 if (intersectOptions) {
-                    // First select all points within the shape
+                    // Directly mark points inside the shape as deleted
                     scene.commandQueue.enqueue(async () => {
                         const data = await scene.dataProcessor.intersect(intersectOptions, splat);
-                        // Then delete the selected points
-                        events.fire('edit.add', new SelectOp(splat, 'set', data));
+                        const numSplats = splat.splatData.numSplats;
+                        const splatState = splat.splatData.getProp('state') as Uint8Array;
+                        // Only delete points that are inside the shape AND currently selected
+                        const ranges = IndexRanges.fromPredicate(numSplats,
+                            i => data[i] === 255 && (splatState[i] & State.selected) !== 0
+                        );
                         scene.dataProcessor.releaseMask(data);
-                        // Now delete the selection
-                        editHistory.add(new DeleteSelectionOp(splat));
+                        if (!ranges.empty) {
+                            events.fire('edit.add', new StateOp(splat, ranges, State.deleted, BitOp.SET, State.deleted));
+                        }
                     });
                 }
             }

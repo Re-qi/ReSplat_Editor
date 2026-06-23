@@ -43,8 +43,12 @@ const registerSelectionEvents = (events: Events, scene: Scene) => {
 
     events.on('selection', (element: Element | null) => {
         if (element instanceof Splat) {
+            // Selecting a splat clears any shape selection (switch gizmo to splat)
+            setShapeSelection(null);
             setSplatSelection(element);
         } else if (isShape(element)) {
+            // Selecting a shape clears any splat selection (switch gizmo to shape)
+            setSplatSelection(null);
             setShapeSelection(element);
         } else if (element === null) {
             // Clear both

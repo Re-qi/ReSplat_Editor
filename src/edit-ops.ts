@@ -16,13 +16,14 @@ interface EditOp {
     destroy?(): void;
 }
 
-const enum BitOp {
+enum BitOp {
     SET,
     CLEAR,
     TOGGLE
 }
 
 class StateOp {
+    name = 'stateOp';
     splat: Splat;
     ranges: IndexRanges;
     mask: number;
@@ -604,6 +605,8 @@ class MergeOp {
 
 export {
     EditOp,
+    StateOp,
+    BitOp,
     SelectAllOp,
     SelectNoneOp,
     SelectInvertOp,

@@ -40,11 +40,19 @@ const registerTransformHandlerEvents = (events: Events) => {
     const update = (element: Element | null) => {
         pop();
         if (element) {
-            // Check shape selection first: if a shape is selected, use entity handler
-            // Otherwise check splat selection: if a splat has selected gaussians, use splats handler
+            // Check shape selection first: if a shape is selected, always use entity handler
+            // (moving the wrapper/blocking-plane itself, never the gaussians inside)
             const shapeSel = events.invoke('shapeSelection') as Element | null;
+            if (shapeSel) {
+                push(entityTransformHandler);
+                return;
+            }
+
+            // Only move individual gaussians when a point cloud group is explicitly
+            // active (user has selected a group item). Otherwise, treat the splat as a
+            // single entity — clicking on a splat-item moves the entire file.
             const splatSel = events.invoke('splatSelection') as Element | null;
-            if (splatSel instanceof Splat && splatSel.numSelected > 0) {
+            if (splatSel instanceof Splat && splatSel.numSelected > 0 && events.invoke('pointCloudGroup.activeGroup')) {
                 push(splatsTransformHandler);
             } else {
                 push(entityTransformHandler);
