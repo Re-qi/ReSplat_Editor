@@ -157,6 +157,9 @@ type ImportFile = {
     handle?: FileSystemFileHandle;
 };
 
+const SOG_LARGE_COUNT = 15_000_000;
+const PLY_MAX_MEMORY_MB = 3_000;    // ~3 GB peak memory; leaves ~1 GB for GPU + engine
+
 const vec = new Vec3();
 
 // load inria camera poses from json file
@@ -313,7 +316,7 @@ const initFileHandler = (scene: Scene, events: Events, dropTarget: HTMLElement) 
             let decimatePercent: number | undefined;
             if (filename.toLowerCase().endsWith('.sog')) {
                 const meta = await readSogMeta(fileSystem, filename);
-                if (meta && meta.count > 15_000_000) {
+                if (meta && meta.count > SOG_LARGE_COUNT) {
                     const response = await events.invoke('showPopup', {
                         type: 'yesno',
                         header: 'Large File Detected',
@@ -341,13 +344,13 @@ const initFileHandler = (scene: Scene, events: Events, dropTarget: HTMLElement) 
             // Pre-check for large PLY files: read header vertex count before full load
             if (filename.toLowerCase().endsWith('.ply') && !filename.toLowerCase().endsWith('.compressed.ply')) {
                 const meta = await readPlyMeta(fileSystem, filename);
-                if (meta && meta.count > 15_000_000) {
+                if (meta && meta.estMemMB > PLY_MAX_MEMORY_MB) {
                     const response = await events.invoke('showPopup', {
                         type: 'yesno',
                         header: 'Large File Detected',
                         message: `This PLY file contains ${meta.count.toLocaleString()} gaussians ` +
-                            `(estimated ${meta.estMemMB} MB memory required). ` +
-                            'It exceeds browser memory limits (~4 GB) and cannot be loaded directly.\n\n' +
+                            `(estimated ${meta.estMemMB} MB peak memory). ` +
+                            'It exceeds browser memory limits (~4 GB) and will likely crash when loaded.\n\n' +
                             'Continue anyway? (Will likely fail with an out-of-memory error.)'
                     });
                     if (!response) {
@@ -355,7 +358,9 @@ const initFileHandler = (scene: Scene, events: Events, dropTarget: HTMLElement) 
                         await events.invoke('showPopup', {
                             type: 'info',
                             header: 'Cannot Load File',
-                            message: 'To load this file, pre-process it first:\n\n' +
+                            message: 'To load this file, convert it to .sog first (SOG supports automatic decimation during loading):\n\n' +
+                                `npx @playcanvas/splat-transform "${filename}" -o output.sog\n\n` +
+                                'If still too large, add --decimate:\n\n' +
                                 `npx @playcanvas/splat-transform "${filename}" --decimate 25 -o output.sog\n\n` +
                                 'Then load the smaller output.sog in ReSplat.'
                         });

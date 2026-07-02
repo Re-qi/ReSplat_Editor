@@ -95,7 +95,9 @@ const dataTableToGSplatData = (dataTable: DataTable): GSplatData => {
  * (14 columns: x,y,z, scale_0-2, f_dc_0-2, opacity, rot_0-3 = 14 × 4 bytes)
  * Plus ~1.5x overhead for WebP decode buffers and temporary allocations.
  */
-const BYTES_PER_GAUSSIAN_ESTIMATE = 14 * 4 * 1.5; // ~84 bytes per gaussian
+const BYTES_PER_GAUSSIAN_ESTIMATE = 14 * 4 * 1.5; // ~84 bytes per gaussian (SOG default)
+const BYTES_PER_PLY_PROPERTY = 4; // float32 = 4 bytes each
+const PEAK_MEMORY_FACTOR = 2.5; // file + parsed + overhead
 
 /** Thresholds for SOG file size warnings (in gaussians) */
 const SOG_WARN_COUNT = 15_000_000;   // ~1.5 GB — show a warning
@@ -394,7 +396,7 @@ const readPlyMeta = async (fileSystem: ReadFileSystem, filename: string): Promis
     try {
         source = await fileSystem.createSource(filename);
         try {
-            // Read only the header (~8 KB) using pull to avoid loading the entire file
+            // Read only the header (~8 KB) to avoid loading the entire file
             let stream;
             if (source.seekable && source.size && source.size > 8192) {
                 stream = source.read(0, 8192);
@@ -406,11 +408,17 @@ const readPlyMeta = async (fileSystem: ReadFileSystem, filename: string): Promis
             const endIdx = header.indexOf('end_header');
             if (endIdx < 0) return null;
 
-            const match = header.substring(0, endIdx).match(/element\s+vertex\s+(\d+)/i);
+            const headerSection = header.substring(0, endIdx);
+            const match = headerSection.match(/element\s+vertex\s+(\d+)/i);
             if (!match) return null;
 
+            // Count properties to get accurate bytes-per-gaussian estimate
+            const propertyMatches = headerSection.match(/\bproperty\b/g);
+            const numProperties = propertyMatches ? propertyMatches.length : 14;
+
             const count = parseInt(match[1], 10);
-            const estMemMB = Math.round(count * BYTES_PER_GAUSSIAN_ESTIMATE / (1024 * 1024));
+            // Peak memory ≈ numProperties × count × 4 bytes × 2.5 (file copy + parsed + overhead)
+            const estMemMB = Math.round(count * numProperties * BYTES_PER_PLY_PROPERTY * PEAK_MEMORY_FACTOR / (1024 * 1024));
             return { count, estMemMB };
         } finally {
             source.close();
