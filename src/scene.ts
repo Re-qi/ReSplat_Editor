@@ -254,8 +254,8 @@ class Scene {
         });
 
         // Also remove user-created shapes (包裹体)
-        const shapes = this.elements.filter(e =>
-            e instanceof BoxShape || e instanceof SphereShape || e instanceof BlockingPlane
+        const shapes = this.elements.filter(
+            (e) => e instanceof BoxShape || e instanceof SphereShape || e instanceof BlockingPlane
         );
         shapes.forEach((shape) => {
             this.remove(shape);
