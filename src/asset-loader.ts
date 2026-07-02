@@ -28,9 +28,9 @@ class AssetLoader {
 
         try {
             // Use stride-sampled loading when decimatePercent is specified
-            const { gsplatData, transform } = decimatePercent != null
-                ? await loadSogDecimated(filename, fileSystem, decimatePercent)
-                : await loadGSplatData(filename, fileSystem, skipReorder || animationFrame);
+            const { gsplatData, transform } = decimatePercent != null ?
+                await loadSogDecimated(filename, fileSystem, decimatePercent) :
+                await loadGSplatData(filename, fileSystem, skipReorder || animationFrame);
             validateGSplatData(gsplatData);
 
             const asset = new Asset(filename, 'gsplat', { url: `local-asset-${Date.now()}`, filename });

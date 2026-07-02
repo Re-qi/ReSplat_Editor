@@ -268,8 +268,8 @@ const initFileHandler = (scene: Scene, events: Events, dropTarget: HTMLElement) 
         if (message.includes('Array buffer allocation failed')) {
             const ext = filename.toLowerCase().split('.').pop() ?? 'ply';
             enhancedMessage = `Failed to load '${filename}': ${message}\n\n` +
-                `This usually means the file is too large for the browser's memory limit (~4 GB). ` +
-                `You can pre-process the file to reduce gaussian count:\n` +
+                'This usually means the file is too large for the browser\'s memory limit (~4 GB). ' +
+                'You can pre-process the file to reduce gaussian count:\n' +
                 `npx @playcanvas/splat-transform input.${ext} --decimate 25 -o output.sog`;
         }
 
@@ -319,7 +319,7 @@ const initFileHandler = (scene: Scene, events: Events, dropTarget: HTMLElement) 
                         header: 'Large File Detected',
                         message: `This file contains ${meta.count.toLocaleString()} gaussians ` +
                             `(estimated ${meta.estMemMB} MB memory required). ` +
-                            `It exceeds browser memory limits (~4 GB) and cannot be loaded directly.\n\n` +
+                            'It exceeds browser memory limits (~4 GB) and cannot be loaded directly.\n\n' +
                             `Automatically decimate to ~${(meta.count * 0.1).toLocaleString()} gaussians (10%) during loading?`
                     });
                     if (response) {
@@ -329,9 +329,9 @@ const initFileHandler = (scene: Scene, events: Events, dropTarget: HTMLElement) 
                         await events.invoke('showPopup', {
                             type: 'info',
                             header: 'Cannot Load File',
-                            message: `To load this file, pre-process it first:\n\n` +
+                            message: 'To load this file, pre-process it first:\n\n' +
                                 `npx @playcanvas/splat-transform "${filename}" --decimate 25 -o output.sog\n\n` +
-                                `Then load the smaller output.sog in ReSplat.`
+                                'Then load the smaller output.sog in ReSplat.'
                         });
                         return;
                     }
@@ -347,17 +347,17 @@ const initFileHandler = (scene: Scene, events: Events, dropTarget: HTMLElement) 
                         header: 'Large File Detected',
                         message: `This PLY file contains ${meta.count.toLocaleString()} gaussians ` +
                             `(estimated ${meta.estMemMB} MB memory required). ` +
-                            `It exceeds browser memory limits (~4 GB) and cannot be loaded directly.\n\n` +
-                            `Continue anyway? (Will likely fail with an out-of-memory error.)`
+                            'It exceeds browser memory limits (~4 GB) and cannot be loaded directly.\n\n' +
+                            'Continue anyway? (Will likely fail with an out-of-memory error.)'
                     });
                     if (!response) {
                         // User cancelled — show preprocessing guidance
                         await events.invoke('showPopup', {
                             type: 'info',
                             header: 'Cannot Load File',
-                            message: `To load this file, pre-process it first:\n\n` +
+                            message: 'To load this file, pre-process it first:\n\n' +
                                 `npx @playcanvas/splat-transform "${filename}" --decimate 25 -o output.sog\n\n` +
-                                `Then load the smaller output.sog in ReSplat.`
+                                'Then load the smaller output.sog in ReSplat.'
                         });
                         return;
                     }
