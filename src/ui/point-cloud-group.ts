@@ -426,10 +426,12 @@ class PointCloudGroup extends Container {
         this.toolbar.hidden = value === null;
     }
 
-    /** Fire a ReplaceSelectionOp that clears all selected gaussians then
+    /**
+     *  Fire a ReplaceSelectionOp that clears all selected gaussians then
      *  selects only the group's indices. Unlike SelectOp 'set' (TOGGLE-based),
      *  this guarantees a visible state change every time — all state queries
-     *  happen at execution time, not construction time. */
+     *  happen at execution time, not construction time.
+     */
     private selectGroupGaussians(gd: PointCloudGroupData) {
         const { ranges } = gd;
         const sortedIds: number[] = [];

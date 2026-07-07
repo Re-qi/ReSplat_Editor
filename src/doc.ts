@@ -175,7 +175,7 @@ const registerDocEvents = (scene: Scene, events: Events, editHistory: EditHistor
             const splats = events.invoke('scene.allSplats') as Splat[];
 
             // Serialize point cloud groups for each splat
-            const groups: { name: string; indices: number[] }[][] = splats.map(s => {
+            const groups: { name: string; indices: number[] }[][] = splats.map((s) => {
                 const splatGroups = events.invoke('pointCloudGroup.getGroupsForSplat', s) as { name: string; indices: Uint32Array }[];
                 return splatGroups.map(g => ({ name: g.name, indices: Array.from(g.indices) }));
             });
@@ -359,7 +359,7 @@ const registerDocEvents = (scene: Scene, events: Events, editHistory: EditHistor
             }
         } else {
             await saveDocument({
-                    filename: 'scene.respproj'
+                filename: 'scene.respproj'
             });
             events.fire('doc.saved');
         }

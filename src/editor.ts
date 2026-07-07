@@ -942,7 +942,7 @@ const registerEditorEvents = (events: Events, editHistory: EditHistory, scene: S
         });
     });
 
-    const performSelectionFunc = async (func: 'duplicate' | 'separate') => {
+    const performSelectionFunc = (func: 'duplicate' | 'separate') => {
         const splats = selectedSplats();
         if (splats.length === 0) return;
 
@@ -1028,12 +1028,12 @@ const registerEditorEvents = (events: Events, editHistory: EditHistory, scene: S
     };
 
     // duplicate the current selection
-    events.on('select.duplicate', async () => {
-        await performSelectionFunc('duplicate');
+    events.on('select.duplicate', () => {
+        performSelectionFunc('duplicate');
     });
 
-    events.on('select.separate', async () => {
-        await performSelectionFunc('separate');
+    events.on('select.separate', () => {
+        performSelectionFunc('separate');
     });
 
     // Merge multiple selected splat files into one
@@ -1050,20 +1050,20 @@ const registerEditorEvents = (events: Events, editHistory: EditHistory, scene: S
         try {
             // Collect the property names from the first splat (they must share the same set)
             const refProps = srcDatas[0].getElement('vertex').properties;
-            
+
             // Filter out internal properties (state, transform) and limit SH bands
             const internalProps = ['state', 'transform'];
             const maxSHBands = 3;
             const props = refProps
-                .filter(p => !internalProps.includes(p.name))
-                .filter((p) => {
-                    if (!p.name.startsWith('f_rest_')) {
-                        return true;
-                    }
-                    const i = parseInt(p.name.slice(7), 10);
-                    return i < [0, 9, 24, 45][maxSHBands];
-                });
-            
+            .filter(p => !internalProps.includes(p.name))
+            .filter((p) => {
+                if (!p.name.startsWith('f_rest_')) {
+                    return true;
+                }
+                const i = parseInt(p.name.slice(7), 10);
+                return i < [0, 9, 24, 45][maxSHBands];
+            });
+
             const propNames = props.map(p => p.name);
 
             // Build merged storage

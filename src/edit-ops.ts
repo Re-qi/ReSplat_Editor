@@ -158,10 +158,12 @@ class SelectOp extends StateOp {
     }
 }
 
-/** Unlike SelectOp 'set' (TOGGLE-based, no-op when state matches), this op
+/**
+ *  Unlike SelectOp 'set' (TOGGLE-based, no-op when state matches), this op
  *  truly replaces the selection: clears all selected bits then sets only the
  *  target indices. All state queries happen at execution time, so it works
- *  correctly inside MultiOp or when gaussians already match the target. */
+ *  correctly inside MultiOp or when gaussians already match the target.
+ */
 class ReplaceSelectionOp {
     name = 'replaceSelection';
     splat: Splat;
@@ -530,7 +532,7 @@ class SetSplatColorAdjustmentOp {
     }
 
     serialize() {
-        const packColor = (c: Color | undefined) => c ? [c.r, c.g, c.b, c.a] : null;
+        const packColor = (c: Color | undefined) => (c ? [c.r, c.g, c.b, c.a] : null);
         const packState = (s: ColorAdjustment) => ({
             tintClr: packColor(s.tintClr),
             temperature: s.temperature ?? null,
