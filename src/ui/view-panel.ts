@@ -4,8 +4,8 @@ import { Color } from 'playcanvas';
 import { Events } from '../events';
 import { ShortcutManager } from '../shortcut-manager';
 import { localize, formatTooltipWithShortcut } from './localization';
-import { Tooltips } from './tooltips';
 import iterationCwSvg from './svg/iteration-cw.svg';
+import { Tooltips } from './tooltips';
 
 const createSvg = (svgString: string) => {
     const decodedStr = decodeURIComponent(svgString.substring('data:image/svg+xml,'.length));
