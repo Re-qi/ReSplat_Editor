@@ -415,6 +415,43 @@ class EditorUI {
         // Track if current operation is an import to avoid duplicate logging
         let isImportOperation = false;
 
+        // Helper function to get display names for operations
+        const getOperationDisplayName = (opName: string): string => {
+            const opDisplayNames: Record<string, string> = {
+                'selectAll': '全选',
+                'selectNone': '取消选择',
+                'selectInvert': '反选',
+                'selectOp': '选择',
+                'hideSelection': '隐藏选中',
+                'unhideAll': '显示全部',
+                'deleteSelection': '删除选中',
+                'splatsTransform': '变换选中',
+                'setPivot': '设置枢轴',
+                'addSplat': '新建包裹球',
+                'splatRename': '重命名',
+                'addGroup': '新建点云组',
+                'deleteGroup': '删除分组',
+                'modifyGroupRanges': '修改分组',
+                'entityTransform': '实体变换',
+                'merge': '合并',
+                'stateOp': '状态操作',
+                'addShape': '新建包裹球',
+                'reset': '重置',
+                'animTrackEdit': '动画轨道编辑'
+            };
+            return opDisplayNames[opName] || opName;
+        };
+
+        // Helper function to get display names for transform tools
+        const getToolDisplayName = (tool: string): string => {
+            const toolDisplayNames: Record<string, string> = {
+                'move': '移动',
+                'rotate': '旋转',
+                'scale': '缩放'
+            };
+            return toolDisplayNames[tool] || '变换';
+        };
+
         // Listen to operation events
         events.on('edit.add', (editOp: any) => {
             if (editOp.name && editOp.name !== 'addSplat' && editOp.name !== 'addShape') {
@@ -514,43 +551,6 @@ class EditorUI {
             updateOperationLog('显示全部');
             lastOperationName = '显示全部';
         });
-
-        // Helper function to get display names for operations
-        const getOperationDisplayName = (opName: string): string => {
-            const opDisplayNames: Record<string, string> = {
-                'selectAll': '全选',
-                'selectNone': '取消选择',
-                'selectInvert': '反选',
-                'selectOp': '选择',
-                'hideSelection': '隐藏选中',
-                'unhideAll': '显示全部',
-                'deleteSelection': '删除选中',
-                'splatsTransform': '变换选中',
-                'setPivot': '设置枢轴',
-                'addSplat': '新建包裹球',
-                'splatRename': '重命名',
-                'addGroup': '新建点云组',
-                'deleteGroup': '删除分组',
-                'modifyGroupRanges': '修改分组',
-                'entityTransform': '实体变换',
-                'merge': '合并',
-                'stateOp': '状态操作',
-                'addShape': '新建包裹球',
-                'reset': '重置',
-                'animTrackEdit': '动画轨道编辑'
-            };
-            return opDisplayNames[opName] || opName;
-        };
-
-        // Helper function to get display names for transform tools
-        const getToolDisplayName = (tool: string): string => {
-            const toolDisplayNames: Record<string, string> = {
-                'move': '移动',
-                'rotate': '旋转',
-                'scale': '缩放'
-            };
-            return toolDisplayNames[tool] || '变换';
-        };
     }
 }
 

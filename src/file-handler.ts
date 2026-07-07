@@ -406,13 +406,13 @@ const initFileHandler = (scene: Scene, events: Events, dropTarget: HTMLElement) 
             if (model) result.push(model);
         } else {
             // check for unrecognized file types
-        for (let i = 0; i < filenames.length; i++) {
-            const filename = filenames[i].toLowerCase();
-            if (['.respproj', '.ply', '.splat', '.sog', '.webp', 'images.txt', '.json', '.ksplat', '.spz'].every(ext => !filename.endsWith(ext))) {
-                await showLoadError('Unrecognized file type', filename);
-                return;
+            for (let i = 0; i < filenames.length; i++) {
+                const filename = filenames[i].toLowerCase();
+                if (['.respproj', '.ply', '.splat', '.sog', '.webp', 'images.txt', '.json', '.ksplat', '.spz'].every(ext => !filename.endsWith(ext))) {
+                    await showLoadError('Unrecognized file type', filename);
+                    return;
+                }
             }
-        }
 
             // handle multiple files as independent imports
             for (let i = 0; i < files.length; i++) {
