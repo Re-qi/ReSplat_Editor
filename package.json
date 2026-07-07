@@ -1,6 +1,6 @@
 {
     "name": "ReSplat",
-    "version": "1.0.1",
+    "version": "1.0.3",
     "author": "PlayCanvas<support@playcanvas.com>",
     "homepage": "https://playcanvas.com/ReSplat/editor",
     "description": "3D Gaussian Splat Editor | Powered by supersplat-2.27.0",
@@ -41,7 +41,7 @@
         "concurrently": "^9.2.1",
         "cors": "2.8.6",
         "cross-env": "10.1.0",
-        "eslint": "10.4.0",
+        "eslint": "^9.0.0",
         "eslint-import-resolver-typescript": "4.4.4",
         "globals": "17.6.0",
         "i18next": "26.2.0",

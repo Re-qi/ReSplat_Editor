@@ -1,6 +1,6 @@
 import { Container, Label, Element as PcuiElement, Button, TextInput } from '@playcanvas/pcui';
 
-import { AddGroupOp, DeleteGroupOp, ModifyGroupRangesOp, SelectOp } from '../edit-ops';
+import { AddGroupOp, DeleteGroupOp, ModifyGroupRangesOp, ReplaceSelectionOp } from '../edit-ops';
 import { Events } from '../events';
 import { IndexRanges } from '../index-ranges';
 import { Splat } from '../splat';
@@ -114,7 +114,6 @@ class PointCloudGroup extends Container {
     private currentSplat: Splat | null = null;
     private _activeGroup = false;
     private selectedGroupData: PointCloudGroupData | null = null;
-    private selectedGroupDataRef = { current: null as PointCloudGroupData | null };
     private toolbar: Container;
     private toolbarSelectBtn: Button;
     private toolbarAddBtn: Button;
@@ -211,7 +210,7 @@ class PointCloudGroup extends Container {
         this.toolbarSelectBtn.dom.addEventListener('pointerdown', (e) => {
             e.stopPropagation();
             if (!this.selectedGroupData) return;
-            this.handleGroupSelect(this.selectedGroupData);
+            this.selectGroupGaussians(this.selectedGroupData);
         });
 
         this.toolbarAddBtn.dom.addEventListener('pointerdown', (e) => {
@@ -270,6 +269,15 @@ class PointCloudGroup extends Container {
             }
         });
 
+        // Expose internals for EditOp serialization/deserialization
+        events.function('pointCloudGroup.getGroupsArray', () => this.groups);
+        events.function('pointCloudGroup.setSelectedGroupData', (value: PointCloudGroupData | null) => {
+            this.setSelectedGroupData(value);
+        });
+        events.function('pointCloudGroup.getRenderCallback', (splat: Splat) => {
+            return () => this.renderGroupsForSplat(splat);
+        });
+
         // Selection changed: show groups only for currently selected splat
         const updateVisibility = (splat: any) => {
             if (splat instanceof Splat) {
@@ -285,9 +293,7 @@ class PointCloudGroup extends Container {
                     for (const item of this.groupItems) {
                         item.selected = false;
                     }
-                    this.selectedGroupData = null;
-                    this.selectedGroupDataRef.current = null;
-                    this.toolbar.hidden = true;
+                    this.setSelectedGroupData(null);
 
                     // Re-trigger transform-handler evaluation now that
                     // _activeGroup is false. Because transform-handler registers
@@ -415,12 +421,20 @@ class PointCloudGroup extends Container {
         }
     }
 
-    private handleGroupSelect(gd: PointCloudGroupData) {
-        const splat = gd.splat;
+    private setSelectedGroupData(value: PointCloudGroupData | null) {
+        this.selectedGroupData = value;
+        this.toolbar.hidden = value === null;
+    }
+
+    /** Fire a ReplaceSelectionOp that clears all selected gaussians then
+     *  selects only the group's indices. Unlike SelectOp 'set' (TOGGLE-based),
+     *  this guarantees a visible state change every time — all state queries
+     *  happen at execution time, not construction time. */
+    private selectGroupGaussians(gd: PointCloudGroupData) {
         const { ranges } = gd;
         const sortedIds: number[] = [];
         ranges.forEach((i: number) => sortedIds.push(i));
-        this.events.fire('edit.add', new SelectOp(splat, 'set', new Uint32Array(sortedIds)));
+        this.events.fire('edit.add', new ReplaceSelectionOp(gd.splat, new Uint32Array(sortedIds)));
     }
 
     private handleGroupAddTo(gd: PointCloudGroupData) {
@@ -486,15 +500,14 @@ class PointCloudGroup extends Container {
             this.groups.splice(idx, 1);
         }
         if (this.selectedGroupData === gd) {
-            this.selectedGroupData = null;
-            this.selectedGroupDataRef.current = null;
-            this.toolbar.hidden = true;
+            this.setSelectedGroupData(null);
         }
         this.renderGroupsForSplat(this.currentSplat!);
 
         const splat = this.currentSplat!;
         this.events.fire('edit.add', new DeleteGroupOp(
-            this.groups, gd, this.selectedGroupDataRef,
+            this.groups, gd,
+            (value: PointCloudGroupData | null) => this.setSelectedGroupData(value),
             () => this.renderGroupsForSplat(splat),
             true
         ));
@@ -505,7 +518,7 @@ class PointCloudGroup extends Container {
             groupData,
             this.tooltips,
             this.editInput,
-            (gd: PointCloudGroupData) => this.handleGroupDelete(gd)
+            this.handleGroupDelete.bind(this)
         );
         item.onSelect = (clicked: PointCloudGroupItem) => {
             // Deselect all other group items
@@ -519,18 +532,10 @@ class PointCloudGroup extends Container {
             clicked.selected = !wasSelected;
 
             if (!wasSelected) {
-                // Group just became selected - select the group's gaussians,
-                // set origin to boundCenter, and enable show bound
-                const { splat, ranges } = groupData;
-                const sortedIds: number[] = [];
-                ranges.forEach((i: number) => sortedIds.push(i));
-
                 // Store selected group data for toolbar
-                this.selectedGroupData = groupData;
-                this.selectedGroupDataRef.current = groupData;
-                this.toolbar.hidden = false;
+                this.setSelectedGroupData(groupData);
 
-                // Set _activeGroup BEFORE firing SelectOp so that when
+                // Set _activeGroup BEFORE firing the selection op so that when
                 // splat.stateChanged fires, transform-handler sees _activeGroup === true
                 // and pushes SplatsTransformHandler instead of EntityTransformHandler.
                 this._activeGroup = true;
@@ -546,9 +551,10 @@ class PointCloudGroup extends Container {
                 };
                 this.events.on('splat.stateChanged', onStateChanged);
 
-                // Fire the selection operation - SelectOp.do() will call updateState()
-                // which internally calls updateLocalBounds() to update selectionBound
-                this.events.fire('edit.add', new SelectOp(splat, 'set', new Uint32Array(sortedIds)));
+                // Force-select the group's gaussians using ReplaceSelectionOp,
+                // which clears all selected bits then sets only the target
+                // indices. Guarantees a visible state change every time.
+                this.selectGroupGaussians(groupData);
 
                 // Force origin to boundCenter
                 this.events.fire('pivot.setOrigin', 'boundCenter');
@@ -559,9 +565,7 @@ class PointCloudGroup extends Container {
                 }
             } else {
                 // Group deselected - update state immediately
-                this.selectedGroupData = null;
-                this.selectedGroupDataRef.current = null;
-                this.toolbar.hidden = true;
+                this.setSelectedGroupData(null);
                 this.updateActiveGroupState();
             }
         };
