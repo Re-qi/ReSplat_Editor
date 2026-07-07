@@ -159,7 +159,7 @@ const registerSelectionEvents = (events: Events, scene: Scene) => {
     events.on('scene.elementRemoved', (element: Element) => {
         if (element === splatSelection) {
             const splats = scene.getElementsByType(ElementType.splat) as Splat[];
-            setSplatSelection(splats.length === 1 ? null : splats.find(v => v !== element) ?? null);
+            setSplatSelection(splats.find(v => v !== element) ?? null);
         }
         if (element instanceof Splat && multiSplatSelection.has(element)) {
             multiSplatSelection.delete(element);

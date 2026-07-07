@@ -16,10 +16,10 @@ import sceneSave from './svg/save.svg';
 import selectAll from './svg/select-all.svg';
 import selectDuplicate from './svg/select-duplicate.svg';
 import selectInverse from './svg/select-inverse.svg';
-import selectLock from './svg/select-lock.svg';
+import lockKeyhole from './svg/lock-keyhole.svg';
 import selectNone from './svg/select-none.svg';
 import selectSeparate from './svg/select-separate.svg';
-import selectUnlock from './svg/select-unlock.svg';
+import lockKeyholeOpen from './svg/lock-keyhole-open.svg';
 import squaresUnite from './svg/squares-unite.svg';
 import wrenchIcon from './svg/wrench.svg';
 import { Tooltips } from './tooltips';
@@ -227,13 +227,13 @@ class Menu extends Container {
             // separator
         }, {
             text: localize('menu.select.lock'),
-            icon: createSvg(selectLock),
+            icon: createSvg(lockKeyhole),
             extra: shortcutManager.formatShortcut('select.hide'),
             isEnabled: () => events.invoke('selection.splats'),
             onSelect: () => events.fire('select.hide')
         }, {
             text: localize('menu.select.unlock'),
-            icon: createSvg(selectUnlock),
+            icon: createSvg(lockKeyholeOpen),
             extra: shortcutManager.formatShortcut('select.unhide'),
             onSelect: () => events.fire('select.unhide')
         }, {

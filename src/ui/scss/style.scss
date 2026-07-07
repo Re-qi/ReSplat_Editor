@@ -111,6 +111,18 @@ body {
     text-shadow: 1px 1px 4px black;
 }
 
+#operation-log-label {
+    position: absolute;
+    right: 20px;
+    bottom: 40px;
+    color: $text-primary;
+    text-shadow: 1px 1px 4px black;
+    max-width: 300px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
 #cursor-label {
     position: absolute;
     left: 12px;

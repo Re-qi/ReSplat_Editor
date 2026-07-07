@@ -154,7 +154,7 @@ const loadGSplatData = async (filename: string, fileSystem: ReadFileSystem, skip
     // Skip reordering for:
     // - SOG format (already in morton order)
     // - Compressed PLY (already in morton order from write-compressed-ply)
-    // - When skipReorder is true (ssproj files are already ordered, animation frames need speed)
+    // - When skipReorder is true (animation frames need speed)
     const isCompressedPly = lowerFilename.endsWith('.compressed.ply');
     if (inputFormat !== 'sog' && !isCompressedPly && !skipReorder) {
         const indices = new Uint32Array(tables[0].numRows);

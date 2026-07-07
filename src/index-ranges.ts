@@ -84,6 +84,16 @@ class IndexRanges {
             }
         }
     }
+
+    /** Serialize to a plain number array for JSON storage. */
+    serialize(): number[] {
+        return Array.from(this.data);
+    }
+
+    /** Deserialize from a plain number array. */
+    static deserialize(data: number[]): IndexRanges {
+        return new IndexRanges(new Uint32Array(data));
+    }
 }
 
 export { IndexRanges, sortedPredicate };

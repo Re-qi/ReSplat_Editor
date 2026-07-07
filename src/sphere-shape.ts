@@ -50,6 +50,7 @@ class SphereShape extends Element {
             BLENDEQUATION_ADD, BLENDMODE_SRC_ALPHA, BLENDMODE_ONE_MINUS_SRC_ALPHA,
             BLENDEQUATION_ADD, BLENDMODE_ONE, BLENDMODE_ONE_MINUS_SRC_ALPHA
         );
+        material.setParameter('shapeColor', [this._color.r, this._color.g, this._color.b]);
         material.update();
 
         this.pivot.render.meshInstances[0].material = material;

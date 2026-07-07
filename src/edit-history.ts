@@ -1,6 +1,7 @@
 import { CommandQueue } from './command-queue';
-import { EditOp, MultiOp } from './edit-ops';
+import { EditOp, MultiOp, deserializeEditOp } from './edit-ops';
 import { Events } from './events';
+import { Scene } from './scene';
 import { Splat } from './splat';
 
 // Check if an operation references a specific splat
@@ -135,6 +136,47 @@ class EditHistory {
 
             this.history = newHistory;
             this.cursor = newCursor;
+            this.fireEvents();
+        });
+    }
+
+    serialize() {
+        return {
+            version: '1.0.0',
+            cursor: this.cursor,
+            history: this.history.map(op => op.serialize())
+        };
+    }
+
+    deserialize(data: any, scene: Scene) {
+        return this.queue(() => {
+            this.history.forEach((editOp) => {
+                editOp.destroy?.();
+            });
+            const ops: EditOp[] = [];
+            for (const opData of data.history) {
+                try {
+                    const op = deserializeEditOp(opData, scene, this.events);
+                    if (op) {
+                        ops.push(op);
+                    }
+                } catch (e) {
+                    console.warn(`Failed to deserialize EditOp '${opData.type}': ${e.message}`);
+                }
+            }
+            this.history = ops;
+            this.cursor = Math.min(data.cursor, ops.length);
+
+            // Replay all applied operations to restore splat state
+            // (needed because SOG/PLY data may not include state changes)
+            for (let i = 0; i < this.cursor; i++) {
+                try {
+                    this.history[i].do();
+                } catch (e) {
+                    console.warn(`Failed to replay EditOp[${i}]: ${e.message}`);
+                }
+            }
+
             this.fireEvents();
         });
     }

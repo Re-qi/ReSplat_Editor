@@ -74,6 +74,8 @@ class Splat extends Element {
     _whitePoint = 1;
     _transparency = 1;
 
+    originalFilePath: string | null = null;
+
     measurePoints: Vec3[] = [];
     measureSelection = -1;
 
@@ -579,7 +581,8 @@ class Splat extends Element {
             brightness: this.brightness,
             blackPoint: this.blackPoint,
             whitePoint: this.whitePoint,
-            transparency: this.transparency
+            transparency: this.transparency,
+            originalFilePath: this.originalFilePath ?? null
         };
     }
 
@@ -596,6 +599,7 @@ class Splat extends Element {
         this.blackPoint = blackPoint;
         this.whitePoint = whitePoint;
         this.transparency = transparency;
+        this.originalFilePath = doc.originalFilePath ?? null;
     }
 }
 

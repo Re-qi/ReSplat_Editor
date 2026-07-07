@@ -42,6 +42,7 @@ type SerializeSettings = {
     keepStateData?: boolean;        // keep the state data array
     keepWorldTransform?: boolean;   // don't apply the world transform when resolving splat transforms
     keepColorTint?: boolean;        // refrain from applying color tints
+    skipPlyRotation?: boolean;      // skip the 180° Z rotation for PLY coordinate system (used for in-memory merge)
 };
 
 type AnimTrack = {
@@ -162,6 +163,7 @@ class GaussianFilter {
         const onlySelected = serializeSettings.selected ?? false;
         const minOpacity = serializeSettings.minOpacity ?? 0;
         const removeInvalid = serializeSettings.removeInvalid ?? false;
+        const keepStateData = serializeSettings.keepStateData ?? false;
 
         // properties where +Infinity and -Infinity are valid values
         const infOk = new Set(['opacity']);
@@ -169,8 +171,9 @@ class GaussianFilter {
         const negInfOk = new Set(['scale_0', 'scale_1', 'scale_2']);
 
         this.test = (i: number) => {
-            // splat is deleted, always removed
-            if ((state[i] & State.deleted) !== 0) {
+            // splat is deleted, always removed unless we're keeping state data
+            // (in which case deleted splats must be preserved so indices stay valid)
+            if (!keepStateData && (state[i] & State.deleted) !== 0) {
                 return false;
             }
 
@@ -287,7 +290,7 @@ class SplatTransformCache {
     getScale: (index: number) => Vec3;
     getSHRot: (index: number) => SHRotation;
 
-    constructor(splat: Splat, keepWorldTransform = false) {
+    constructor(splat: Splat, keepWorldTransform = false, skipPlyRotation = false) {
         const transforms = new Map<number, { transformIndex: number, mat: Mat4, rot: Quat, scale: Vec3, shRot: SHRotation }>();
         const indices = splat.transformTexture.getSource() as unknown as Uint32Array;
         const tmpMat = new Mat4();
@@ -312,7 +315,9 @@ class SplatTransformCache {
 
                 // we must undo the transform we apply at load time to output data
                 if (!keepWorldTransform) {
-                    mat.setFromEulerAngles(0, 0, -180);
+                    if (!skipPlyRotation) {
+                        mat.setFromEulerAngles(0, 0, -180);
+                    }
                     mat.mul2(mat, splat.entity.getWorldTransform());
                 }
 
@@ -404,7 +409,7 @@ class SingleSplat {
             // get the cached data entry for this splat
             if (splat !== cacheEntry?.splat) {
                 if (!cacheMap.has(splat)) {
-                    const transformCache = new SplatTransformCache(splat, serializeSettings.keepWorldTransform);
+                    const transformCache = new SplatTransformCache(splat, serializeSettings.keepWorldTransform, serializeSettings.skipPlyRotation);
 
                     const srcPropNames = getVertexProperties(splat.splatData);
                     const srcSHBands = calcSHBands(srcPropNames);
@@ -1456,10 +1461,11 @@ const serializeViewer = async (splats: Splat[], serializeSettings: SerializeSett
 type SogSettings = SerializeSettings & {
     iterations: number;
     events?: Events;
+    filename?: string;
 };
 
 const serializeSog = async (splats: Splat[], settings: SogSettings, fs: FileSystem): Promise<void> => {
-    const { iterations = 10, events } = settings;
+    const { iterations = 10, events, filename = 'output.sog' } = settings;
 
     splatTransformLogger.setRenderer(createProgressRenderer('Exporting SOG', events));
 
@@ -1473,7 +1479,7 @@ const serializeSog = async (splats: Splat[], settings: SogSettings, fs: FileSyst
     // any error popup is shown.
     try {
         await writeSogInternal({
-            filename: 'output.sog',
+            filename,
             dataTable,
             bundle: true,
             iterations,
@@ -1502,5 +1508,7 @@ export {
     ExperienceSettings,
     SerializeSettings,
     SogSettings,
-    ViewerExportSettings
+    ViewerExportSettings,
+    SingleSplat,
+    SplatTransformCache
 };

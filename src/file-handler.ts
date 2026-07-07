@@ -270,9 +270,9 @@ const initFileHandler = (scene: Scene, events: Events, dropTarget: HTMLElement) 
 
         if (message.includes('Array buffer allocation failed')) {
             const ext = filename.toLowerCase().split('.').pop() ?? 'ply';
-            enhancedMessage = `Failed to load '${filename}': ${message}\n\n` +
-                'This usually means the file is too large for the browser\'s memory limit (~4 GB). ' +
-                'You can pre-process the file to reduce gaussian count:\n' +
+            enhancedMessage = `加载 '${filename}' 失败: ${message}\n\n` +
+                '这通常表示文件超出了浏览器的内存限制（约 4 GB）。' +
+                '您可以预处理文件来减少高斯数量：\n' +
                 `npx @playcanvas/splat-transform input.${ext} --decimate 25 -o output.sog`;
         }
 
@@ -319,11 +319,11 @@ const initFileHandler = (scene: Scene, events: Events, dropTarget: HTMLElement) 
                 if (meta && meta.count > SOG_LARGE_COUNT) {
                     const response = await events.invoke('showPopup', {
                         type: 'yesno',
-                        header: 'Large File Detected',
-                        message: `This file contains ${meta.count.toLocaleString()} gaussians ` +
-                            `(estimated ${meta.estMemMB} MB memory required). ` +
-                            'It exceeds browser memory limits (~4 GB) and cannot be loaded directly.\n\n' +
-                            `Automatically decimate to ~${(meta.count * 0.1).toLocaleString()} gaussians (10%) during loading?`
+                        header: '检测到大文件',
+                        message: `该文件包含 ${meta.count.toLocaleString()} 个高斯点 ` +
+                            `（预计需要 ${meta.estMemMB} MB 内存）。` +
+                            '它超出了浏览器内存限制（约 4 GB），无法直接加载。\n\n' +
+                            `是否在加载时自动精简至约 ${(meta.count * 0.1).toLocaleString()} 个高斯点（10%）？`
                     });
                     if (response) {
                         decimatePercent = 10;
@@ -331,10 +331,10 @@ const initFileHandler = (scene: Scene, events: Events, dropTarget: HTMLElement) 
                         // User cancelled — show fallback guidance
                         await events.invoke('showPopup', {
                             type: 'info',
-                            header: 'Cannot Load File',
-                            message: 'To load this file, pre-process it first:\n\n' +
+                            header: '无法加载文件',
+                            message: '要加载此文件，请先预处理：\n\n' +
                                 `npx @playcanvas/splat-transform "${filename}" --decimate 25 -o output.sog\n\n` +
-                                'Then load the smaller output.sog in ReSplat.'
+                                '然后在 ReSplat 中加载较小的 output.sog。'
                         });
                         return;
                     }
@@ -347,22 +347,22 @@ const initFileHandler = (scene: Scene, events: Events, dropTarget: HTMLElement) 
                 if (meta && meta.estMemMB > PLY_MAX_MEMORY_MB) {
                     const response = await events.invoke('showPopup', {
                         type: 'yesno',
-                        header: 'Large File Detected',
-                        message: `This PLY file contains ${meta.count.toLocaleString()} gaussians ` +
-                            `(estimated ${meta.estMemMB} MB peak memory). ` +
-                            'It exceeds browser memory limits (~4 GB) and will likely crash when loaded.\n\n' +
-                            'Continue anyway? (Will likely fail with an out-of-memory error.)'
+                        header: '检测到大文件',
+                        message: `该 PLY 文件包含 ${meta.count.toLocaleString()} 个高斯点 ` +
+                            `（预计峰值内存 ${meta.estMemMB} MB）。` +
+                            '它超出了浏览器内存限制（约 4 GB），加载时很可能会崩溃。\n\n' +
+                            '仍然继续？（很可能会因内存不足而失败。）'
                     });
                     if (!response) {
                         // User cancelled — show preprocessing guidance
                         await events.invoke('showPopup', {
                             type: 'info',
-                            header: 'Cannot Load File',
-                            message: 'To load this file, convert it to .sog first (SOG supports automatic decimation during loading):\n\n' +
+                            header: '无法加载文件',
+                            message: '要加载此文件，请先转换为 .sog 格式（SOG 支持加载时自动精简）：\n\n' +
                                 `npx @playcanvas/splat-transform "${filename}" -o output.sog\n\n` +
-                                'If still too large, add --decimate:\n\n' +
+                                '如果仍然过大，请添加 --decimate：\n\n' +
                                 `npx @playcanvas/splat-transform "${filename}" --decimate 25 -o output.sog\n\n` +
-                                'Then load the smaller output.sog in ReSplat.'
+                                '然后在 ReSplat 中加载较小的 output.sog。'
                         });
                         return;
                     }
@@ -406,25 +406,28 @@ const initFileHandler = (scene: Scene, events: Events, dropTarget: HTMLElement) 
             if (model) result.push(model);
         } else {
             // check for unrecognized file types
-            for (let i = 0; i < filenames.length; i++) {
-                const filename = filenames[i].toLowerCase();
-                if (['.ssproj', '.ply', '.splat', '.sog', '.webp', 'images.txt', '.json', '.ksplat', '.spz'].every(ext => !filename.endsWith(ext))) {
-                    await showLoadError('Unrecognized file type', filename);
-                    return;
-                }
+        for (let i = 0; i < filenames.length; i++) {
+            const filename = filenames[i].toLowerCase();
+            if (['.respproj', '.ply', '.splat', '.sog', '.webp', 'images.txt', '.json', '.ksplat', '.spz'].every(ext => !filename.endsWith(ext))) {
+                await showLoadError('Unrecognized file type', filename);
+                return;
             }
+        }
 
             // handle multiple files as independent imports
             for (let i = 0; i < files.length; i++) {
                 const filename = filenames[i].toLowerCase();
 
-                if (filename.endsWith('.ssproj')) {
-                    // load ssproj document
+                if (filename.endsWith('.respproj')) {
+                    // load respproj document
                     await events.invoke('doc.load', files[i].contents ?? (await fetch(files[i].url)).arrayBuffer(), files[i].handle);
                 } else if (['.ply', '.splat', '.sog', '.ksplat', '.spz'].some(ext => filename.endsWith(ext))) {
                     // load gaussian splat model
                     const model = await importSplatModel([files[i]], animationFrame);
-                    if (model) result.push(model);
+                    if (model) {
+                        model.originalFilePath = files[i].url ?? files[i].filename;
+                        result.push(model);
+                    }
                 } else if (filename.endsWith('images.txt')) {
                     // load colmap frames
                     await loadImagesTxt(files[i], events);
@@ -448,7 +451,7 @@ const initFileHandler = (scene: Scene, events: Events, dropTarget: HTMLElement) 
         fileSelector = document.createElement('input');
         fileSelector.setAttribute('id', 'file-selector');
         fileSelector.setAttribute('type', 'file');
-        fileSelector.setAttribute('accept', '.ply,.splat,meta.json,.json,.webp,.ssproj,.sog,.lcc,.bin,.txt,.ksplat,.spz');
+        fileSelector.setAttribute('accept', '.ply,.splat,meta.json,.json,.webp,.respproj,.sog,.lcc,.bin,.txt,.ksplat,.spz');
         fileSelector.setAttribute('multiple', 'true');
 
         fileSelector.onchange = () => {

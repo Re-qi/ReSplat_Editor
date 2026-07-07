@@ -5,6 +5,12 @@ import { Events } from '../events';
 import { ShortcutManager } from '../shortcut-manager';
 import { localize, formatTooltipWithShortcut } from './localization';
 import { Tooltips } from './tooltips';
+import iterationCwSvg from './svg/iteration-cw.svg';
+
+const createSvg = (svgString: string) => {
+    const decodedStr = decodeURIComponent(svgString.substring('data:image/svg+xml,'.length));
+    return new DOMParser().parseFromString(decodedStr, 'image/svg+xml').documentElement;
+};
 
 class ViewPanel extends Container {
     constructor(events: Events, tooltips: Tooltips, args: any = {}) {
@@ -41,6 +47,32 @@ class ViewPanel extends Container {
 
         header.append(icon);
         header.append(label);
+
+        // reset button
+        const resetBtn = new Container({
+            class: 'panel-header-button'
+        });
+        resetBtn.dom.appendChild(createSvg(iterationCwSvg));
+
+        resetBtn.on('click', () => {
+            events.fire('setBgClr', new Color(30 / 255, 30 / 255, 30 / 255));
+            events.fire('setSelectedClr', new Color(1, 1, 0, 120 / 255));
+            events.fire('setUnselectedClr', new Color(0, 0, 1, 0.3137));
+            events.fire('setLockedClr', new Color(0, 0, 0, 0.3137));
+            events.fire('camera.setTonemapping', 'linear');
+            events.fire('camera.setFov', 75);
+            events.fire('view.setBands', 3);
+            events.fire('camera.setFlySpeed', 1);
+            events.fire('camera.setSplatSize', 2);
+            events.fire('view.setCentersUseGaussianColor', false);
+            events.fire('view.setOutlineSelection', false);
+            events.fire('grid.setVisible', true);
+            events.fire('camera.setBound', true);
+            events.fire('camera.setBoundDimensions', false);
+            events.fire('camera.setShowPoses', false);
+        });
+
+        header.append(resetBtn);
 
         // colors
 

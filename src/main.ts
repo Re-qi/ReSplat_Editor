@@ -773,7 +773,7 @@ const main = async () => {
 
     // register events that need scene or other dependencies
     registerEditorEvents(events, editHistory, scene);
-    registerDocEvents(scene, events);
+    registerDocEvents(scene, events, editHistory);
     registerRenderEvents(scene, events);
     initFileHandler(scene, events, editorUI.appContainer.dom);
 

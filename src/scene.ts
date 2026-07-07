@@ -323,6 +323,14 @@ class Scene {
         return this.elements.filter(e => e.type === elementType);
     }
 
+    getSplatIndex(splat: Splat): number {
+        return this.elements.indexOf(splat);
+    }
+
+    getSplatByIndex(index: number): Splat {
+        return this.elements[index] as Splat;
+    }
+
     get graphicsDevice() {
         return this.app.graphicsDevice;
     }

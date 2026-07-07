@@ -1,5 +1,4 @@
-import { MemoryFileSystem } from '@playcanvas/splat-transform';
-import { Color, Mat4, path, Texture, Vec3, Vec4 } from 'playcanvas';
+import { Asset, Color, GSplatData, GSplatResource, Mat4, path, Quat, Texture, Vec3, Vec4 } from 'playcanvas';
 
 import { BlockingPlane } from './blocking-plane';
 import { BoxShape } from './box-shape';
@@ -8,12 +7,12 @@ import { SelectAllOp, SelectNoneOp, SelectInvertOp, SelectOp, StateOp, BitOp, Hi
 import { Element, ElementType } from './element';
 import { Events } from './events';
 import { IndexRanges } from './index-ranges';
-import { MappedReadFileSystem } from './io';
 import { Scene } from './scene';
 import { SphereShape } from './sphere-shape';
 import { Splat } from './splat';
-import { serializePly } from './splat-serialize';
+import { SingleSplat } from './splat-serialize';
 import { State } from './splat-state';
+import { loadViewPrefs, saveViewPrefs, collectViewPrefs, applyViewPrefs } from './view-prefs';
 
 const removeExtension = (filename: string) => {
     return filename.substring(0, filename.length - path.getExtension(filename).length);
@@ -947,38 +946,84 @@ const registerEditorEvents = (events: Events, editHistory: EditHistory, scene: S
         const splats = selectedSplats();
         if (splats.length === 0) return;
 
-        const hasGaussianSelection = splats[0].numSelected > 0;
+        const splat = splats[0];
+        const hasGaussianSelection = splat.numSelected > 0;
 
         // For separate, we need gaussian-level selection
         if (func === 'separate' && !hasGaussianSelection) return;
 
-        const memFs = new MemoryFileSystem();
+        const numSplats = splat.splatData.numSplats;
+        const stateData = splat.splatData.getProp('state') as Uint8Array;
 
-        await serializePly(splats, {
-            maxSHBands: 3,
-            selected: hasGaussianSelection
-        }, memFs);
-
-        const data = memFs.results.get('output.ply');
-
-        if (data) {
-            const splat = splats[0];
-
-            // wrap PLY in a blob and load it
-            const blob = new Blob([data.buffer as ArrayBuffer], { type: 'application/octet-stream' });
-            const filename = `${removeExtension(splat.filename)}.ply`;
-            const fileSystem = new MappedReadFileSystem();
-            fileSystem.addFile(filename, blob);
-            const copy = await scene.assetLoader.load(filename, fileSystem);
-
-            if (func === 'separate') {
-                editHistory.add(new MultiOp([
-                    new DeleteSelectionOp(splat),
-                    new AddSplatOp(scene, copy)
-                ]));
-            } else {
-                editHistory.add(new AddSplatOp(scene, copy));
+        // Count selected gaussians first (avoid building a huge index array)
+        let selectedCount = 0;
+        if (hasGaussianSelection && stateData) {
+            for (let i = 0; i < numSplats; i++) {
+                if (stateData[i] & 1) selectedCount++;
             }
+        } else {
+            selectedCount = numSplats;
+        }
+
+        if (selectedCount === 0) return;
+
+        // Filter out internal properties (state, transform) — they reference
+        // the source splat's palette and are invalid in the new splat.
+        // This also reduces memory usage compared to copying all properties.
+        const refProps = splat.splatData.getElement('vertex').properties;
+        const internalProps = ['state', 'transform'];
+        const props = refProps.filter(p => !internalProps.includes(p.name));
+
+        // Copy raw property arrays directly — no transform baking needed since
+        // the new Splat will inherit the same entity transform as the source.
+        const extractedProps: typeof props = [];
+
+        for (const prop of props) {
+            const srcStorage = prop.storage;
+            const Ctor = srcStorage.constructor as any;
+            const extractedStorage = new Ctor(selectedCount);
+
+            if (hasGaussianSelection && stateData) {
+                let writeIdx = 0;
+                for (let i = 0; i < numSplats; i++) {
+                    if (stateData[i] & 1) {
+                        extractedStorage[writeIdx++] = srcStorage[i];
+                    }
+                }
+            } else {
+                // No selection — copy all
+                (extractedStorage as any).set(srcStorage);
+            }
+
+            extractedProps.push({
+                type: prop.type,
+                name: prop.name,
+                storage: extractedStorage,
+                byteSize: prop.byteSize
+            });
+        }
+
+        const extractedGSplatData = new GSplatData([{
+            name: 'vertex',
+            count: selectedCount,
+            properties: extractedProps
+        }]);
+
+        // Create Asset and Splat with the same entity transform as source
+        const filename = `${removeExtension(splat.filename)}_${func}.ply`;
+        const asset = new Asset(filename, 'gsplat', { url: `local-asset-${Date.now()}`, filename: filename });
+        scene.app.assets.add(asset);
+        asset.resource = new GSplatResource(scene.app.graphicsDevice, extractedGSplatData);
+        const copy = new Splat(asset, splat.entity.getLocalRotation());
+        copy.entity.setLocalPosition(splat.entity.getLocalPosition().clone());
+
+        if (func === 'separate') {
+            editHistory.add(new MultiOp([
+                new DeleteSelectionOp(splat),
+                new AddSplatOp(scene, copy)
+            ]));
+        } else {
+            editHistory.add(new AddSplatOp(scene, copy));
         }
     };
 
@@ -996,27 +1041,103 @@ const registerEditorEvents = (events: Events, editHistory: EditHistory, scene: S
         const multiSelected = events.invoke('multiSplatSelection') as Splat[];
         if (multiSelected.length < 2) return;
 
-        const memFs = new MemoryFileSystem();
+        // Build merged Splat directly by concatenating GSplatData properties in memory.
+        // This avoids the serialize-PLY-then-parse roundtrip that requires allocating the
+        // entire merged PLY as a single Uint8Array (which fails for large files).
+        const srcDatas = multiSelected.map(s => s.splatData);
+        const totalCount = srcDatas.reduce((sum, d) => sum + d.numSplats, 0);
 
-        // Serialize all selected splats into a single PLY file
-        await serializePly(multiSelected, {
-            maxSHBands: 3
-        }, memFs);
+        try {
+            // Collect the property names from the first splat (they must share the same set)
+            const refProps = srcDatas[0].getElement('vertex').properties;
+            
+            // Filter out internal properties (state, transform) and limit SH bands
+            const internalProps = ['state', 'transform'];
+            const maxSHBands = 3;
+            const props = refProps
+                .filter(p => !internalProps.includes(p.name))
+                .filter((p) => {
+                    if (!p.name.startsWith('f_rest_')) {
+                        return true;
+                    }
+                    const i = parseInt(p.name.slice(7), 10);
+                    return i < [0, 9, 24, 45][maxSHBands];
+                });
+            
+            const propNames = props.map(p => p.name);
 
-        const data = memFs.results.get('output.ply');
-        if (!data) return;
+            // Build merged storage
+            const singleSplat = new SingleSplat(propNames, { maxSHBands, keepWorldTransform: false, skipPlyRotation: true });
+            const mergedProps: typeof props = [];
 
-        // Create a merged filename from the first splat
-        const firstName = removeExtension(multiSelected[0].filename);
-        const mergedFilename = `${firstName}_merged.ply`;
+            for (let pi = 0; pi < props.length; pi++) {
+                const refProp = props[pi];
+                const name = refProp.name;
+                const firstStorage = srcDatas[0].getProp(name);
+                const Ctor = firstStorage.constructor as any;
+                const mergedStorage = new Ctor(totalCount);
 
-        // Create MergeOp and add to history
-        const mergeOp = new MergeOp(scene, multiSelected, mergedFilename, data);
-        await editHistory.add(mergeOp);
+                mergedProps.push({
+                    type: refProp.type,
+                    name,
+                    storage: mergedStorage,
+                    byteSize: refProp.byteSize
+                });
+            }
 
-        // Clear multi-selection and select the new merged splat
-        events.fire('selection.clearMultiSplat');
-        events.fire('selection', mergeOp.mergedSplat);
+            // Apply world transforms using SingleSplat and write to merged storage
+            let writeOffset = 0;
+
+            for (const splat of multiSelected) {
+                const numSplats = splat.splatData.numSplats;
+
+                for (let i = 0; i < numSplats; i++) {
+                    singleSplat.read(splat, i);
+
+                    for (let pi = 0; pi < mergedProps.length; pi++) {
+                        const prop = mergedProps[pi];
+                        (prop.storage as any)[writeOffset] = singleSplat.data[prop.name] ?? 0;
+                    }
+
+                    writeOffset++;
+                }
+            }
+
+            const mergedGSplatData = new GSplatData([{
+                name: 'vertex',
+                count: totalCount,
+                properties: mergedProps
+            }]);
+
+            // Create Asset and Splat
+            const firstName = removeExtension(multiSelected[0].filename);
+            const mergedFilename = `${firstName}_merged.ply`;
+            const asset = new Asset(mergedFilename, 'gsplat', { url: `local-asset-${Date.now()}`, filename: mergedFilename });
+            scene.app.assets.add(asset);
+            asset.resource = new GSplatResource(scene.app.graphicsDevice, mergedGSplatData);
+            // Use identity rotation since all transforms are already baked into the merged data
+            const mergedSplat = new Splat(asset, new Quat());
+
+            const mergeOp = new MergeOp(scene, multiSelected, mergedSplat);
+            await editHistory.add(mergeOp);
+
+            // Clear multi-selection and select the new merged splat
+            events.fire('selection.clearMultiSplat');
+            events.fire('selection', mergeOp.mergedSplat);
+        } catch (err) {
+            if (err instanceof RangeError && err.message.includes('Array buffer allocation failed')) {
+                await events.invoke('showPopup', {
+                    type: 'error',
+                    header: '合并失败',
+                    message: `内存不足，无法合并 ${totalCount.toLocaleString()} 个高斯点。\n\n` +
+                        '建议：\n' +
+                        '1. 先分别导出两个模型为 PLY 文件，再用命令行工具合并\n' +
+                        '2. 使用命令行工具精简模型后再合并'
+                });
+            } else {
+                throw err;
+            }
+        }
     });
 
     events.on('scene.reset', () => {
@@ -1269,6 +1390,35 @@ const registerEditorEvents = (events: Events, editHistory: EditHistory, scene: S
             events.fire('view.setDepthCycleLength', docView.depthCycleLength);
         }
     });
+
+    // --- view preferences persistence (localStorage) ---
+
+    // debounced save to avoid frequent writes during slider drags
+    let prefsSaveTimer: ReturnType<typeof setTimeout> | null = null;
+    const scheduleSavePrefs = () => {
+        if (prefsSaveTimer) clearTimeout(prefsSaveTimer);
+        prefsSaveTimer = setTimeout(() => {
+            saveViewPrefs(collectViewPrefs(events));
+        }, 300);
+    };
+
+    // listen to all view-option state-change events
+    [
+        'bgClr', 'selectedClr', 'unselectedClr', 'lockedClr',
+        'camera.tonemapping', 'camera.fov', 'view.bands',
+        'camera.flySpeed', 'camera.splatSize',
+        'view.centersUseGaussianColor', 'view.outlineSelection',
+        'grid.visible', 'camera.bound', 'camera.boundDimensions',
+        'camera.showPoses'
+    ].forEach((eventName) => {
+        events.on(eventName, scheduleSavePrefs);
+    });
+
+    // load and apply saved preferences on startup
+    const prefs = loadViewPrefs();
+    if (prefs) {
+        applyViewPrefs(events, prefs);
+    }
 };
 
 export { registerEditorEvents };

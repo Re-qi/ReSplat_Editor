@@ -79,6 +79,20 @@ class EditorUI {
             text: `RESPLAT v${version}`
         });
 
+        // operation log label
+        const operationLogLabel = new Label({
+            id: 'operation-log-label',
+            text: ''
+        });
+
+        // Track last operation name for undo display
+        let lastOperationName = '';
+        let lastImportFileName = '';
+
+        const updateOperationLog = (message: string) => {
+            operationLogLabel.text = message;
+        };
+
         // cursor label
         const cursorLabel = new Label({
             id: 'cursor-label'
@@ -130,6 +144,7 @@ class EditorUI {
 
         canvasContainer.dom.appendChild(canvas);
         canvasContainer.append(appLabel);
+        canvasContainer.append(operationLogLabel);
         canvasContainer.append(cursorLabel);
         canvasContainer.append(toolsContainer);
         canvasContainer.append(scenePanel);
@@ -396,6 +411,146 @@ class EditorUI {
                 document.body.focus();
             }
         }, true);
+
+        // Track if current operation is an import to avoid duplicate logging
+        let isImportOperation = false;
+
+        // Listen to operation events
+        events.on('edit.add', (editOp: any) => {
+            if (editOp.name && editOp.name !== 'addSplat' && editOp.name !== 'addShape') {
+                let displayName: string;
+                if (editOp.name === 'multiOp') {
+                    const tool = events.invoke('tool.active') as string;
+                    displayName = getToolDisplayName(tool);
+                } else {
+                    displayName = getOperationDisplayName(editOp.name);
+                }
+                lastOperationName = displayName;
+                updateOperationLog(displayName);
+            } else if (editOp.name === 'addSplat') {
+                isImportOperation = true;
+                // Try to get filename from splat
+                if (editOp.splat && editOp.splat.filename) {
+                    lastImportFileName = editOp.splat.filename;
+                }
+            }
+        });
+
+        // Listen to element added events for import operations
+        events.on('scene.elementAdded', (element: any) => {
+            if (element && element.constructor && element.constructor.name === 'Splat' && isImportOperation) {
+                const fileName = element.filename || lastImportFileName || '文件';
+                updateOperationLog(`新建：${fileName}`);
+                lastOperationName = `新建：${fileName}`;
+                isImportOperation = false;
+                lastImportFileName = '';
+            }
+        });
+
+        events.on('edit.undo', () => {
+            updateOperationLog(`撤回：${lastOperationName}`);
+        });
+
+        events.on('edit.redo', () => {
+            updateOperationLog('重做');
+        });
+
+        events.on('sphereSelection.create', () => {
+            updateOperationLog('新建包裹球');
+            lastOperationName = '新建包裹球';
+        });
+
+        events.on('boxSelection.create', () => {
+            updateOperationLog('新建包裹盒');
+            lastOperationName = '新建包裹盒';
+        });
+
+        events.on('blockingPlane.create', () => {
+            updateOperationLog('新建阻挡平面');
+            lastOperationName = '新建阻挡平面';
+        });
+
+        events.on('select.all', () => {
+            updateOperationLog('全选');
+            lastOperationName = '全选';
+        });
+
+        events.on('select.none', () => {
+            updateOperationLog('取消选择');
+            lastOperationName = '取消选择';
+        });
+
+        events.on('select.invert', () => {
+            updateOperationLog('反选');
+            lastOperationName = '反选';
+        });
+
+        events.on('select.delete', () => {
+            updateOperationLog('删除选中');
+            lastOperationName = '删除选中';
+        });
+
+        events.on('select.duplicate', () => {
+            updateOperationLog('复制选中');
+            lastOperationName = '复制选中';
+        });
+
+        events.on('select.separate', () => {
+            updateOperationLog('分离选中');
+            lastOperationName = '分离选中';
+        });
+
+        events.on('select.merge', () => {
+            updateOperationLog('合并选中');
+            lastOperationName = '合并选中';
+        });
+
+        events.on('select.hide', () => {
+            updateOperationLog('隐藏选中');
+            lastOperationName = '隐藏选中';
+        });
+
+        events.on('select.unhide', () => {
+            updateOperationLog('显示全部');
+            lastOperationName = '显示全部';
+        });
+
+        // Helper function to get display names for operations
+        const getOperationDisplayName = (opName: string): string => {
+            const opDisplayNames: Record<string, string> = {
+                'selectAll': '全选',
+                'selectNone': '取消选择',
+                'selectInvert': '反选',
+                'selectOp': '选择',
+                'hideSelection': '隐藏选中',
+                'unhideAll': '显示全部',
+                'deleteSelection': '删除选中',
+                'splatsTransform': '变换选中',
+                'setPivot': '设置枢轴',
+                'addSplat': '新建包裹球',
+                'splatRename': '重命名',
+                'addGroup': '新建点云组',
+                'deleteGroup': '删除分组',
+                'modifyGroupRanges': '修改分组',
+                'entityTransform': '实体变换',
+                'merge': '合并',
+                'stateOp': '状态操作',
+                'addShape': '新建包裹球',
+                'reset': '重置',
+                'animTrackEdit': '动画轨道编辑'
+            };
+            return opDisplayNames[opName] || opName;
+        };
+
+        // Helper function to get display names for transform tools
+        const getToolDisplayName = (tool: string): string => {
+            const toolDisplayNames: Record<string, string> = {
+                'move': '移动',
+                'rotate': '旋转',
+                'scale': '缩放'
+            };
+            return toolDisplayNames[tool] || '变换';
+        };
     }
 }
 

@@ -1,7 +1,8 @@
-import { Color, Mat4 } from 'playcanvas';
+import { Color, Mat4, Quat, Vec3 } from 'playcanvas';
 
 import { AnimTrack } from './anim-track';
 import { Element } from './element';
+import { Events } from './events';
 import { IndexRanges, sortedPredicate } from './index-ranges';
 import { Pivot } from './pivot';
 import { Scene } from './scene';
@@ -14,6 +15,7 @@ interface EditOp {
     do(): void | Promise<void>;
     undo(): void | Promise<void>;
     destroy?(): void;
+    serialize(): { type: string; data: any };
 }
 
 enum BitOp {
@@ -70,6 +72,26 @@ class StateOp {
     destroy() {
         this.splat = null;
         this.ranges = null;
+    }
+
+    serialize() {
+        return {
+            type: this.name,
+            data: {
+                splatIndex: this.splat.scene.getSplatIndex(this.splat),
+                ranges: this.ranges.serialize(),
+                mask: this.mask,
+                op: ['SET', 'CLEAR', 'TOGGLE'][this.op],
+                updateFlags: this.updateFlags
+            }
+        };
+    }
+
+    static deserialize(data: any, scene: Scene): StateOp {
+        const splat = scene.getSplatByIndex(data.splatIndex);
+        const ranges = IndexRanges.deserialize(data.ranges);
+        const op = ['SET', 'CLEAR', 'TOGGLE'].indexOf(data.op);
+        return new StateOp(splat, ranges, data.mask, op, data.updateFlags);
     }
 }
 
@@ -136,6 +158,87 @@ class SelectOp extends StateOp {
     }
 }
 
+/** Unlike SelectOp 'set' (TOGGLE-based, no-op when state matches), this op
+ *  truly replaces the selection: clears all selected bits then sets only the
+ *  target indices. All state queries happen at execution time, so it works
+ *  correctly inside MultiOp or when gaussians already match the target. */
+class ReplaceSelectionOp {
+    name = 'replaceSelection';
+    splat: Splat;
+    prevRanges: IndexRanges;
+    targetIndices: Uint32Array;
+
+    constructor(splat: Splat, targetIndices: Uint32Array) {
+        this.splat = splat;
+        this.targetIndices = targetIndices;
+        // Snapshot currently selected gaussians for undo
+        const state = splat.splatData.getProp('state') as Uint8Array;
+        this.prevRanges = IndexRanges.fromPredicate(
+            splat.splatData.numSplats,
+            (i: number) => (state[i] & State.selected) !== 0
+        );
+    }
+
+    async do() {
+        const { splat, targetIndices } = this;
+        const numSplats = splat.splatData.numSplats;
+        const state = splat.splatData.getProp('state') as Uint8Array;
+
+        // Compute ranges at execution time — not construction — so this
+        // works after a prior SelectNoneOp inside a MultiOp has already
+        // cleared the selection.
+        const currentlySelected = IndexRanges.fromPredicate(
+            numSplats,
+            (i: number) => (state[i] & State.selected) !== 0
+        );
+        splat.state.clearBits(currentlySelected, State.selected);
+
+        const targetRanges = IndexRanges.fromPredicate(
+            numSplats,
+            sortedPredicate(targetIndices)
+        );
+        splat.state.setBits(targetRanges, State.selected);
+
+        await splat.updateState(State.selected);
+    }
+
+    async undo() {
+        const { splat } = this;
+        const numSplats = splat.splatData.numSplats;
+        const state = splat.splatData.getProp('state') as Uint8Array;
+
+        // Compute currently selected (should be the target indices we set)
+        const currentlySelected = IndexRanges.fromPredicate(
+            numSplats,
+            (i: number) => (state[i] & State.selected) !== 0
+        );
+        splat.state.clearBits(currentlySelected, State.selected);
+
+        // Restore previous selection
+        splat.state.setBits(this.prevRanges, State.selected);
+
+        await splat.updateState(State.selected);
+    }
+
+    serialize() {
+        return {
+            type: this.name,
+            data: {
+                splatIndex: this.splat.scene.getSplatIndex(this.splat),
+                targetIndices: Array.from(this.targetIndices),
+                prevRanges: this.prevRanges.serialize()
+            }
+        };
+    }
+
+    static deserialize(data: any, scene: Scene): ReplaceSelectionOp {
+        const splat = scene.getSplatByIndex(data.splatIndex);
+        const op = new ReplaceSelectionOp(splat, new Uint32Array(data.targetIndices));
+        op.prevRanges = IndexRanges.deserialize(data.prevRanges);
+        return op;
+    }
+}
+
 class HideSelectionOp extends StateOp {
     name = 'hideSelection';
 
@@ -197,6 +300,38 @@ class EntityTransformOp {
         this.element = null;
         this.oldt = null;
         this.newt = null;
+    }
+
+    serialize() {
+        const pack3 = (v: Vec3) => [v.x, v.y, v.z];
+        const pack4 = (q: Quat) => [q.x, q.y, q.z, q.w];
+        return {
+            type: this.name,
+            data: {
+                elementIndex: this.element.scene.elements.indexOf(this.element),
+                oldt: {
+                    position: pack3(this.oldt.position),
+                    rotation: pack4(this.oldt.rotation),
+                    scale: pack3(this.oldt.scale)
+                },
+                newt: {
+                    position: pack3(this.newt.position),
+                    rotation: pack4(this.newt.rotation),
+                    scale: pack3(this.newt.scale)
+                }
+            }
+        };
+    }
+
+    static deserialize(data: any, scene: Scene): EntityTransformOp {
+        const unpackTransform = (t: any) => new Transform(
+            new Vec3(t.position), new Quat(t.rotation), new Vec3(t.scale)
+        );
+        return new EntityTransformOp({
+            element: scene.elements[data.elementIndex],
+            oldt: unpackTransform(data.oldt),
+            newt: unpackTransform(data.newt)
+        });
     }
 }
 
@@ -273,6 +408,25 @@ class SplatsTransformOp {
         this.transform = null;
         this.paletteMap = null;
     }
+
+    serialize() {
+        return {
+            type: this.name,
+            data: {
+                splatIndex: this.splat.scene.getSplatIndex(this.splat),
+                transform: Array.from(this.transform.data),
+                paletteMap: Array.from(this.paletteMap.entries())
+            }
+        };
+    }
+
+    static deserialize(data: any, scene: Scene): SplatsTransformOp {
+        return new SplatsTransformOp({
+            splat: scene.getSplatByIndex(data.splatIndex),
+            transform: new Mat4().set(data.transform),
+            paletteMap: new Map<number, number>(data.paletteMap)
+        });
+    }
 }
 
 class PlacePivotOp {
@@ -293,6 +447,37 @@ class PlacePivotOp {
 
     undo() {
         this.pivot.place(this.oldt);
+    }
+
+    serialize() {
+        const pack3 = (v: Vec3) => [v.x, v.y, v.z];
+        const pack4 = (q: Quat) => [q.x, q.y, q.z, q.w];
+        return {
+            type: this.name,
+            data: {
+                oldt: {
+                    position: pack3(this.oldt.position),
+                    rotation: pack4(this.oldt.rotation),
+                    scale: pack3(this.oldt.scale)
+                },
+                newt: {
+                    position: pack3(this.newt.position),
+                    rotation: pack4(this.newt.rotation),
+                    scale: pack3(this.newt.scale)
+                }
+            }
+        };
+    }
+
+    static deserialize(data: any, events: Events): PlacePivotOp {
+        const unpackTransform = (t: any) => new Transform(
+            new Vec3(t.position), new Quat(t.rotation), new Vec3(t.scale)
+        );
+        return new PlacePivotOp({
+            pivot: events.invoke('pivot') as Pivot,
+            oldt: unpackTransform(data.oldt),
+            newt: unpackTransform(data.newt)
+        });
     }
 }
 
@@ -343,6 +528,44 @@ class SetSplatColorAdjustmentOp {
         if (whitePoint !== null) splat.whitePoint = whitePoint;
         if (transparency !== null) splat.transparency = transparency;
     }
+
+    serialize() {
+        const packColor = (c: Color | undefined) => c ? [c.r, c.g, c.b, c.a] : null;
+        const packState = (s: ColorAdjustment) => ({
+            tintClr: packColor(s.tintClr),
+            temperature: s.temperature ?? null,
+            saturation: s.saturation ?? null,
+            brightness: s.brightness ?? null,
+            blackPoint: s.blackPoint ?? null,
+            whitePoint: s.whitePoint ?? null,
+            transparency: s.transparency ?? null
+        });
+        return {
+            type: this.name,
+            data: {
+                splatIndex: this.splat.scene.getSplatIndex(this.splat),
+                oldState: packState(this.oldState),
+                newState: packState(this.newState)
+            }
+        };
+    }
+
+    static deserialize(data: any, scene: Scene): SetSplatColorAdjustmentOp {
+        const unpackState = (s: any): ColorAdjustment => ({
+            tintClr: s.tintClr ? new Color(s.tintClr) : undefined,
+            temperature: s.temperature ?? undefined,
+            saturation: s.saturation ?? undefined,
+            brightness: s.brightness ?? undefined,
+            blackPoint: s.blackPoint ?? undefined,
+            whitePoint: s.whitePoint ?? undefined,
+            transparency: s.transparency ?? undefined
+        });
+        return new SetSplatColorAdjustmentOp({
+            splat: scene.getSplatByIndex(data.splatIndex),
+            oldState: unpackState(data.oldState),
+            newState: unpackState(data.newState)
+        });
+    }
 }
 
 // Snapshot-based undo/redo for animation track edits.
@@ -367,6 +590,21 @@ class AnimTrackEditOp {
     undo() {
         this.track.restore(this.before);
     }
+
+    serialize() {
+        return {
+            type: this.name,
+            data: {
+                before: this.before,
+                after: this.after
+            }
+        };
+    }
+
+    static deserialize(data: any, events: Events): AnimTrackEditOp {
+        const track = events.invoke('animTrack.current') as AnimTrack;
+        return new AnimTrackEditOp(data.name || 'animTrackEdit', track, data.before, data.after);
+    }
 }
 
 class MultiOp {
@@ -387,6 +625,20 @@ class MultiOp {
         for (const op of this.ops) {
             await op.undo();
         }
+    }
+
+    serialize() {
+        return {
+            type: this.name,
+            data: {
+                ops: this.ops.map(op => op.serialize())
+            }
+        };
+    }
+
+    static deserialize(data: any, scene: Scene, events: Events): MultiOp {
+        const ops = (data.ops as any[]).map(opData => deserializeEditOp(opData, scene, events));
+        return new MultiOp(ops);
     }
 }
 
@@ -411,6 +663,19 @@ class AddSplatOp {
     destroy() {
         this.splat.destroy();
     }
+
+    serialize() {
+        return {
+            type: this.name,
+            data: {
+                splatIndex: this.scene.getSplatIndex(this.splat)
+            }
+        };
+    }
+
+    static deserialize(data: any, scene: Scene): AddSplatOp {
+        return new AddSplatOp(scene, scene.getSplatByIndex(data.splatIndex));
+    }
 }
 
 class SplatRenameOp {
@@ -431,6 +696,24 @@ class SplatRenameOp {
 
     undo() {
         this.splat.name = this.oldName;
+    }
+
+    serialize() {
+        return {
+            type: this.name,
+            data: {
+                splatIndex: this.splat.scene.getSplatIndex(this.splat),
+                oldName: this.oldName,
+                newName: this.newName
+            }
+        };
+    }
+
+    static deserialize(data: any, scene: Scene): SplatRenameOp {
+        const splat = scene.getSplatByIndex(data.splatIndex);
+        const op = new SplatRenameOp(splat, data.newName);
+        op.oldName = data.oldName;
+        return op;
     }
 }
 
@@ -470,20 +753,45 @@ class AddGroupOp {
         }
         this.onChanged();
     }
+
+    serialize() {
+        const ids: number[] = [];
+        this.groupData.ranges.forEach(i => ids.push(i));
+        return {
+            type: this.name,
+            data: {
+                splatIndex: this.groupData.splat.scene.getSplatIndex(this.groupData.splat),
+                name: this.groupData.name,
+                ranges: ids
+            }
+        };
+    }
+
+    static deserialize(data: any, scene: Scene, events: Events): AddGroupOp {
+        const splat = scene.getSplatByIndex(data.splatIndex);
+        const groups = events.invoke('pointCloudGroup.getGroupsArray') as GroupData[];
+        const onChanged = events.invoke('pointCloudGroup.getRenderCallback', splat) as () => void;
+        const ranges = IndexRanges.fromPredicate(
+            splat.splatData.numSplats,
+            (i: number) => data.ranges.includes(i)
+        );
+        const groupData: GroupData = { name: data.name, splat, ranges };
+        return new AddGroupOp(groups, groupData, onChanged, data.skipDo ?? true);
+    }
 }
 
 class DeleteGroupOp {
     name = 'deleteGroup';
     groups: GroupData[];
     groupData: GroupData;
-    selectedGroupDataRef: { current: GroupData | null };
+    setSelectedGroupData: (value: GroupData | null) => void;
     onChanged: () => void;
     skipDo: boolean;
 
-    constructor(groups: GroupData[], groupData: GroupData, selectedGroupDataRef: { current: GroupData | null }, onChanged: () => void, skipDo = true) {
+    constructor(groups: GroupData[], groupData: GroupData, setSelectedGroupData: (value: GroupData | null) => void, onChanged: () => void, skipDo = true) {
         this.groups = groups;
         this.groupData = groupData;
-        this.selectedGroupDataRef = selectedGroupDataRef;
+        this.setSelectedGroupData = setSelectedGroupData;
         this.onChanged = onChanged;
         this.skipDo = skipDo;
     }
@@ -492,9 +800,7 @@ class DeleteGroupOp {
         if (!this.skipDo) {
             const idx = this.groups.indexOf(this.groupData);
             if (idx !== -1) this.groups.splice(idx, 1);
-            if (this.selectedGroupDataRef.current === this.groupData) {
-                this.selectedGroupDataRef.current = null;
-            }
+            this.setSelectedGroupData(null);
             this.onChanged();
         }
         this.skipDo = false;
@@ -503,6 +809,32 @@ class DeleteGroupOp {
     undo() {
         this.groups.push(this.groupData);
         this.onChanged();
+    }
+
+    serialize() {
+        const ids: number[] = [];
+        this.groupData.ranges.forEach(i => ids.push(i));
+        return {
+            type: this.name,
+            data: {
+                splatIndex: this.groupData.splat.scene.getSplatIndex(this.groupData.splat),
+                name: this.groupData.name,
+                ranges: ids
+            }
+        };
+    }
+
+    static deserialize(data: any, scene: Scene, events: Events): DeleteGroupOp {
+        const splat = scene.getSplatByIndex(data.splatIndex);
+        const groups = events.invoke('pointCloudGroup.getGroupsArray') as GroupData[];
+        const setSelectedGroupData = events.invoke('pointCloudGroup.setSelectedGroupData') as (value: GroupData | null) => void;
+        const onChanged = events.invoke('pointCloudGroup.getRenderCallback', splat) as () => void;
+        const ranges = IndexRanges.fromPredicate(
+            splat.splatData.numSplats,
+            (i: number) => data.ranges.includes(i)
+        );
+        const groupData: GroupData = { name: data.name, splat, ranges };
+        return new DeleteGroupOp(groups, groupData, setSelectedGroupData, onChanged, data.skipDo ?? true);
     }
 }
 
@@ -533,6 +865,32 @@ class ModifyGroupRangesOp {
     undo() {
         this.groupData.ranges = this.oldRanges;
         this.onChanged();
+    }
+
+    serialize() {
+        return {
+            type: this.name,
+            data: {
+                splatIndex: this.groupData.splat.scene.getSplatIndex(this.groupData.splat),
+                name: this.groupData.name,
+                oldRanges: this.oldRanges.serialize(),
+                newRanges: this.newRanges.serialize()
+            }
+        };
+    }
+
+    static deserialize(data: any, scene: Scene, events: Events): ModifyGroupRangesOp {
+        const splat = scene.getSplatByIndex(data.splatIndex);
+        const groups = events.invoke('pointCloudGroup.getGroupsArray') as GroupData[];
+        // Find the existing group by name
+        const groupData = groups.find((g: GroupData) => g.splat === splat && g.name === data.name);
+        if (!groupData) {
+            throw new Error(`Group '${data.name}' not found for splat`);
+        }
+        const onChanged = events.invoke('pointCloudGroup.getRenderCallback', splat) as () => void;
+        const oldRanges = IndexRanges.deserialize(data.oldRanges);
+        const newRanges = IndexRanges.deserialize(data.newRanges);
+        return new ModifyGroupRangesOp(groupData, oldRanges, newRanges, onChanged, data.skipDo ?? true);
     }
 }
 
@@ -574,6 +932,37 @@ class AddShapeOp {
         }
         this.scene.remove(this.shape);
     }
+
+    serialize() {
+        return {
+            type: this.name,
+            data: {
+                shapeUid: this.shape.uid,
+                shapeType: this.shape.type,
+                shapesUids: this.shapes.map(s => s.uid)
+            }
+        };
+    }
+
+    static deserialize(data: any, scene: Scene): AddShapeOp | null {
+        // Look up the shape from scene.elements by UID
+        const shape = scene.elements.find(e => e.uid === data.shapeUid) as Element;
+        if (!shape) {
+            return null; // shape not in scene (e.g. shapes not saved in document), skip
+        }
+        // Reconstruct the shapes array from scene elements
+        const uidSet = new Set(data.shapesUids);
+        const shapes = scene.elements.filter(e => uidSet.has(e.uid));
+        const currentShape = shapes.length > 0 ? shapes[shapes.length - 1] : null;
+        return new AddShapeOp({
+            scene,
+            shape,
+            shapes,
+            currentShape,
+            setCurrentShape: () => {},
+            skipDo: true
+        });
+    }
 }
 
 interface SerializedGroupData {
@@ -586,17 +975,13 @@ class MergeOp {
     scene: Scene;
     sourceSplats: Splat[];
     mergedSplat: Splat | null;
-    mergedFilename: string;
-    mergedData: Uint8Array | null;
     sourceGroupsData: Map<Splat, SerializedGroupData[]>;
     mergedGroupsData: SerializedGroupData[];
 
-    constructor(scene: Scene, sourceSplats: Splat[], mergedFilename: string, mergedData: Uint8Array) {
+    constructor(scene: Scene, sourceSplats: Splat[], mergedSplat: Splat) {
         this.scene = scene;
         this.sourceSplats = sourceSplats;
-        this.mergedSplat = null;
-        this.mergedFilename = mergedFilename;
-        this.mergedData = mergedData;
+        this.mergedSplat = mergedSplat;
         this.sourceGroupsData = new Map();
         this.mergedGroupsData = [];
 
@@ -658,15 +1043,7 @@ class MergeOp {
             this.scene.remove(splat);
         }
 
-        // Create and add merged splat if it doesn't exist yet
-        if (!this.mergedSplat) {
-            const { BlobReadSource, MappedReadFileSystem } = await import('./io/read/file-systems');
-            const blob = new Blob([this.mergedData.buffer as ArrayBuffer], { type: 'application/octet-stream' });
-            const fileSystem = new MappedReadFileSystem();
-            fileSystem.addFile(this.mergedFilename, blob);
-            this.mergedSplat = await this.scene.assetLoader.load(this.mergedFilename, fileSystem, undefined, true);
-        }
-
+        // Add the pre-built merged splat to the scene
         await this.scene.add(this.mergedSplat);
 
         // Add remapped groups to merged splat
@@ -699,9 +1076,94 @@ class MergeOp {
             this.mergedSplat = null;
         }
         this.sourceSplats = null;
-        this.mergedData = null;
         this.sourceGroupsData = null;
         this.mergedGroupsData = null;
+    }
+
+    serialize() {
+        return {
+            type: this.name,
+            data: {
+                sourceSplatIndices: this.sourceSplats.map(s => this.scene.getSplatIndex(s)),
+                mergedSplatIndex: this.mergedSplat ? this.scene.getSplatIndex(this.mergedSplat) : -1,
+                sourceGroupsData: Array.from(this.sourceGroupsData.entries()).map(([splat, groups]) => ({
+                    splatIndex: this.scene.getSplatIndex(splat),
+                    groups: groups.map(g => ({ name: g.name, indices: Array.from(g.indices) }))
+                })),
+                mergedGroupsData: this.mergedGroupsData.map(g => ({
+                    name: g.name,
+                    indices: Array.from(g.indices)
+                }))
+            }
+        };
+    }
+
+    static deserialize(data: any, scene: Scene): MergeOp {
+        const sourceSplats = data.sourceSplatIndices.map((i: number) => scene.getSplatByIndex(i));
+        const mergedSplat = data.mergedSplatIndex >= 0 ? scene.getSplatByIndex(data.mergedSplatIndex) : null;
+        const op = new MergeOp(scene, sourceSplats, mergedSplat);
+        op.sourceGroupsData = new Map();
+        for (const entry of data.sourceGroupsData) {
+            op.sourceGroupsData.set(
+                scene.getSplatByIndex(entry.splatIndex),
+                entry.groups.map((g: any) => ({ name: g.name, indices: new Uint32Array(g.indices) }))
+            );
+        }
+        op.mergedGroupsData = data.mergedGroupsData.map((g: any) => ({
+            name: g.name,
+            indices: new Uint32Array(g.indices)
+        }));
+        return op;
+    }
+}
+
+// Factory function to deserialize any EditOp from its serialized form
+function deserializeEditOp(
+    opData: { type: string; data: any },
+    scene: Scene,
+    events: Events
+): EditOp {
+    switch (opData.type) {
+        case 'stateOp':
+        case 'selectAll':
+        case 'selectNone':
+        case 'selectInvert':
+        case 'selectOp':
+        case 'hideSelection':
+        case 'unhideAll':
+        case 'deleteSelection':
+        case 'reset':
+            return StateOp.deserialize(opData.data, scene);
+        case 'entityTransform':
+            return EntityTransformOp.deserialize(opData.data, scene);
+        case 'splatsTransform':
+            return SplatsTransformOp.deserialize(opData.data, scene);
+        case 'setPivot':
+            return PlacePivotOp.deserialize(opData.data, events);
+        case 'setSplatColor':
+            return SetSplatColorAdjustmentOp.deserialize(opData.data, scene);
+        case 'animTrackEdit':
+            return AnimTrackEditOp.deserialize(opData.data, events);
+        case 'multiOp':
+            return MultiOp.deserialize(opData.data, scene, events);
+        case 'addSplat':
+            return AddSplatOp.deserialize(opData.data, scene);
+        case 'splatRename':
+            return SplatRenameOp.deserialize(opData.data, scene);
+        case 'merge':
+            return MergeOp.deserialize(opData.data, scene);
+        case 'addGroup':
+            return AddGroupOp.deserialize(opData.data, scene, events);
+        case 'deleteGroup':
+            return DeleteGroupOp.deserialize(opData.data, scene, events);
+        case 'modifyGroupRanges':
+            return ModifyGroupRangesOp.deserialize(opData.data, scene, events);
+        case 'replaceSelection':
+            return ReplaceSelectionOp.deserialize(opData.data, scene);
+        case 'addShape':
+            return AddShapeOp.deserialize(opData.data, scene);
+        default:
+            throw new Error(`Unknown EditOp type: ${opData.type}`);
     }
 }
 
@@ -713,6 +1175,7 @@ export {
     SelectNoneOp,
     SelectInvertOp,
     SelectOp,
+    ReplaceSelectionOp,
     HideSelectionOp,
     UnhideAllOp,
     DeleteSelectionOp,
@@ -730,5 +1193,6 @@ export {
     MergeOp,
     AddGroupOp,
     DeleteGroupOp,
-    ModifyGroupRangesOp
+    ModifyGroupRangesOp,
+    deserializeEditOp
 };

@@ -1,11 +1,12 @@
 import { ZipFileSystem, ZipReadFileSystem } from '@playcanvas/splat-transform';
 
+import { EditHistory } from './edit-history';
 import { Events } from './events';
 import { BrowserFileSystem, BlobReadSource } from './io';
 import { recentFiles } from './recent-files';
 import { Scene } from './scene';
 import { Splat } from './splat';
-import { serializePly } from './splat-serialize';
+import { serializeSog } from './splat-serialize';
 import { Transform } from './transform';
 import { localize } from './ui/localization';
 
@@ -15,7 +16,7 @@ type FilePickerAcceptType = unknown;
 const SuperFileType: FilePickerAcceptType[] = [{
     description: 'ReSplat document',
     accept: {
-        'application/x-ReSplat': ['.ssproj']
+        'application/x-ReSplat': ['.respproj']
     }
 }];
 
@@ -30,7 +31,7 @@ class FileSelector {
         const fileSelector = document.createElement('input');
         fileSelector.setAttribute('id', 'document-file-selector');
         fileSelector.setAttribute('type', 'file');
-        fileSelector.setAttribute('accept', '.ssproj');
+        fileSelector.setAttribute('accept', '.respproj');
         fileSelector.setAttribute('multiple', 'false');
 
         document.body.append(fileSelector);
@@ -52,7 +53,7 @@ class FileSelector {
     }
 }
 
-const registerDocEvents = (scene: Scene, events: Events) => {
+const registerDocEvents = (scene: Scene, events: Events, editHistory: EditHistory) => {
     // construct the file selector
     const fileSelector = window.showOpenFilePicker ? null : new FileSelector();
 
@@ -102,12 +103,11 @@ const registerDocEvents = (scene: Scene, events: Events) => {
 
             // run through each splat and load it
             for (let i = 0; i < document.splats.length; ++i) {
-                const filename = `splat_${i}.ply`;
+                const splatDir = `splat_${i}.sog`;
                 const splatSettings = document.splats[i];
 
-                // load splat directly from the zip filesystem (streams on-demand)
-                // skipReorder=true because ssproj PLY files are already in morton order
-                const splat = await scene.assetLoader.load(filename, zipFs, false, true);
+                // load SOG from the zip filesystem
+                const splat = await scene.assetLoader.load(splatDir, zipFs, false, true);
 
                 await scene.add(splat);
 
@@ -124,6 +124,27 @@ const registerDocEvents = (scene: Scene, events: Events) => {
             events.invoke('docDeserialize.poseSets', document.poseSets, document.camera?.fov);
             events.invoke('docDeserialize.view', document.view);
             scene.camera.docDeserialize(document.camera);
+
+            // restore point cloud groups (must happen before editHistory deserialization
+            // so that group ops can reference properly loaded groups)
+            if (document.groups) {
+                const allSplats = events.invoke('scene.allSplats') as Splat[];
+                for (let i = 0; i < document.groups.length && i < allSplats.length; i++) {
+                    const splatGroups = document.groups[i];
+                    if (splatGroups && splatGroups.length > 0) {
+                        const groupsData = splatGroups.map((g: any) => ({
+                            name: g.name,
+                            indices: new Uint32Array(g.indices)
+                        }));
+                        events.fire('pointCloudGroup.addGroupsForSplat', allSplats[i], groupsData);
+                    }
+                }
+            }
+
+            // restore edit history (must await since it goes through commandQueue)
+            if (document.editHistory) {
+                await editHistory.deserialize(document.editHistory, scene);
+            }
 
             // refresh the pivot to reflect the loaded transform
             const currentSelection = events.invoke('selection');
@@ -153,20 +174,26 @@ const registerDocEvents = (scene: Scene, events: Events) => {
         try {
             const splats = events.invoke('scene.allSplats') as Splat[];
 
+            // Serialize point cloud groups for each splat
+            const groups: { name: string; indices: number[] }[][] = splats.map(s => {
+                const splatGroups = events.invoke('pointCloudGroup.getGroupsForSplat', s) as { name: string; indices: Uint32Array }[];
+                return splatGroups.map(g => ({ name: g.name, indices: Array.from(g.indices) }));
+            });
+
             const document = {
                 version: 0,
                 camera: scene.camera.docSerialize(),
                 view: events.invoke('docSerialize.view'),
                 poseSets: events.invoke('docSerialize.poseSets'),
                 timeline: events.invoke('docSerialize.timeline'),
-                splats: splats.map(s => s.docSerialize())
+                splats: splats.map(s => s.docSerialize()),
+                groups: groups,
+                editHistory: editHistory.serialize()
             };
 
-            const serializeSettings = {
-                // even though we support saving selection state, we disable that for now
-                // because including a uint8 array in the document PLY results in slow loading
-                // path.
-                keepStateData: false,
+            const sogSettings = {
+                iterations: 10,
+                keepStateData: true,
                 keepWorldTransform: true,
                 keepColorTint: true
             };
@@ -181,9 +208,9 @@ const registerDocEvents = (scene: Scene, events: Events) => {
             await docWriter.write(new TextEncoder().encode(JSON.stringify(document)));
             await docWriter.close();
 
-            // Write each splat as PLY
+            // Write each splat as SOG (compressed, ~10x smaller than PLY)
             for (let i = 0; i < splats.length; ++i) {
-                await serializePly([splats[i]], serializeSettings, zipFs, `splat_${i}.ply`);
+                await serializeSog([splats[i]], { ...sogSettings, filename: `splat_${i}.sog` }, zipFs);
             }
 
             // Close zip (also closes underlying browser writer)
@@ -318,7 +345,7 @@ const registerDocEvents = (scene: Scene, events: Events) => {
                 const handle = await window.showSaveFilePicker({
                     id: 'ReSplatDocumentSave',
                     types: SuperFileType,
-                    suggestedName: 'scene.ssproj'
+                    suggestedName: 'scene.respproj'
                 });
                 await saveDocument({ stream: await handle.createWritable() });
                 documentFileHandle = handle;
@@ -332,7 +359,7 @@ const registerDocEvents = (scene: Scene, events: Events) => {
             }
         } else {
             await saveDocument({
-                filename: 'scene.ssproj'
+                    filename: 'scene.respproj'
             });
             events.fire('doc.saved');
         }
