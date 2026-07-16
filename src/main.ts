@@ -43,11 +43,11 @@ import { registerTransformHandlerEvents } from './transform-handler';
 import { BoundDimensionsOverlay } from './ui/bound-dimensions-overlay';
 import { EditorUI } from './ui/editor';
 import { localizeInit, localize } from './ui/localization';
-import { ZoomManager } from './zoom-manager';
 import { MenuPanel, MenuItem } from './ui/menu-panel';
 import sphereSvg from './ui/svg/select-sphere.svg';
 import boxSvg from './ui/svg/show-hide-splats.svg';
 import squareXSvg from './ui/svg/square-x.svg';
+import { ZoomManager } from './zoom-manager';
 
 declare global {
     interface LaunchParams {

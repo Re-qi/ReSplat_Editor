@@ -25,7 +25,7 @@ class SplatOriginTracker {
     register(splat: Splat, filename: string) {
         const ranges = IndexRanges.fromPredicate(
             splat.splatData.numSplats,
-            (i) => ((splat.state.data[i] & State.deleted) === 0)
+            i => ((splat.state.data[i] & State.deleted) === 0)
         );
         this.records.push({ splat, filename, ranges });
     }
@@ -60,7 +60,7 @@ class SplatOriginTracker {
         if (record) {
             record.ranges = IndexRanges.fromPredicate(
                 splat.splatData.numSplats,
-                (i) => ((splat.state.data[i] & State.deleted) === 0)
+                i => ((splat.state.data[i] & State.deleted) === 0)
             );
         }
     }

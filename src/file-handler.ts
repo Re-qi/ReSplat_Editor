@@ -346,8 +346,7 @@ const initFileHandler = (scene: Scene, events: Events, dropTarget: HTMLElement) 
                             console.log(`[auto-lod] Large PLY detected: ${meta.count.toLocaleString()} Gaussians, ~${meta.estMemMB} MB → LOD [5%, 25%, 100%]`);
                             events.fire('startSpinner');
                             try {
-                                await BackendClient.lodConvert(file, [5, 25, 100]).then(lodResult =>
-                                    loadLODLevels(lodResult, importFiles, events)
+                                await BackendClient.lodConvert(file, [5, 25, 100]).then(lodResult => loadLODLevels(lodResult, importFiles, events)
                                 );
                                 return; // LOD loading handles its own scene.add
                             } catch (err) {
@@ -361,7 +360,6 @@ const initFileHandler = (scene: Scene, events: Events, dropTarget: HTMLElement) 
                             } finally {
                                 events.fire('stopSpinner');
                             }
-                            return;
                         }
                     } else {
                         // Online mode: show download prompt

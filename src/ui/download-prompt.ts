@@ -1,5 +1,5 @@
-import { Events } from '../events';
 import { BackendClient } from '../backend';
+import { Events } from '../events';
 
 /**
  * Show a prompt guiding the user to download the local version of ReSplat
