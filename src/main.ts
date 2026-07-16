@@ -2,6 +2,7 @@ import { Button, Container, NumericInput } from '@playcanvas/pcui';
 import { WebPCodec } from '@playcanvas/splat-transform';
 import { Color, createGraphicsDevice, Mat4, Vec3, Quat } from 'playcanvas';
 
+import { BackendClient } from './backend';
 import { BlockingPlane } from './blocking-plane';
 import { registerCameraPosesEvents } from './camera-poses';
 import { CommandQueue } from './command-queue';
@@ -42,6 +43,7 @@ import { registerTransformHandlerEvents } from './transform-handler';
 import { BoundDimensionsOverlay } from './ui/bound-dimensions-overlay';
 import { EditorUI } from './ui/editor';
 import { localizeInit, localize } from './ui/localization';
+import { ZoomManager } from './zoom-manager';
 import { MenuPanel, MenuItem } from './ui/menu-panel';
 import sphereSvg from './ui/svg/select-sphere.svg';
 import boxSvg from './ui/svg/show-hide-splats.svg';
@@ -120,6 +122,13 @@ const main = async () => {
 
     // Configure WebP WASM for SOG format (used for both reading and writing)
     WebPCodec.wasmUrl = new URL('static/lib/webp/webp.wasm', document.baseURI).toString();
+
+    // Detect local backend availability (non-blocking, result cached)
+    BackendClient.isAvailable().then((available) => {
+        if (available) {
+            console.log('[ReSplat] Local backend detected — large file processing enabled');
+        }
+    });
 
     // register events that only need the events object (before UI is created)
     registerTimelineEvents(events);
@@ -299,6 +308,9 @@ const main = async () => {
 
     // editor ui
     const editorUI = new EditorUI(events);
+
+    // UI zoom manager (Ctrl+Wheel on UI elements, Electron only)
+    const zoomManager = new ZoomManager();
 
     // create the graphics device
     const graphicsDevice = await createGraphicsDevice(editorUI.canvas, {

@@ -41,12 +41,11 @@ const defaultShortcuts: Record<string, ShortcutBinding> = {
     'tool.move': { keys: ['w'] },
     'tool.rotate': { keys: ['e'] },
     'tool.scale': { keys: ['r'] },
-    'tool.rectSelection': { keys: ['q'] },
-    'tool.lassoSelection': { keys: ['l'] },
-    'tool.polygonSelection': { keys: ['p'] },
-    'tool.brushSelection': { keys: ['b'] },
-    'tool.floodSelection': { keys: ['o'] },
-    'tool.eyedropperSelection': { keys: ['e'], ctrl: 'required', capture: true },
+    'tool.rectSelection': { keys: ['2'] },
+    'tool.lassoSelection': { keys: ['4'] },
+    'tool.polygonSelection': { keys: ['3'] },
+    'tool.brushSelection': { keys: ['1'] },
+    'tool.cycleFloodTool': { keys: ['5'] },
     'tool.brushSelection.smaller': { keys: ['['], repeat: true },
     'tool.brushSelection.bigger': { keys: [']'], repeat: true },
     'tool.deactivate': { keys: ['Escape'] },
@@ -59,7 +58,7 @@ const defaultShortcuts: Record<string, ShortcutBinding> = {
     'bottomToolbar.toggle': { keys: ['t'] },
     'scenePanel.toggle': { keys: ['n'] },
 
-    'camera.toggleOverlay': { keys: ['z'], alt: 'required', capture: true }
+    'camera.toggleOverlay': { keys: ['c'] }
 
     // Camera fly keys - handled by main.ts for conditional mouse state checking
     // (W/A/S/D/Q/E are intercepted there to switch tools when no mouse is pressed)

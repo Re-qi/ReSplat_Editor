@@ -1,5 +1,6 @@
 import { Asset, Color, GSplatData, GSplatResource, Mat4, path, Quat, Texture, Vec3, Vec4 } from 'playcanvas';
 
+import { BackendClient } from './backend';
 import { BlockingPlane } from './blocking-plane';
 import { BoxShape } from './box-shape';
 import { EditHistory } from './edit-history';
@@ -1041,9 +1042,46 @@ const registerEditorEvents = (events: Events, editHistory: EditHistory, scene: S
         const multiSelected = events.invoke('multiSplatSelection') as Splat[];
         if (multiSelected.length < 2) return;
 
-        // Build merged Splat directly by concatenating GSplatData properties in memory.
-        // This avoids the serialize-PLY-then-parse roundtrip that requires allocating the
-        // entire merged PLY as a single Uint8Array (which fails for large files).
+        // Try backend merge first — C++ native engine avoids browser OOM for large files.
+        // Requires: backend available + all splats have original PLY file paths.
+        const backendAvailable = await BackendClient.isAvailable();
+        const filePaths = multiSelected.map(s => s.originalFilePath).filter(Boolean) as string[];
+        const allPly = filePaths.every(p => p.toLowerCase().endsWith('.ply') && !p.toLowerCase().endsWith('.compressed.ply'));
+
+        if (backendAvailable && filePaths.length === multiSelected.length && allPly) {
+            try {
+                events.fire('startSpinner');
+                const result = await BackendClient.mergePath(filePaths);
+                console.log(`[merge] Backend merged ${result.count.toLocaleString()} Gaussians, ${(result.sizeBytes / (1024 * 1024)).toFixed(1)} MB`);
+
+                // Download merged compressed-ply and import via standard pipeline
+                const blob = await fetch(result.url).then(r => r.blob());
+                const file = new File([blob], result.filename);
+                const imported = await events.invoke('import', [{ filename: result.filename, contents: file }]) as Splat[];
+
+                if (!imported || imported.length === 0) {
+                    throw new Error('Import of merged file returned no splats');
+                }
+
+                const mergedSplat = imported[0];
+                // Mark as merged (no permanent file path)
+                mergedSplat.originalFilePath = null;
+
+                const mergeOp = new MergeOp(scene, multiSelected, mergedSplat);
+                await editHistory.add(mergeOp);
+
+                events.fire('selection.clearMultiSplat');
+                events.fire('selection', mergeOp.mergedSplat);
+                events.fire('stopSpinner');
+                return;
+            } catch (err) {
+                events.fire('stopSpinner');
+                console.error('[merge] Backend merge failed, falling back to in-memory:', err);
+                // Fall through to in-memory merge below
+            }
+        }
+
+        // In-memory merge fallback — concatenate GSplatData properties directly.
         const srcDatas = multiSelected.map(s => s.splatData);
         const totalCount = srcDatas.reduce((sum, d) => sum + d.numSplats, 0);
 

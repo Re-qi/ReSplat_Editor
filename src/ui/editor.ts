@@ -4,7 +4,7 @@ import { Mat4, path, Vec3 } from 'playcanvas';
 import { DataPanel } from './data-panel';
 import { Events } from '../events';
 import { AboutPopup } from './about-popup';
-import { BottomToolbar } from './bottom-toolbar';
+import { LeftToolbar } from './left-toolbar';
 import { CameraModeSwitch } from './camera-mode-switch';
 import { ExportPopup } from './export-popup';
 import { FixPlyDialog } from './fix-ply-dialog';
@@ -135,7 +135,7 @@ class EditorUI {
 
         // bottom toolbar
         const scenePanel = new ScenePanel(events, tooltips, canvasContainer);
-        const bottomToolbar = new BottomToolbar(events, tooltips);
+        const leftToolbar = new LeftToolbar(events, tooltips);
         const modeToggle = new ModeToggle(events, tooltips);
         const modeSwitch = new ModeSwitch(events, tooltips);
         const overlayToggle = new OverlayToggle(events, tooltips);
@@ -148,7 +148,7 @@ class EditorUI {
         canvasContainer.append(cursorLabel);
         canvasContainer.append(toolsContainer);
         canvasContainer.append(scenePanel);
-        canvasContainer.append(bottomToolbar);
+        canvasContainer.append(leftToolbar);
         canvasContainer.append(modeToggle);
         canvasContainer.append(overlayToggle);
         canvasContainer.append(cameraModeSwitch);

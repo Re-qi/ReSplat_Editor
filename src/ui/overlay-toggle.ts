@@ -47,7 +47,7 @@ class OverlayToggle extends Container {
 
         this.append(overlayBtn);
 
-        tooltips.register(overlayBtn, `${localize('panel.mode.overlay')}（Alt+Z）`, 'bottom');
+        tooltips.register(overlayBtn, `${localize('panel.mode.overlay')}（C）`, 'bottom');
     }
 }
 

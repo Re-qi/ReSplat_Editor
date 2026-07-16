@@ -1,5 +1,6 @@
 import { path, Quat, Vec3 } from 'playcanvas';
 
+import { BackendClient } from './backend';
 import { CreateDropHandler } from './drop-handler';
 import { ElementType } from './element';
 import { Events } from './events';
@@ -7,6 +8,7 @@ import { BrowserFileSystem, MappedReadFileSystem, readSogMeta, readPlyMeta } fro
 import { Scene } from './scene';
 import { Splat } from './splat';
 import { serializePly, serializePlyCompressed, serializeStandardPly, SerializeSettings, serializeSog, serializeSplat, serializeViewer, SogSettings, ViewerExportSettings } from './splat-serialize';
+import { showDownloadPrompt } from './ui/download-prompt';
 import { localize } from './ui/localization';
 
 // ts compiler and vscode find this type, but eslint does not
@@ -158,7 +160,7 @@ type ImportFile = {
 };
 
 const SOG_LARGE_COUNT = 15_000_000;
-const PLY_MAX_MEMORY_MB = 3_000;    // ~3 GB peak memory; leaves ~1 GB for GPU + engine
+const PLY_MAX_MEMORY_MB = 6_000;    // ~6 GB peak memory; browser V8 heap ~4GB but splat-transform streams
 
 const vec = new Vec3();
 
@@ -312,65 +314,65 @@ const initFileHandler = (scene: Scene, events: Events, dropTarget: HTMLElement) 
                 mainFile.url :
                 mainFile.filename;
 
-            // Pre-check for large SOG files: read meta.json count before full load
-            let decimatePercent: number | undefined;
+            // Pre-check for large SOG files: if online mode, warn user about download size
+            const isBackendResult = mainFile.url?.startsWith(`${BackendClient.BASE_URL}/temp/`);
             if (filename.toLowerCase().endsWith('.sog')) {
                 const meta = await readSogMeta(fileSystem, filename);
                 if (meta && meta.count > SOG_LARGE_COUNT) {
-                    const response = await events.invoke('showPopup', {
-                        type: 'yesno',
-                        header: '检测到大文件',
-                        message: `该文件包含 ${meta.count.toLocaleString()} 个高斯点 ` +
-                            `（预计需要 ${meta.estMemMB} MB 内存）。` +
-                            '它超出了浏览器内存限制（约 4 GB），无法直接加载。\n\n' +
-                            `是否在加载时自动精简至约 ${(meta.count * 0.1).toLocaleString()} 个高斯点（10%）？`
-                    });
-                    if (response) {
-                        decimatePercent = 10;
-                    } else {
-                        // User cancelled — show fallback guidance
-                        await events.invoke('showPopup', {
-                            type: 'info',
-                            header: '无法加载文件',
-                            message: '要加载此文件，请先预处理：\n\n' +
-                                `npx @playcanvas/splat-transform "${filename}" --decimate 25 -o output.sog\n\n` +
-                                '然后在 ReSplat 中加载较小的 output.sog。'
-                        });
+                    const backendAvailable = await BackendClient.isAvailable();
+                    if (!backendAvailable) {
+                        // Online mode only: warn about large file before attempting load
+                        await showDownloadPrompt(events, mainFile.filename, meta.count, meta.estMemMB);
                         return;
                     }
+                    // Local mode: proceed directly — browser handles SOG natively
                 }
             }
 
             // Pre-check for large PLY files: read header vertex count before full load
-            if (filename.toLowerCase().endsWith('.ply') && !filename.toLowerCase().endsWith('.compressed.ply')) {
+            // Skip for files served by our own backend (already processed)
+            if (!isBackendResult && filename.toLowerCase().endsWith('.ply') && !filename.toLowerCase().endsWith('.compressed.ply')) {
                 const meta = await readPlyMeta(fileSystem, filename);
                 if (meta && meta.estMemMB > PLY_MAX_MEMORY_MB) {
-                    const response = await events.invoke('showPopup', {
-                        type: 'yesno',
-                        header: '检测到大文件',
-                        message: `该 PLY 文件包含 ${meta.count.toLocaleString()} 个高斯点 ` +
-                            `（预计峰值内存 ${meta.estMemMB} MB）。` +
-                            '它超出了浏览器内存限制（约 4 GB），加载时很可能会崩溃。\n\n' +
-                            '仍然继续？（很可能会因内存不足而失败。）'
-                    });
-                    if (!response) {
-                        // User cancelled — show preprocessing guidance
-                        await events.invoke('showPopup', {
-                            type: 'info',
-                            header: '无法加载文件',
-                            message: '要加载此文件，请先转换为 .sog 格式（SOG 支持加载时自动精简）：\n\n' +
-                                `npx @playcanvas/splat-transform "${filename}" -o output.sog\n\n` +
-                                '如果仍然过大，请添加 --decimate：\n\n' +
-                                `npx @playcanvas/splat-transform "${filename}" --decimate 25 -o output.sog\n\n` +
-                                '然后在 ReSplat 中加载较小的 output.sog。'
-                        });
+                    const backendAvailable = await BackendClient.isAvailable();
+
+                    if (backendAvailable) {
+                        const file = mainFile.contents as File;
+                        if (!file) {
+                            // No local file blob — fall through to direct load
+                            // (e.g. URL-loaded files can't be sent to backend)
+                        } else {
+                            // Auto LOD progressive loading — no user prompt
+                            console.log(`[auto-lod] Large PLY detected: ${meta.count.toLocaleString()} Gaussians, ~${meta.estMemMB} MB → LOD [5%, 25%, 100%]`);
+                            events.fire('startSpinner');
+                            try {
+                                await BackendClient.lodConvert(file, [5, 25, 100]).then(lodResult =>
+                                    loadLODLevels(lodResult, importFiles, events)
+                                );
+                                return; // LOD loading handles its own scene.add
+                            } catch (err) {
+                                console.error('[auto-lod] Failed:', err);
+                                await events.invoke('showPopup', {
+                                    type: 'error',
+                                    header: 'LOD 处理失败',
+                                    message: `自动分级加载失败: ${err.message || err}`
+                                });
+                                return;
+                            } finally {
+                                events.fire('stopSpinner');
+                            }
+                            return;
+                        }
+                    } else {
+                        // Online mode: show download prompt
+                        await showDownloadPrompt(events, mainFile.filename, meta.count, meta.estMemMB);
                         return;
                     }
                 }
             }
 
             const model = await scene.assetLoader.load(
-                filename, fileSystem, animationFrame, false, decimatePercent
+                filename, fileSystem, animationFrame, false, undefined
             );
             await scene.add(model);
             return model;
@@ -539,9 +541,63 @@ const initFileHandler = (scene: Scene, events: Events, dropTarget: HTMLElement) 
         }
     });
 
+    // Progressive LOD loader: load lowest level first, then replace with higher levels
+    const loadLODLevels = async (
+        lodResult: { levels: Array<{ level: number; count: number; url: string; sizeBytes: number }> },
+        importFn: (files: ImportFile[], animFrame: boolean) => Promise<Splat[]>,
+        evts: Events
+    ) => {
+        const levels = lodResult.levels.sort((a, b) => a.level - b.level);
+        if (levels.length === 0) return;
+
+        // Load lowest LOD first (fast preview)
+        const preview = levels[0];
+        console.log(`[LOD] Loading preview: ${preview.level}% (${preview.count.toLocaleString()} Gaussians)`);
+        const models = await importFn([{ filename: `lod_${preview.level}.compressed.ply`, url: preview.url }], false);
+        let currentModel = models[0];
+
+        // Load remaining levels in background, replacing each time
+        for (let i = 1; i < levels.length; i++) {
+            const nextLevel = levels[i];
+            console.log(`[LOD] Upgrading to ${nextLevel.level}% (${nextLevel.count.toLocaleString()} Gaussians)`);
+            try {
+                const nextModels = await importFn([{ filename: `lod_${nextLevel.level}.compressed.ply`, url: nextLevel.url }], false);
+                const nextModel = nextModels[0];
+                if (nextModel && currentModel) {
+                    // Remove old, add new
+                    scene.remove(currentModel);
+                    currentModel.destroy();
+                    await scene.add(nextModel);
+                    currentModel = nextModel;
+                }
+            } catch (err) {
+                console.warn(`[LOD] Failed to load level ${nextLevel.level}%:`, err);
+            }
+        }
+        console.log('[LOD] All levels loaded');
+    };
+
     // open a folder
     events.function('scene.openAnimation', async () => {
         try {
+            // Use native folder dialog in Electron
+            if (window.electronAPI?.isElectron) {
+                const folderPath = await window.electronAPI.openFolderDialog();
+                if (!folderPath) return;
+
+                const allPaths = await window.electronAPI.readDir(folderPath);
+                const plyPaths = allPaths.filter((p: string) => p.toLowerCase().endsWith('.ply'));
+                const files: File[] = [];
+                for (const fp of plyPaths) {
+                    const buffer = await window.electronAPI.readFile(fp);
+                    const name = fp.split(/[\\/]/).pop() || fp;
+                    files.push(new File([buffer as BlobPart], name));
+                }
+                events.fire('plysequence.setFrames', files);
+                events.fire('timeline.frame', 0);
+                return;
+            }
+
             const handle = await window.showDirectoryPicker({
                 id: 'ReSplatFileOpenAnimation',
                 mode: 'readwrite'

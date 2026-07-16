@@ -1,6 +1,7 @@
 {
     "name": "ReSplat",
-    "version": "1.0.4",
+    "version": "1.1.0",
+    "main": "electron/main.cjs",
     "author": "PlayCanvas<support@playcanvas.com>",
     "homepage": "https://playcanvas.com/ReSplat/editor",
     "description": "3D Gaussian Splat Editor | Powered by supersplat-2.27.0",
@@ -18,15 +19,25 @@
         "serve": "serve dist -l 3000",
         "develop": "cross-env BUILD_TYPE=debug concurrently --kill-others \"npm run watch\" \"npm run serve\"",
         "develop:auto-launch": "concurrently --kill-others \"xdg-open 'http://localhost:3000/'\" \"npm run watch\" \"npm run serve\"",
+        "local": "node --max-old-space-size=8192 server.js",
+        "local:build": "npm run build && npm run local",
+        "electron:dev": "npm run build && electron .",
+        "electron:build": "npm run build && electron-builder",
         "lint": "eslint src"
     },
     "engines": {
         "node": ">=20.19.0"
     },
+    "dependencies": {
+        "@playcanvas/splat-transform": "2.3.1",
+        "cors": "2.8.6",
+        "express": "^4.21.0",
+        "multer": "^1.4.5-lts.1",
+        "node-addon-api": "^8.9.0"
+    },
     "devDependencies": {
         "@playcanvas/eslint-config": "2.1.0",
         "@playcanvas/pcui": "6.1.4",
-        "@playcanvas/splat-transform": "2.3.1",
         "@rollup/plugin-alias": "6.0.0",
         "@rollup/plugin-image": "3.0.3",
         "@rollup/plugin-json": "6.1.0",
@@ -39,8 +50,9 @@
         "@typescript-eslint/parser": "8.59.4",
         "autoprefixer": "10.5.0",
         "concurrently": "^9.2.1",
-        "cors": "2.8.6",
         "cross-env": "10.1.0",
+        "electron": "^35.6.0",
+        "electron-builder": "^26.0.12",
         "eslint": "^9.0.0",
         "eslint-import-resolver-typescript": "4.4.4",
         "globals": "17.6.0",
@@ -48,6 +60,7 @@
         "i18next-browser-languagedetector": "8.2.1",
         "i18next-http-backend": "3.0.6",
         "mediabunny": "1.45.3",
+        "node-gyp": "^12.4.0",
         "playcanvas": "2.18.2",
         "postcss": "8.5.15",
         "rollup": "4.60.4",
@@ -57,5 +70,44 @@
         "tslib": "2.8.1",
         "typescript": "6.0.3",
         "wait-on": "^9.0.10"
+    },
+    "build": {
+        "appId": "com.resplat.editor",
+        "productName": "ReSplat",
+        "directories": {
+            "output": "dist-release"
+        },
+        "files": [
+            "dist/**/*",
+            "electron/**/*",
+            "server.js",
+            "native/**/*.node",
+            "native/index.js",
+            "node_modules/**/*",
+            "!node_modules/**/*.map",
+            "!node_modules/**/*.ts",
+            "!node_modules/electron/**",
+            "!node_modules/electron-builder/**"
+        ],
+        "extraResources": [
+            {
+                "from": "static",
+                "to": "static"
+            }
+        ],
+        "win": {
+            "target": "nsis",
+            "icon": "static/icons/Logo512x512.png"
+        },
+        "electronDownload": {
+            "cache": "./node_modules/electron"
+        },
+        "mac": {
+            "icon": "static/icons/Logo512x512.png"
+        },
+        "nsis": {
+            "oneClick": false,
+            "allowToChangeInstallationDirectory": true
+        }
     }
 }

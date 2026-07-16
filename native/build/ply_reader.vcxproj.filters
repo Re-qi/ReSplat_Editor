@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <Filter Include="..">
+      <UniqueIdentifier>{13ED4249-1F9C-5F0F-2651-29A73F3A7059}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="D:">
+      <UniqueIdentifier>{86BBDC71-6ACD-FBEF-2BDD-D703B16582D3}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="D:\CodeProjects">
+      <UniqueIdentifier>{B85F684B-DEBA-7752-553C-F5FA9E3C2E54}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="D:\CodeProjects\ReSplat">
+      <UniqueIdentifier>{99204D0F-3D8D-D6E8-5349-66C59CBC6211}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="D:\CodeProjects\ReSplat\ReSplat">
+      <UniqueIdentifier>{99204D0F-3D8D-D6E8-5349-66C59CBC6211}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="D:\CodeProjects\ReSplat\ReSplat\node_modules">
+      <UniqueIdentifier>{126A39EA-1D28-5689-C126-0DA0AB5837A0}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="D:\CodeProjects\ReSplat\ReSplat\node_modules\node-gyp">
+      <UniqueIdentifier>{49558BB4-6D34-CA91-A65D-85A65792DC11}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="D:\CodeProjects\ReSplat\ReSplat\node_modules\node-gyp\src">
+      <UniqueIdentifier>{F1003AD6-4B6D-45DF-3F56-5CAC869BF55E}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="..">
+      <UniqueIdentifier>{13ED4249-1F9C-5F0F-2651-29A73F3A7059}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="..\ply-reader.cc">
+      <Filter>..</Filter>
+    </ClCompile>
+    <ClCompile Include="D:\CodeProjects\ReSplat\ReSplat\node_modules\node-gyp\src\win_delay_load_hook.cc">
+      <Filter>D:\CodeProjects\ReSplat\ReSplat\node_modules\node-gyp\src</Filter>
+    </ClCompile>
+    <None Include="..\binding.gyp">
+      <Filter>..</Filter>
+    </None>
+  </ItemGroup>
+</Project>
