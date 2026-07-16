@@ -2,10 +2,10 @@
 
 > **Powered by [supersplat-2.27.0](https://github.com/playcanvas/supersplat)** — This project is a fork/rebrand of the original SuperSplat editor.
 
-[![Github Release](https://img.shields.io/github/v/release/Re-qi/ReSplat)](https://github.com/Re-qi/ReSplat/releases)
-[![License](https://img.shields.io/github/license/Re-qi/ReSplat)](https://github.com/Re-qi/ReSplat/blob/main/LICENSE)
+[![Github Release](https://img.shields.io/github/v/release/Re-qi/ReSplat_Editor)](https://github.com/Re-qi/ReSplat_Editor/releases)
+[![License](https://img.shields.io/github/license/Re-qi/ReSplat_Editor)](https://github.com/Re-qi/ReSplat_Editor/blob/main/LICENSE)
 
-| [在线使用](https://re-qi.github.io/ReSplat/) | [用户文档](https://developer.playcanvas.com/user-manual/gaussian-splatting/editing/ReSplat/) | [问题反馈](https://github.com/Re-qi/ReSplat/issues) |
+| [在线使用](https://re-qi.github.io/ReSplat_Editor/) | [用户文档](https://developer.playcanvas.com/user-manual/gaussian-splatting/editing/ReSplat/) | [问题反馈](https://github.com/Re-qi/ReSplat_Editor/issues) |
 
 ---
 
@@ -99,8 +99,8 @@ ReSplat 重构了原版的选择球与选择盒，并新增了阻挡平面，三
 1. 克隆仓库：
 
    ```sh
-   git clone https://github.com/Re-qi/ReSplat.git
-   cd ReSplat
+   git clone https://github.com/Re-qi/ReSplat_Editor.git
+   cd ReSplat_Editor
    ```
 
 2. 安装依赖：
@@ -175,10 +175,10 @@ ReSplat 重构了原版的选择球与选择盒，并新增了阻挡平面，三
 
 > **Powered by [supersplat-2.27.0](https://github.com/playcanvas/supersplat)** — This project is a fork/rebrand of the original SuperSplat editor.
 
-[![Github Release](https://img.shields.io/github/v/release/Re-qi/ReSplat)](https://github.com/Re-qi/ReSplat/releases)
-[![License](https://img.shields.io/github/license/Re-qi/ReSplat)](https://github.com/Re-qi/ReSplat/blob/main/LICENSE)
+[![Github Release](https://img.shields.io/github/v/release/Re-qi/ReSplat_Editor)](https://github.com/Re-qi/ReSplat_Editor/releases)
+[![License](https://img.shields.io/github/license/Re-qi/ReSplat_Editor)](https://github.com/Re-qi/ReSplat_Editor/blob/main/LICENSE)
 
-| [Live Demo](https://re-qi.github.io/ReSplat/) | [User Guide](https://developer.playcanvas.com/user-manual/gaussian-splatting/editing/ReSplat/) | [Issues](https://github.com/Re-qi/ReSplat/issues) |
+| [Live Demo](https://re-qi.github.io/ReSplat_Editor/) | [User Guide](https://developer.playcanvas.com/user-manual/gaussian-splatting/editing/ReSplat/) | [Issues](https://github.com/Re-qi/ReSplat_Editor/issues) |
 
 ---
 
@@ -295,8 +295,8 @@ i18next-based internationalization system supporting 9 languages:
 1. Clone the repository:
 
    ```sh
-   git clone https://github.com/Re-qi/ReSplat.git
-   cd ReSplat
+   git clone https://github.com/Re-qi/ReSplat_Editor.git
+   cd ReSplat_Editor
    ```
 
 2. Install dependencies:
