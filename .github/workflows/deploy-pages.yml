@@ -33,7 +33,7 @@ jobs:
       - name: Build for GitHub Pages
         run: npm run build
         env:
-          BASE_HREF: /ReSplat/
+          BASE_HREF: /ReSplat_Editor/
 
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
