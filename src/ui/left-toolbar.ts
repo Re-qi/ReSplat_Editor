@@ -374,8 +374,7 @@ class LeftToolbar extends Container {
                 if (isPopupVisible()) {
                     hideFloodPopup();
                 } else {
-                    // 循环切换到下一个工具
-                    currentFloodIndex = (currentFloodIndex + 1) % floodTools.length;
+                    // 激活当前选中的 flood 工具（不切换）
                     events.fire(`tool.${floodTools[currentFloodIndex]}`);
                 }
             }
@@ -493,9 +492,11 @@ class LeftToolbar extends Container {
             this.dom.classList.toggle('collapsed');
         });
 
-        // 键盘快捷键 '5' 循环切换 flood 工具组
+        // 键盘快捷键 '5': flood 未激活时切换至当前工具，已激活则循环切换
         events.on('tool.cycleFloodTool', () => {
-            currentFloodIndex = (currentFloodIndex + 1) % floodTools.length;
+            if (flood.class.contains('active')) {
+                currentFloodIndex = (currentFloodIndex + 1) % floodTools.length;
+            }
             events.fire(`tool.${floodTools[currentFloodIndex]}`);
         });
     }

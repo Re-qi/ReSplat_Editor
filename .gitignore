@@ -1,5 +1,7 @@
 node_modules
 dist
+release
+temp
 .DS_Store
 .npmrc
 .vscode

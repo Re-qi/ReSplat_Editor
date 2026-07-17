@@ -214,8 +214,7 @@ const main = async () => {
     const toolShortcutKeys: Record<string, string> = {
         'w': 'tool.move',
         'e': 'tool.rotate',
-        'r': 'tool.scale',
-        'q': 'tool.rectSelection'
+        'r': 'tool.scale'
     };
 
     // Keys to block when no mouse is pressed (camera fly keys)
