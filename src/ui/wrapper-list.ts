@@ -127,7 +127,7 @@ class WrapperList extends Container {
             shapeItem.dom.addEventListener('click', (e: MouseEvent) => {
                 e.stopPropagation();
                 if (events.invoke('shapeSelection') === shape) {
-                    events.fire('selection', null);
+                    events.fire('selection.clearShape');
                     return;
                 }
                 events.fire('selection', shape as any);

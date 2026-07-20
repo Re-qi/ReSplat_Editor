@@ -59,6 +59,17 @@ const registerSelectionEvents = (events: Events, scene: Scene) => {
         events.fire('multiSplatSelection.changed');
     });
 
+    events.on('selection.clearShape', () => {
+        setShapeSelection(null);
+        // If a splat is still selected, switch lastSelected and fire
+        // selection.changed so the transform handler updates the pivot
+        // and gizmo to the splat's position.
+        if (splatSelection) {
+            lastSelected = 'splat';
+            events.fire('selection.changed', splatSelection, null);
+        }
+    });
+
     events.function('selection', () => {
         return getSelection();
     });

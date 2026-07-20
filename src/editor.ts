@@ -474,7 +474,7 @@ const registerEditorEvents = (events: Events, editHistory: EditHistory, scene: S
 
     };
 
-    // Helper: CPU-side containment check for splash points against a bound shape
+    // Helper: CPU-side containment check for a point against a bound shape
     const isInsideBoundShape = (worldPoint: Vec3, shape: BoxShape | SphereShape, invRot: Quat, shapePos: Vec3) => {
         const local = new Vec3();
         local.sub2(worldPoint, shapePos);
@@ -636,7 +636,7 @@ const registerEditorEvents = (events: Events, editHistory: EditHistory, scene: S
         const mode = events.invoke('camera.mode');
         const overlay = events.invoke('camera.overlay');
 
-        // When a bound shape is selected, restrict flood fill to points inside the shape
+        // When a bound shape is selected, restrict to points inside the shape
         const shapeSel = events.invoke('shapeSelection');
         const boundOptions = (shapeSel instanceof BoxShape || shapeSel instanceof SphereShape) ?
             getBoundIntersectOptions(shapeSel) : null;
@@ -653,7 +653,6 @@ const registerEditorEvents = (events: Events, editHistory: EditHistory, scene: S
                 maskTexture.setSource(canvas);
 
                 if (boundOptions) {
-                    // Capture local copy to avoid no-loop-func
                     const mt = maskTexture;
                     // Two-pass: flood mask AND bound mask
                     scene.commandQueue.enqueue(async () => {
@@ -877,15 +876,15 @@ const registerEditorEvents = (events: Events, editHistory: EditHistory, scene: S
             return;
         }
 
-        // When a bound shape is selected, only match colors within the shape
-        const shapeSel = events.invoke('shapeSelection');
-        const boundOptions = (shapeSel instanceof BoxShape || shapeSel instanceof SphereShape) ?
-            getBoundIntersectOptions(shapeSel) : null;
-
         // Clamp normalized coordinates to valid range
         const nx = Math.max(0, Math.min(1, point.x));
         const ny = Math.max(0, Math.min(1, point.y));
         const colorThreshold = Math.min(1, Math.max(0, Number.isFinite(threshold) ? threshold : 0));
+
+        // When a bound shape is selected, only match colors within the shape
+        const shapeSel = events.invoke('shapeSelection');
+        const boundOptions = (shapeSel instanceof BoxShape || shapeSel instanceof SphereShape) ?
+            getBoundIntersectOptions(shapeSel) : null;
 
         for (const splat of splats) {
             scene.camera.pickPrep(splat, 'set');
@@ -951,54 +950,6 @@ const registerEditorEvents = (events: Events, editHistory: EditHistory, scene: S
             return;
         }
 
-        // Check if a box or sphere shape is selected
-        const shapeSel = events.invoke('shapeSelection');
-        if (shapeSel instanceof BoxShape || shapeSel instanceof SphereShape) {
-            // Get the shape's bounding box
-            const shapeBound = shapeSel.worldBound;
-            if (!shapeBound) return;
-
-            // Delete all splats within the shape's bounding box
-            const allSplats = scene.getElementsByType(ElementType.splat) as Splat[];
-            for (const splat of allSplats) {
-                if (!splat.visible) continue;
-
-                // Use the shape's parameters for intersection
-                let intersectOptions: any;
-                if (shapeSel instanceof BoxShape) {
-                    const p = shapeSel.pivot.getPosition();
-                    const r = shapeSel.pivot.getLocalRotation();
-                    intersectOptions = {
-                        box: { x: p.x, y: p.y, z: p.z, lenx: shapeSel.lenX, leny: shapeSel.lenY, lenz: shapeSel.lenZ, rx: r.x, ry: r.y, rz: r.z, rw: r.w }
-                    };
-                } else if (shapeSel instanceof SphereShape) {
-                    const p = shapeSel.pivot.getPosition();
-                    const r = shapeSel.pivot.getLocalRotation();
-                    intersectOptions = {
-                        sphere: { x: p.x, y: p.y, z: p.z, radiusX: shapeSel.radiusX, radiusY: shapeSel.radiusY, radiusZ: shapeSel.radiusZ, rx: r.x, ry: r.y, rz: r.z, rw: r.w }
-                    };
-                }
-
-                if (intersectOptions) {
-                    // Directly mark points inside the shape as deleted
-                    scene.commandQueue.enqueue(async () => {
-                        const data = await scene.dataProcessor.intersect(intersectOptions, splat);
-                        const numSplats = splat.splatData.numSplats;
-                        const splatState = splat.splatData.getProp('state') as Uint8Array;
-                        // Only delete points that are inside the shape AND currently selected
-                        const ranges = IndexRanges.fromPredicate(numSplats,
-                            i => data[i] === 255 && (splatState[i] & State.selected) !== 0
-                        );
-                        scene.dataProcessor.releaseMask(data);
-                        if (!ranges.empty) {
-                            events.fire('edit.add', new StateOp(splat, ranges, State.deleted, BitOp.SET, State.deleted));
-                        }
-                    });
-                }
-            }
-            return;
-        }
-
         selectedSplats().forEach((splat) => {
             editHistory.add(new DeleteSelectionOp(splat));
         });
@@ -1006,7 +957,6 @@ const registerEditorEvents = (events: Events, editHistory: EditHistory, scene: S
 
     // Opacity threshold selection - selects all points with opacity below the given threshold
     // This is useful for data cleanup by selecting low-opacity points that are barely visible
-    // When a bound shape (BoxShape/SphereShape) is selected, only points inside the shape are affected
     events.on('select.opacityThreshold', (op: 'add'|'remove'|'set', threshold: number) => {
         const splats = selectedSplats();
         if (!splats.length) {
@@ -1014,9 +964,6 @@ const registerEditorEvents = (events: Events, editHistory: EditHistory, scene: S
         }
 
         const opacityThreshold = Math.min(1, Math.max(0, Number.isFinite(threshold) ? threshold : 0));
-        const shapeSel = events.invoke('shapeSelection');
-        const boundOptions = (shapeSel instanceof BoxShape || shapeSel instanceof SphereShape) ?
-            getBoundIntersectOptions(shapeSel) : null;
 
         splats.forEach((splat) => {
             const opacities = splat.splatData.getProp('opacity') as Float32Array;
@@ -1032,24 +979,12 @@ const registerEditorEvents = (events: Events, editHistory: EditHistory, scene: S
                 mask[i] = opacity < opacityThreshold ? 255 : 0;
             }
 
-            if (boundOptions) {
-                scene.commandQueue.enqueue(async () => {
-                    const data = await scene.dataProcessor.intersect(boundOptions, splat);
-                    for (let i = 0; i < numSplats; i++) {
-                        mask[i] = mask[i] && data[i];
-                    }
-                    scene.dataProcessor.releaseMask(data);
-                    events.fire('edit.add', new SelectOp(splat, op, mask));
-                });
-            } else {
-                events.fire('edit.add', new SelectOp(splat, op, mask));
-            }
+            events.fire('edit.add', new SelectOp(splat, op, mask));
         });
     });
 
     // Size threshold selection - selects all points with total size (x+y+z) below the given threshold
     // This is useful for data cleanup by selecting tiny splats that contribute little to the visual quality
-    // When a bound shape (BoxShape/SphereShape) is selected, only points inside the shape are affected
     events.on('select.sizeThreshold', (op: 'add'|'remove'|'set', threshold: number, direction: 'leq'|'geq' = 'leq') => {
         const splats = selectedSplats();
         if (!splats.length) {
@@ -1057,9 +992,6 @@ const registerEditorEvents = (events: Events, editHistory: EditHistory, scene: S
         }
 
         const sizeThreshold = Math.max(0, Number.isFinite(threshold) ? threshold : 0);
-        const shapeSel = events.invoke('shapeSelection');
-        const boundOptions = (shapeSel instanceof BoxShape || shapeSel instanceof SphereShape) ?
-            getBoundIntersectOptions(shapeSel) : null;
 
         splats.forEach((splat) => {
             const sizeX = splat.splatData.getProp('scale_0') as Float32Array;
@@ -1082,18 +1014,7 @@ const registerEditorEvents = (events: Events, editHistory: EditHistory, scene: S
                 }
             }
 
-            if (boundOptions) {
-                scene.commandQueue.enqueue(async () => {
-                    const data = await scene.dataProcessor.intersect(boundOptions, splat);
-                    for (let i = 0; i < numSplats; i++) {
-                        mask[i] = mask[i] && data[i];
-                    }
-                    scene.dataProcessor.releaseMask(data);
-                    events.fire('edit.add', new SelectOp(splat, op, mask));
-                });
-            } else {
-                events.fire('edit.add', new SelectOp(splat, op, mask));
-            }
+            events.fire('edit.add', new SelectOp(splat, op, mask));
         });
     });
 
