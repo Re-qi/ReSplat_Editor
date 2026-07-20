@@ -325,6 +325,7 @@
     "toolbar.select.set": "Set",
     "toolbar.select.add": "Add",
     "toolbar.select.remove": "Remove",
+    "toolbar.select.invert": "Invert",
     "toolbar.select.sizeLeq": "Select≤",
     "toolbar.select.sizeGeq": "Select≥",
     "toolbar.opacity.threshold": "Opacity threshold",
@@ -334,5 +335,9 @@
     "toolbar.point-cloud-group.remove": "Remove from Group",
     "toolbar.blocking-plane.follow": "Follow",
     "toolbar.blocking-plane.select-back": "Select Back",
-    "toolbar.blocking-plane.distance": "Distance"
+    "toolbar.blocking-plane.distance": "Distance",
+    "status-bar.version.checking": "Checking for updates...",
+    "status-bar.version.available": "New version available  Click to update",
+    "status-bar.version.latest": "Up to date",
+    "status-bar.version.error": "Unable to connect to GitHub"
 }

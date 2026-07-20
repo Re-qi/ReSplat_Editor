@@ -1,8 +1,8 @@
 import { Button, Container } from '@playcanvas/pcui';
 import { TranslateGizmo, Vec3 } from 'playcanvas';
 
-import { AddShapeOp, EntityTransformOp } from '../edit-ops';
-import { Element } from '../element';
+import { AddShapeOp, EntityTransformOp, SelectInvertBoundOp } from '../edit-ops';
+import { Element, ElementType } from '../element';
 import { Events } from '../events';
 import { Pivot } from '../pivot';
 import { Scene } from '../scene';
@@ -69,6 +69,18 @@ class SphereSelection {
             }
         });
 
+        events.on('gizmo.keyHide', () => {
+            gizmo.enabled = false;
+            gizmo.detach();
+        });
+
+        events.on('gizmo.keyShow', () => {
+            if (currentSphere) {
+                gizmo.enabled = true;
+                gizmo.attach([currentSphere.pivot]);
+            }
+        });
+
         // ui
         const selectToolbar = new Container({
             class: 'select-toolbar',
@@ -82,10 +94,12 @@ class SphereSelection {
         const setButton = new Button({ text: localize('toolbar.select.set'), class: 'select-toolbar-button' });
         const addButton = new Button({ text: localize('toolbar.select.add'), class: 'select-toolbar-button' });
         const removeButton = new Button({ text: localize('toolbar.select.remove'), class: 'select-toolbar-button' });
+        const invertButton = new Button({ text: localize('toolbar.select.invert'), class: 'select-toolbar-button' });
 
         selectToolbar.append(setButton);
         selectToolbar.append(addButton);
         selectToolbar.append(removeButton);
+        selectToolbar.append(invertButton);
 
         canvasContainer.append(selectToolbar);
 
@@ -104,6 +118,28 @@ class SphereSelection {
         });
         removeButton.dom.addEventListener('pointerdown', (e) => {
             e.stopPropagation(); apply('remove');
+        });
+
+        const doInvert = async () => {
+            if (!currentSphere) return;
+            const p = currentSphere.pivot.getPosition();
+            const r = currentSphere.pivot.getLocalRotation();
+            const options = {
+                sphere: { x: p.x, y: p.y, z: p.z, radiusX: currentSphere.radiusX, radiusY: currentSphere.radiusY, radiusZ: currentSphere.radiusZ, rx: r.x, ry: r.y, rz: r.z, rw: r.w }
+            };
+            const allSplats = scene.getElementsByType(ElementType.splat) as Splat[];
+            for (const splat of allSplats) {
+                if (splat.visible) {
+                    const boundMask = await scene.dataProcessor.intersect(options, splat);
+                    events.fire('edit.add', new SelectInvertBoundOp(splat, boundMask));
+                    scene.dataProcessor.releaseMask(boundMask);
+                }
+            }
+        };
+
+        invertButton.dom.addEventListener('pointerdown', (e) => {
+            e.stopPropagation();
+            doInvert();
         });
 
         events.on('camera.focalPointPicked', (details: { splat: Splat, position: Vec3 }) => {

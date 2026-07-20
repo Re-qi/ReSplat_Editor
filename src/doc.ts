@@ -380,9 +380,10 @@ const registerDocEvents = (scene: Scene, events: Events, editHistory: EditHistor
                 events.fire('doc.saved');
                 recentFiles.add(handle);
             } catch (error) {
-                if (error.name !== 'AbortError') {
-                    console.error(error);
+                if (error.name === 'AbortError') {
+                    throw error;
                 }
+                console.error(error);
             }
         } else {
             await saveDocument({

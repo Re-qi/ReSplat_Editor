@@ -80,17 +80,56 @@ const registerEditorEvents = (events: Events, editHistory: EditHistory, scene: S
 
     let lastExportCursor = 0;
 
-    // add unsaved changes warning message.
-    window.addEventListener('beforeunload', (e) => {
-        if (!events.invoke('scene.dirty')) {
-            // if the undo cursor matches last export, then we have no unsaved changes
-            return undefined;
-        }
+    // Add unsaved changes warning (browser-only path).
+    // In Electron this is handled by main.cjs via a native dialog instead, so
+    // we skip the beforeunload interception there — otherwise Electron would
+    // block the window close with no UI to recover, which is the root cause
+    // of the "cannot quit after editing" bug.
+    const isElectron = !!(window as any).electronAPI?.isElectron;
+    if (!isElectron) {
+        window.addEventListener('beforeunload', (e) => {
+            if (!events.invoke('scene.dirty')) {
+                // if the undo cursor matches last export, then we have no unsaved changes
+                return undefined;
+            }
 
-        const msg = 'You have unsaved changes. Are you sure you want to leave?';
-        e.returnValue = msg;
-        return msg;
-    });
+            const msg = 'You have unsaved changes. Are you sure you want to leave?';
+            e.returnValue = msg;
+            return msg;
+        });
+    }
+
+    // Register close-time save handlers for Electron. main.cjs invokes these
+    // through preload's IPC channels when the user closes the window.
+    if (isElectron) {
+        const electronAPI = (window as any).electronAPI;
+        electronAPI.registerDirtyChecker(async () => {
+            return {
+                dirty: !!events.invoke('scene.dirty'),
+                docName: events.invoke('doc.name') as string | null
+            };
+        });
+        electronAPI.registerSaveHandler(async () => {
+            try {
+                await events.invoke('doc.save');
+                return true;
+            } catch (err) {
+                console.error('[electron] doc.save failed during close:', err);
+                return false;
+            }
+        });
+        electronAPI.registerSavePromptHandler(async (docName: string) => {
+            const name = docName || '未命名工程';
+            const result = await events.invoke('showPopup', {
+                type: 'yesno',
+                header: '未保存的更改',
+                message: `是否将更改保存到 "${name}"？\n关闭前保存可避免丢失未保存的修改。`
+            });
+            if (result.action === 'yes') return 'save';
+            if (result.action === 'no') return 'discard';
+            return 'cancel';
+        });
+    }
 
     events.function('targetSize', () => {
         return scene.targetSize;
@@ -146,8 +185,33 @@ const registerEditorEvents = (events: Events, editHistory: EditHistory, scene: S
         setGridVisible(visible);
     });
 
+    let gizmoKeyHidden = false;
+    let savedSelectedAlpha: number | null = null;
+    let savedBoundVisible: boolean | null = null;
+
     events.on('grid.toggleVisible', () => {
         setGridVisible(!scene.grid.visible);
+        gizmoKeyHidden = !gizmoKeyHidden;
+
+        if (gizmoKeyHidden) {
+            const clr = events.invoke('selectedClr') as Color;
+            savedSelectedAlpha = clr.a;
+            events.fire('setSelectedClr', new Color(clr.r, clr.g, clr.b, 0));
+            savedBoundVisible = events.invoke('camera.bound') as boolean;
+            events.fire('camera.setBound', false);
+            events.fire('gizmo.keyHide');
+        } else {
+            if (savedSelectedAlpha !== null) {
+                const clr = events.invoke('selectedClr') as Color;
+                events.fire('setSelectedClr', new Color(clr.r, clr.g, clr.b, savedSelectedAlpha));
+                savedSelectedAlpha = null;
+            }
+            if (savedBoundVisible !== null) {
+                events.fire('camera.setBound', savedBoundVisible);
+                savedBoundVisible = null;
+            }
+            events.fire('gizmo.keyShow');
+        }
     });
 
     setGridVisible(scene.config.show.grid);
@@ -252,7 +316,21 @@ const registerEditorEvents = (events: Events, editHistory: EditHistory, scene: S
 
     events.on('camera.focus', () => {
         const splat = selectedSplats()[0];
-        if (splat) {
+        const shapeSel = events.invoke('shapeSelection') as Element | null;
+
+        if (shapeSel instanceof BoxShape || shapeSel instanceof SphereShape) {
+            // Focus on wrapper shape
+            const pivot = shapeSel.pivot;
+            const focalPoint = pivot.getPosition();
+            const radius = shapeSel instanceof SphereShape
+                ? shapeSel.radius
+                : pivot.getLocalScale().length() / 2;
+            scene.camera.focus({
+                focalPoint: focalPoint.clone(),
+                radius,
+                speed: 1
+            });
+        } else if (splat) {
             // use current bounds (caller should have awaited the operation that changed data)
             const bound = splat.numSelected > 0 ?
                 splat.selectionBound :
@@ -268,6 +346,14 @@ const registerEditorEvents = (events: Events, editHistory: EditHistory, scene: S
                 radius: bound.halfExtents.length() * vec2.x,
                 speed: 1
             });
+        } else {
+            // Nothing selected — reset camera to initial position
+            const { initialAzim, initialElev, initialZoom } = scene.config.controls;
+            const x = Math.sin(initialAzim * Math.PI / 180) * Math.cos(initialElev * Math.PI / 180);
+            const y = -Math.sin(initialElev * Math.PI / 180);
+            const z = Math.cos(initialAzim * Math.PI / 180) * Math.cos(initialElev * Math.PI / 180);
+            const zoom = initialZoom;
+            scene.camera.setPose(new Vec3(x * zoom, y * zoom, z * zoom), new Vec3(0, 0, 0));
         }
     });
 
@@ -388,6 +474,21 @@ const registerEditorEvents = (events: Events, editHistory: EditHistory, scene: S
 
     };
 
+    // Helper: CPU-side containment check for splash points against a bound shape
+    const isInsideBoundShape = (worldPoint: Vec3, shape: BoxShape | SphereShape, invRot: Quat, shapePos: Vec3) => {
+        const local = new Vec3();
+        local.sub2(worldPoint, shapePos);
+        invRot.transformVector(local, local);
+        if (shape instanceof BoxShape) {
+            return Math.abs(local.x) <= shape.lenX / 2
+                && Math.abs(local.y) <= shape.lenY / 2
+                && Math.abs(local.z) <= shape.lenZ / 2;
+        }
+        return (local.x * local.x) / (shape.radiusX * shape.radiusX)
+             + (local.y * local.y) / (shape.radiusY * shape.radiusY)
+             + (local.z * local.z) / (shape.radiusZ * shape.radiusZ) <= 1;
+    };
+
     events.on('select.bySphere', async (op: 'add'|'remove'|'set', sphere: number[]) => {
         const allSplats = scene.getElementsByType(ElementType.splat) as Splat[];
         for (const splat of allSplats) {
@@ -414,6 +515,17 @@ const registerEditorEvents = (events: Events, editHistory: EditHistory, scene: S
         const mode = events.invoke('camera.mode');
         const overlay = events.invoke('camera.overlay');
         const { width, height } = scene.targetSize;
+
+        const shapeSel = events.invoke('shapeSelection');
+        const boundOptions = (shapeSel instanceof BoxShape || shapeSel instanceof SphereShape) ?
+            getBoundIntersectOptions(shapeSel) : null;
+        let boundInvRot: Quat | null = null;
+        let boundPos: Vec3 | null = null;
+        if (shapeSel instanceof BoxShape || shapeSel instanceof SphereShape) {
+            boundInvRot = new Quat();
+            boundInvRot.copy(shapeSel.pivot.getLocalRotation()).invert();
+            boundPos = shapeSel.pivot.getPosition().clone();
+        }
 
         for (const splat of selectedSplats()) {
             if (mode === 'centers' || overlay) {
@@ -453,7 +565,13 @@ const registerEditorEvents = (events: Events, editHistory: EditHistory, scene: S
                         worldPos.set(x[i], y[i], z[i]);
                         splat.worldTransform.transformPoint(worldPos, worldPos);
                         if (!isPointBlocked(worldPos, cameraPos)) {
-                            mask[i] = 255;
+                            if (boundInvRot && boundPos && shapeSel) {
+                                if (isInsideBoundShape(worldPos, shapeSel as BoxShape | SphereShape, boundInvRot, boundPos)) {
+                                    mask[i] = 255;
+                                }
+                            } else {
+                                mask[i] = 255;
+                            }
                         }
                     }
                 }
@@ -485,6 +603,24 @@ const registerEditorEvents = (events: Events, editHistory: EditHistory, scene: S
                         if (!isPointBlocked(worldPos, cameraPos)) {
                             filteredIds.add(pickId);
                         }
+                    }
+                }
+
+                // If a bound shape is selected, filter to only points inside the shape
+                if (boundOptions) {
+                    const numSplats = splat.splatData.numSplats;
+                    const blockMask = new Uint8Array(numSplats);
+                    for (const id of filteredIds) {
+                        if (id < numSplats) blockMask[id] = 255;
+                    }
+                    const boundMask = await scene.dataProcessor.intersect(boundOptions, splat);
+                    for (let i = 0; i < numSplats; i++) {
+                        blockMask[i] = blockMask[i] && boundMask[i];
+                    }
+                    scene.dataProcessor.releaseMask(boundMask);
+                    filteredIds.clear();
+                    for (let i = 0; i < numSplats; i++) {
+                        if (blockMask[i] === 255) filteredIds.add(i);
                     }
                 }
 
@@ -636,6 +772,15 @@ const registerEditorEvents = (events: Events, editHistory: EditHistory, scene: S
         const mode = events.invoke('camera.mode');
         const overlay = events.invoke('camera.overlay');
 
+        const shapeSel = events.invoke('shapeSelection');
+        let boundInvRot: Quat | null = null;
+        let boundPos: Vec3 | null = null;
+        if (shapeSel instanceof BoxShape || shapeSel instanceof SphereShape) {
+            boundInvRot = new Quat();
+            boundInvRot.copy(shapeSel.pivot.getLocalRotation()).invert();
+            boundPos = shapeSel.pivot.getPosition().clone();
+        }
+
         for (const splat of selectedSplats()) {
             const splatData = splat.splatData;
 
@@ -652,9 +797,6 @@ const registerEditorEvents = (events: Events, editHistory: EditHistory, scene: S
                 // calculate final matrix
                 mat.mul2(camera.camera._viewProjMat, splat.worldTransform);
 
-                // materialize hits into an owned mask. SelectOp consumes a
-                // committed snapshot rather than a closure so we never have to
-                // worry about state shifting between capture and apply.
                 const numSplats = splatData.numSplats;
                 const mask = new Uint8Array(numSplats);
                 const cameraPos = scene.camera.position;
@@ -669,7 +811,13 @@ const registerEditorEvents = (events: Events, editHistory: EditHistory, scene: S
                         worldPos.set(x[i], y[i], z[i]);
                         splat.worldTransform.transformPoint(worldPos, worldPos);
                         if (!isPointBlocked(worldPos, cameraPos)) {
-                            mask[i] = 255;
+                            if (boundInvRot && boundPos && shapeSel) {
+                                if (isInsideBoundShape(worldPos, shapeSel as BoxShape | SphereShape, boundInvRot, boundPos)) {
+                                    mask[i] = 255;
+                                }
+                            } else {
+                                mask[i] = 255;
+                            }
                         }
                     }
                 }
@@ -698,6 +846,12 @@ const registerEditorEvents = (events: Events, editHistory: EditHistory, scene: S
                         if (isPointBlocked(worldPos, cameraPos)) {
                             events.fire('edit.add', new SelectOp(splat, op, new Uint32Array([])));
                             return;
+                        }
+                        if (boundInvRot && boundPos && shapeSel) {
+                            if (!isInsideBoundShape(worldPos, shapeSel as BoxShape | SphereShape, boundInvRot, boundPos)) {
+                                events.fire('edit.add', new SelectOp(splat, op, new Uint32Array([])));
+                                return;
+                            }
                         }
                     }
                 }
@@ -960,7 +1114,7 @@ const registerEditorEvents = (events: Events, editHistory: EditHistory, scene: S
         let selectedCount = 0;
         if (hasGaussianSelection && stateData) {
             for (let i = 0; i < numSplats; i++) {
-                if (stateData[i] & 1) selectedCount++;
+                if (stateData[i] === State.selected) selectedCount++;
             }
         } else {
             selectedCount = numSplats;
@@ -987,7 +1141,7 @@ const registerEditorEvents = (events: Events, editHistory: EditHistory, scene: S
             if (hasGaussianSelection && stateData) {
                 let writeIdx = 0;
                 for (let i = 0; i < numSplats; i++) {
-                    if (stateData[i] & 1) {
+                    if (stateData[i] === State.selected) {
                         extractedStorage[writeIdx++] = srcStorage[i];
                     }
                 }

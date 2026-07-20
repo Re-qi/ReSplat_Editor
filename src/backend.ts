@@ -13,9 +13,19 @@ class BackendClient {
     /**
      * Check if the local backend is reachable.
      * Result is cached after first call.
+     *
+     * In Electron mode the Express server is embedded in the main process,
+     * so we skip the health-check fetch and return true immediately. This
+     * also avoids a startup race: the renderer may boot before the server
+     * is listening, causing a cached false.
      */
     static async isAvailable(): Promise<boolean> {
         if (this._available !== null) return this._available;
+        // Electron embeds the Express server — always available
+        if (typeof window !== 'undefined' && (window as any).electronAPI?.isElectron) {
+            this._available = true;
+            return true;
+        }
         try {
             const res = await fetch(`${this.BASE_URL}/api/health`, {
                 signal: AbortSignal.timeout(500)
@@ -175,7 +185,7 @@ class BackendClient {
      */
     static async lodConvertPath(
         filePath: string,
-        levels: number[] = [5, 25, 100]
+        levels: number[] = [100]
     ): Promise<{
         levels: Array<{ level: number; count: number; url: string; sizeBytes: number }>;
         totalSeconds: number;
@@ -255,12 +265,12 @@ class BackendClient {
      * (5%, 25%, 100%) for progressive loading. Used by auto-detection of large PLY.
      *
      * @param file - The PLY file blob to process
-     * @param levels - LOD percentages, e.g. [5, 25, 100]
+     * @param levels - LOD percentages, default [100]
      * @returns LOD level metadata: [{ level, count, url, sizeBytes }]
      */
     static async lodConvert(
         file: File,
-        levels: number[] = [5, 25, 100]
+        levels: number[] = [100]
     ): Promise<{ levels: Array<{ level: number; count: number; url: string; sizeBytes: number }>; totalSeconds: number }> {
         const formData = new FormData();
         formData.append('file', file);

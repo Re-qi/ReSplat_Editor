@@ -97,14 +97,19 @@ class TransformTool {
             events.off('selection.shapeChanged', reattach);
         };
 
-        // Handle gizmo hide/show events (e.g., from blocking plane follow mode)
-        events.on('gizmo.hide', () => {
-            gizmo.enabled = false;
-            gizmo.detach();
-        });
+        // Handle gizmo hide/show events from multiple sources.
+        // blockingPlane follow mode fires 'gizmo.hide' / 'gizmo.show'.
+        // G key fires 'gizmo.keyHide' / 'gizmo.keyShow'.
+        // Gizmo is visible only when neither source wants it hidden.
+        let hiddenByBlocking = false;
+        let hiddenByKey = false;
 
-        events.on('gizmo.show', () => {
-            if (active && events.invoke('selection')) {
+        const updateGizmoState = () => {
+            const shouldHide = hiddenByBlocking || hiddenByKey;
+            if (shouldHide) {
+                gizmo.enabled = false;
+                gizmo.detach();
+            } else if (active && events.invoke('selection')) {
                 // Sync pivot to current element position before reattaching
                 const selection = events.invoke('selection') as any;
                 if (selection?.pivot) {
@@ -117,6 +122,26 @@ class TransformTool {
                 gizmo.enabled = true;
                 reattach();
             }
+        };
+
+        events.on('gizmo.hide', () => {
+            hiddenByBlocking = true;
+            updateGizmoState();
+        });
+
+        events.on('gizmo.show', () => {
+            hiddenByBlocking = false;
+            updateGizmoState();
+        });
+
+        events.on('gizmo.keyHide', () => {
+            hiddenByKey = true;
+            updateGizmoState();
+        });
+
+        events.on('gizmo.keyShow', () => {
+            hiddenByKey = false;
+            updateGizmoState();
         });
 
         // initialize coordinate space (bypass ScaleGizmo's no-op setter)

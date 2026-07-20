@@ -122,6 +122,17 @@ class SelectInvertOp extends StateOp {
     }
 }
 
+class SelectInvertBoundOp extends StateOp {
+    name = 'selectInvertBound';
+
+    constructor(splat: Splat, boundMask: Uint8Array) {
+        const state = splat.splatData.getProp('state') as Uint8Array;
+        super(splat, IndexRanges.fromPredicate(splat.splatData.numSplats,
+            i => (state[i] & (State.locked | State.deleted)) === 0 && boundMask[i] === 255
+        ), State.selected, BitOp.TOGGLE);
+    }
+}
+
 class SelectOp extends StateOp {
     name = 'selectOp';
 
@@ -1176,6 +1187,7 @@ export {
     SelectAllOp,
     SelectNoneOp,
     SelectInvertOp,
+    SelectInvertBoundOp,
     SelectOp,
     ReplaceSelectionOp,
     HideSelectionOp,

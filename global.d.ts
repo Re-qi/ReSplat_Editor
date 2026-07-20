@@ -29,6 +29,10 @@ interface ElectronAPI {
     readFile: (filePath: string) => Promise<Uint8Array>;
     fileExists: (filePath: string) => Promise<boolean>;
     readDir: (dirPath: string) => Promise<string[]>;
+    /** Register a callback returning { dirty, docName } for close-time save prompt */
+    registerDirtyChecker: (fn: () => Promise<{ dirty: boolean; docName: string | null }>) => void;
+    /** Register a callback that saves the current doc; resolves true on success */
+    registerSaveHandler: (fn: () => Promise<boolean>) => void;
 }
 
 interface Window {

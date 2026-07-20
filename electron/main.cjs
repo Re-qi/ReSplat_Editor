@@ -6,8 +6,9 @@
  * same as the web version — zero frontend changes needed.
  */
 
-const { app: electronApp, BrowserWindow, ipcMain, dialog, Menu } = require('electron');
+const { app: electronApp, BrowserWindow, ipcMain, dialog, shell, Menu } = require('electron');
 const path = require('path');
+const crypto = require('crypto');
 
 // Import Express app from server.js (won't auto-listen due to require.main check)
 const { app: expressApp, PORT } = require('../server.js');
@@ -154,11 +155,148 @@ ipcMain.handle('fs:readDir', async (_event, dirPath) => {
     return fs.readdirSync(dirPath).map(name => path.join(dirPath, name));
 });
 
+// Open URL in system default browser
+ipcMain.handle('shell:openExternal', async (_event, url) => {
+    await shell.openExternal(url);
+});
+
 // ---------------------------------------------------------------------------
 // App lifecycle
 // ---------------------------------------------------------------------------
 
 let isQuitting = false;
+let isForceClosing = false;       // set after the save prompt resolves to "Don't Save" or "Save OK"
+let closePromptInFlight = false;  // guards against re-entrant close events
+
+/**
+ * Ask the renderer for the current document's dirty state + name.
+ * Resolves to { dirty: boolean, docName: string|null }.
+ * Times out after 2s (treats as not dirty) so a hung renderer can't lock the close.
+ */
+function queryUnsavedState() {
+    return new Promise((resolve) => {
+        if (!mainWindow || mainWindow.isDestroyed()) {
+            resolve({ dirty: false, docName: null });
+            return;
+        }
+        const nonce = crypto.randomBytes(8).toString('hex');
+        const timer = setTimeout(() => {
+            ipcMain.removeAllListeners('__unsaved-result');
+            console.warn('[electron] dirty-check timed out — proceeding as if clean');
+            resolve({ dirty: false, docName: null });
+        }, 2000);
+
+        ipcMain.once('__unsaved-result', (_e, payload) => {
+            clearTimeout(timer);
+            if (!payload || payload.nonce !== nonce) {
+                // Stale reply from a previous attempt — keep waiting via a fresh call.
+                resolve({ dirty: false, docName: null });
+                return;
+            }
+            resolve({ dirty: !!payload.dirty, docName: payload.docName ?? null });
+        });
+        mainWindow.webContents.send('__check-unsaved', nonce);
+    });
+}
+
+/**
+ * Ask the renderer to run doc.save. Resolves to true on success.
+ * Times out after 60s — large point clouds may take a while to serialize.
+ */
+function requestRendererSave() {
+    return new Promise((resolve) => {
+        if (!mainWindow || mainWindow.isDestroyed()) {
+            resolve(false);
+            return;
+        }
+        const nonce = crypto.randomBytes(8).toString('hex');
+        const timer = setTimeout(() => {
+            ipcMain.removeAllListeners('__save-result');
+            console.warn('[electron] save timed out');
+            resolve(false);
+        }, 60_000);
+
+        ipcMain.once('__save-result', (_e, payload) => {
+            clearTimeout(timer);
+            if (!payload || payload.nonce !== nonce) {
+                resolve(false);
+                return;
+            }
+            resolve(!!payload.ok);
+        });
+        mainWindow.webContents.send('__trigger-save', nonce);
+    });
+}
+
+/**
+ * Show a custom HTML save-prompt dialog before closing when there are unsaved changes.
+ * Uses the renderer's Popup component (same style as other app dialogs) instead of
+ * a native OS dialog.
+ * Returns: 'save' | 'discard' | 'cancel'
+ */
+function requestSavePrompt(docName) {
+    const nonce = Date.now() + Math.random();
+    return new Promise((resolve) => {
+        const timeout = setTimeout(() => {
+            ipcMain.removeAllListeners('__save-prompt-result');
+            resolve('cancel');
+        }, 300000); // 5 min timeout — user might step away
+        ipcMain.once('__save-prompt-result', (_event, payload) => {
+            if (payload.nonce === nonce) {
+                clearTimeout(timeout);
+                resolve(payload.action || 'cancel');
+            }
+        });
+        mainWindow.webContents.send('__show-save-prompt', { nonce, docName: docName || '未命名工程' });
+    });
+}
+
+/**
+ * Handle the window's close button / Alt+F4 / etc.
+ *
+ * Electron note: the renderer registers a `beforeunload` handler that sets
+ * `e.returnValue` when there are unsaved changes (editor.ts). Without an
+ * explicit `close` listener here, that handler blocks the window from
+ * closing and the app appears stuck — this is the root cause of the
+ * "cannot quit after editing" bug.
+ */
+async function handleWindowClose(event) {
+    if (isForceClosing) {
+        // We've already prompted; allow the close to proceed.
+        return;
+    }
+    event.preventDefault();
+
+    if (closePromptInFlight) return;
+    closePromptInFlight = true;
+    try {
+        const state = await queryUnsavedState();
+        if (!state.dirty) {
+            isForceClosing = true;
+            closePromptInFlight = false;
+            mainWindow.close();
+            return;
+        }
+
+        const action = await requestSavePrompt(state.docName);
+        if (action === 'cancel') {
+            return;  // user aborted — keep window open
+        }
+        if (action === 'save') {
+            const ok = await requestRendererSave();
+            if (!ok) {
+                // Save failed or user cancelled the save dialog — keep window open.
+                return;
+            }
+        }
+        // 'save' (succeeded) or 'discard' — proceed with close.
+        isForceClosing = true;
+        closePromptInFlight = false;
+        mainWindow.close();
+    } finally {
+        closePromptInFlight = false;
+    }
+}
 
 function shutdown() {
     if (isQuitting) return;
@@ -190,22 +328,32 @@ electronApp.whenReady().then(async () => {
     try {
         await startServer();
         await createWindow();
+        // Attach the close handler now that the window exists.
+        mainWindow.on('close', handleWindowClose);
     } catch (err) {
         console.error('[electron] Failed to start:', err);
         shutdown();
     }
 });
 
-// Handle window close button (X)
+// Handle window close button (X) — fires after handleWindowClose allows the
+// close to complete (window actually destroyed).
 electronApp.on('window-all-closed', () => {
     shutdown();
 });
 
+// before-quit: triggered by Cmd/Ctrl+Q, taskbar quit, system shutdown, etc.
+// We don't prompt here directly because the renderer can't be safely queried
+// once the app is quitting — instead, if there's an active window, route the
+// quit through the window's close path so the save prompt can run.
 electronApp.on('before-quit', (event) => {
-    if (!isQuitting) {
-        event.preventDefault();
-        shutdown();
-    }
+    if (isQuitting) return;          // shutdown already in progress
+    if (isForceClosing) return;      // prompt already resolved — let it proceed
+    if (!mainWindow || mainWindow.isDestroyed()) return;
+
+    // Convert the quit into a window close so the save prompt runs.
+    event.preventDefault();
+    mainWindow.close();
 });
 
 electronApp.on('activate', () => {

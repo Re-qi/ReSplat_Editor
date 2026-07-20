@@ -26,6 +26,8 @@ import { Tooltips } from './tooltips';
 import { VideoSettingsDialog } from './video-settings-dialog';
 import { ViewCube } from './view-cube';
 import { version } from '../../package.json';
+import { VersionCheck } from '../version-check';
+import type { UpdateState } from '../version-check';
 
 // ts compiler and vscode find this type, but eslint does not
 type FilePickerAcceptType = unknown;
@@ -73,10 +75,50 @@ class EditorUI {
         const canvas = document.createElement('canvas');
         canvas.id = 'canvas';
 
-        // app label
+        // app label — shows version check status then version number
         const appLabel = new Label({
             id: 'app-label',
-            text: `RESPLAT v${version}`
+            text: localize('status-bar.version.checking')
+        });
+        appLabel.dom.style.cursor = 'pointer';
+        let versionUrl = 'https://github.com/Re-qi/ReSplat_Editor/releases';
+        let versionTimer: ReturnType<typeof setTimeout> | null = null;
+
+        const openVersionUrl = () => {
+            const api = (window as any).electronAPI;
+            if (api?.openExternal) {
+                api.openExternal(versionUrl);
+            } else {
+                window.open(versionUrl, '_blank');
+            }
+        };
+
+        appLabel.dom.addEventListener('click', (e: MouseEvent) => {
+            e.stopPropagation();
+            openVersionUrl();
+        });
+
+        events.on('versionCheck.changed', (state: UpdateState) => {
+            if (state.url) {
+                versionUrl = state.url;
+            }
+            if (versionTimer) {
+                clearTimeout(versionTimer);
+                versionTimer = null;
+            }
+            if (state.status === 'available') {
+                appLabel.text = localize('status-bar.version.available');
+            } else if (state.status === 'error') {
+                appLabel.text = localize('status-bar.version.error');
+                versionTimer = setTimeout(() => {
+                    appLabel.text = `RESPLAT v${version}`;
+                }, 1000);
+            } else {
+                appLabel.text = localize('status-bar.version.latest');
+                versionTimer = setTimeout(() => {
+                    appLabel.text = `RESPLAT v${version}`;
+                }, 1000);
+            }
         });
 
         // operation log label
@@ -170,6 +212,7 @@ class EditorUI {
         const timelinePanel = new TimelinePanel(events, tooltips);
         const dataPanel = new DataPanel(events, tooltips);
         const statusBar = new StatusBar(events, tooltips);
+        new VersionCheck(events, version);
 
         timelinePanel.hidden = true;
 

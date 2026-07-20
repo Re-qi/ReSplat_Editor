@@ -157,6 +157,7 @@ type ImportFile = {
     url?: string;
     contents?: File;
     handle?: FileSystemFileHandle;
+    filePath?: string;  // Electron: absolute path from File.path extension
 };
 
 const SOG_LARGE_COUNT = 15_000_000;
@@ -338,15 +339,35 @@ const initFileHandler = (scene: Scene, events: Events, dropTarget: HTMLElement) 
 
                     if (backendAvailable) {
                         const file = mainFile.contents as File;
-                        if (!file) {
-                            // No local file blob — fall through to direct load
+                        const filePath = mainFile.filePath;
+                        if (!file && !filePath) {
+                            // No local file blob or path — fall through to direct load
                             // (e.g. URL-loaded files can't be sent to backend)
-                        } else {
-                            // Auto LOD progressive loading — no user prompt
-                            console.log(`[auto-lod] Large PLY detected: ${meta.count.toLocaleString()} Gaussians, ~${meta.estMemMB} MB → LOD [5%, 25%, 100%]`);
+                        } else if (filePath) {
+                            // Electron: use path-based API to avoid 6GB+ HTTP upload
+                            console.log(`[auto-lod] Large PLY detected: ${meta.count.toLocaleString()} Gaussians, ~${meta.estMemMB} MB → compressing (path)`);
                             events.fire('startSpinner');
                             try {
-                                await BackendClient.lodConvert(file, [5, 25, 100]).then(lodResult => loadLODLevels(lodResult, importFiles, events)
+                                const lodResult = await BackendClient.lodConvertPath(filePath, [100]);
+                                await loadLODLevels(lodResult, importFiles, events);
+                                return;
+                            } catch (err) {
+                                console.error('[auto-lod] Failed:', err);
+                                await events.invoke('showPopup', {
+                                    type: 'error',
+                                    header: 'LOD 处理失败',
+                                    message: `自动分级加载失败: ${err.message || err}`
+                                });
+                                return;
+                            } finally {
+                                events.fire('stopSpinner');
+                            }
+                        } else {
+                            // Auto LOD progressive loading — no user prompt
+                            console.log(`[auto-lod] Large PLY detected: ${meta.count.toLocaleString()} Gaussians, ~${meta.estMemMB} MB → compressing`);
+                            events.fire('startSpinner');
+                            try {
+                                await BackendClient.lodConvert(file, [100]).then(lodResult => loadLODLevels(lodResult, importFiles, events)
                                 );
                                 return; // LOD loading handles its own scene.add
                             } catch (err) {
@@ -445,9 +466,13 @@ const initFileHandler = (scene: Scene, events: Events, dropTarget: HTMLElement) 
         return importFiles(files, animationFrame);
     });
 
-    // create a file selector element as fallback when showOpenFilePicker isn't available
+    // create a file selector element
+    // In Electron: always use <input type="file"> because File objects get a
+    // `path` property — needed for path-based backend APIs that avoid 6GB+ uploads.
+    // In browser: only create when showOpenFilePicker is unavailable.
     let fileSelector: HTMLInputElement;
-    if (!window.showOpenFilePicker) {
+    const isElectron = !!(window as any).electronAPI?.isElectron;
+    if (!window.showOpenFilePicker || isElectron) {
         fileSelector = document.createElement('input');
         fileSelector.setAttribute('id', 'file-selector');
         fileSelector.setAttribute('type', 'file');
@@ -457,10 +482,11 @@ const initFileHandler = (scene: Scene, events: Events, dropTarget: HTMLElement) 
         fileSelector.onchange = () => {
             const files = [];
             for (let i = 0; i < fileSelector.files.length; i++) {
-                const file = fileSelector.files[i];
+                const file = fileSelector.files[i] as File & { path?: string };
                 files.push({
                     filename: file.name,
-                    contents: file
+                    contents: file,
+                    filePath: file.path  // Electron exposes absolute path via File.path
                 });
             }
             importFiles(files);
@@ -548,11 +574,14 @@ const initFileHandler = (scene: Scene, events: Events, dropTarget: HTMLElement) 
         const levels = lodResult.levels.sort((a, b) => a.level - b.level);
         if (levels.length === 0) return;
 
-        // Load lowest LOD first (fast preview)
+        // Load lowest LOD first — this is the fast preview that makes the
+        // model interactive. Stop the spinner here so the user can start
+        // working while higher levels load in the background.
         const preview = levels[0];
         console.log(`[LOD] Loading preview: ${preview.level}% (${preview.count.toLocaleString()} Gaussians)`);
         const models = await importFn([{ filename: `lod_${preview.level}.compressed.ply`, url: preview.url }], false);
         let currentModel = models[0];
+        evts.fire('stopSpinner');
 
         // Load remaining levels in background, replacing each time
         for (let i = 1; i < levels.length; i++) {

@@ -325,6 +325,7 @@
     "toolbar.select.set": "选择",
     "toolbar.select.add": "添加",
     "toolbar.select.remove": "移除",
+    "toolbar.select.invert": "反选",
     "toolbar.select.sizeLeq": "选择≦",
     "toolbar.select.sizeGeq": "选择≧",
     "toolbar.opacity.threshold": "不透明度阈值",
@@ -334,5 +335,9 @@
     "toolbar.point-cloud-group.remove": "从组中移除",
     "toolbar.blocking-plane.follow": "跟随",
     "toolbar.blocking-plane.select-back": "选择背面",
-    "toolbar.blocking-plane.distance": "距离"
+    "toolbar.blocking-plane.distance": "距离",
+    "status-bar.version.checking": "正在检测有无新版本",
+    "status-bar.version.available": "有新版本 点击更新",
+    "status-bar.version.latest": "已是最新版本",
+    "status-bar.version.error": "无法连接到GitHub"
 }

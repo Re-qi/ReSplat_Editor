@@ -123,9 +123,13 @@ class WrapperList extends Container {
             visibleIcon.dom.addEventListener('click', toggleVisible);
             invisibleIcon.dom.addEventListener('click', toggleVisible);
 
-            // Click to select
+            // Click to select / toggle
             shapeItem.dom.addEventListener('click', (e: MouseEvent) => {
                 e.stopPropagation();
+                if (events.invoke('shapeSelection') === shape) {
+                    events.fire('selection', null);
+                    return;
+                }
                 events.fire('selection', shape as any);
 
                 // Auto-activate the corresponding tool

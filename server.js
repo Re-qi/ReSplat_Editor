@@ -32,12 +32,19 @@ function sendResult(res, { resultData, outFilename, count }) {
     res.setHeader('Content-Type', 'application/octet-stream');
     res.setHeader('Content-Disposition', `attachment; filename="${outFilename}"`);
     res.setHeader('X-Splat-Count', String(count));
-    // Stream in chunks — Buffer.from and res.end have 2GB limits
-    const CHUNK = 256 * 1024 * 1024;
-    for (let offset = 0; offset < resultData.length; offset += CHUNK) {
-        res.write(Buffer.from(resultData.subarray(offset, offset + CHUNK)));
+    if (typeof resultData === 'string') {
+        // Native path: data is a file on disk (may exceed 2GB)
+        const stream = fs.createReadStream(resultData);
+        stream.pipe(res);
+        stream.on('end', () => cleanup(resultData));
+    } else {
+        // JS fallback: in-memory Uint8Array
+        const CHUNK = 256 * 1024 * 1024;
+        for (let offset = 0; offset < resultData.length; offset += CHUNK) {
+            res.write(Buffer.from(resultData.subarray(offset, offset + CHUNK)));
+        }
+        res.end();
     }
-    res.end();
 }
 
 /** Write result to temp/ and return URL (for path endpoints — avoids 4.5GB HTTP body) */
@@ -48,16 +55,21 @@ function sendPathResult(res, { resultData, outFilename, count }) {
     const tempName = `${baseName}_${Date.now()}${ext}`;
     const tempPath = path.join(TEMP_DIR, tempName);
 
-    // Write in chunks via fd — stream.write() overwhelms event loop for >4GB files
-    const fd = fs.openSync(tempPath, 'w');
-    try {
-        const CHUNK = 256 * 1024 * 1024;
-        for (let offset = 0; offset < resultData.length; offset += CHUNK) {
-            const slice = Buffer.from(resultData.subarray(offset, offset + CHUNK));
-            fs.writeSync(fd, slice, 0, slice.length, offset);
+    if (typeof resultData === 'string') {
+        // Native path: rename the already-written file directly (avoids >2GB readFileSync crash)
+        fs.renameSync(resultData, tempPath);
+    } else {
+        // JS fallback: write in-memory Uint8Array to disk in chunks
+        const fd = fs.openSync(tempPath, 'w');
+        try {
+            const CHUNK = 256 * 1024 * 1024;
+            for (let offset = 0; offset < resultData.length; offset += CHUNK) {
+                const slice = Buffer.from(resultData.subarray(offset, offset + CHUNK));
+                fs.writeSync(fd, slice, 0, slice.length, offset);
+            }
+        } finally {
+            fs.closeSync(fd);
         }
-    } finally {
-        fs.closeSync(fd);
     }
 
     // Schedule cleanup after 10 minutes (browser should load it by then)
@@ -468,8 +480,10 @@ async function processFile(inputPath, originalName, mode, targetPercent, deleteI
                     outputPath: tempOutPath,
                     shBands
                 });
-                resultData = new Uint8Array(fs.readFileSync(tempOutPath));
-                cleanup(tempOutPath);
+                // C++ native path: writeCompressedPly writes to disk. Don't readFileSync
+                // — for >2 GB files it hits ERR_FS_FILE_TOO_LARGE. Keep the file path
+                // and let sendResult / sendPathResult stream or rename it directly.
+                resultData = tempOutPath;  // file path, not Uint8Array
                 console.log(`[${tag}] (native) Write done (${((performance.now() - t3) / 1000).toFixed(1)}s)`);
             } catch (nativeErr) {
                 console.log(`[${tag}] Native write failed (${nativeErr.message}), falling back to JS...`);
@@ -498,7 +512,7 @@ async function processFile(inputPath, originalName, mode, targetPercent, deleteI
             }
         }
 
-        const outputSizeMB = resultData.length / (1024 * 1024);
+        const outputSizeMB = (typeof resultData === 'string' ? fs.statSync(resultData).size : resultData.length) / (1024 * 1024);
         const totalSec = ((performance.now() - t1) / 1000).toFixed(1);
         console.log(`[${tag}] Done! Write (${((performance.now() - t3) / 1000).toFixed(1)}s) | Output: ${outputSizeMB.toFixed(1)} MB, ${dataTable.numRows.toLocaleString()} Gaussians | Total: ${totalSec}s`);
 
@@ -660,7 +674,7 @@ app.post('/api/lod-convert-path', express.json(), async (req, res) => {
 // ---------------------------------------------------------------------------
 // LOD Convert (core) — shared by upload and path-based endpoints
 // ---------------------------------------------------------------------------
-async function lodConvert(inputPath, originalName, levels = [5, 25, 100]) {
+async function lodConvert(inputPath, originalName, levels = [100]) {
     const t0 = performance.now();
     const lowerName = originalName.toLowerCase();
     const isPly = lowerName.endsWith('.ply') && !lowerName.endsWith('.compressed.ply');
@@ -687,14 +701,11 @@ async function lodConvert(inputPath, originalName, levels = [5, 25, 100]) {
             const tLvl = performance.now();
             console.log(`[lod] Generating ${lvl}% LOD...`);
 
-            // Clone column data for this level (processDataTable mutates in place)
-            // 100% level uses pristine data directly — no decimate, so no mutation risk
-            const needsClone = lvl < 100;
-            const lvlColumns = needsClone
-                ? pristineColumns.map(c => new Column(c.name, new Float32Array(c.data)))
-                : pristineColumns.map(c => new Column(c.name, c.data));
-            let lvlDataTable = new DataTable(lvlColumns, Transform.PLY.clone());
-
+            // Sample directly from pristine columns — interval sampling is read-only,
+            // so no full-size clone is needed (the old clone was for processDataTable
+            // mutation, which no longer runs in this path). For 28M×62prop files this
+            // avoids a redundant 7GB allocation per sampled level.
+            let lvlDataTable;
             if (lvl < 100) {
                 // Fast interval sampling: take every Nth splat, preserving Morton order
                 // Much faster than MPMM decimate (262s → <1s for 5M points)
@@ -703,7 +714,7 @@ async function lodConvert(inputPath, originalName, levels = [5, 25, 100]) {
                 const sampleCount = Math.max(1, Math.floor(numRows * sampleRatio));
                 const step = Math.max(1, Math.floor(numRows / sampleCount));
 
-                const sampledColumns = lvlColumns.map(c => {
+                const sampledColumns = pristineColumns.map(c => {
                     const src = c.data;
                     const dst = new Float32Array(sampleCount);
                     for (let i = 0; i < sampleCount; i++) {
@@ -712,6 +723,10 @@ async function lodConvert(inputPath, originalName, levels = [5, 25, 100]) {
                     return new Column(c.name, dst);
                 });
                 lvlDataTable = new DataTable(sampledColumns, Transform.PLY.clone());
+            } else {
+                // 100% level: wrap pristine data directly (no clone, no mutation)
+                const lvlColumns = pristineColumns.map(c => new Column(c.name, c.data));
+                lvlDataTable = new DataTable(lvlColumns, Transform.PLY.clone());
             }
 
             const writeFilename = originalName.replace(/\.\w+$/, `.lod${lvl}.compressed.ply`);
@@ -733,8 +748,10 @@ async function lodConvert(inputPath, originalName, levels = [5, 25, 100]) {
                     outputPath: tempOutPath,
                     shBands
                 });
-                resultData = new Uint8Array(fs.readFileSync(tempOutPath));
-                cleanup(tempOutPath);
+                // C++ native path: writeCompressedPly writes to disk. Don't readFileSync
+                // — for >2 GB files it hits ERR_FS_FILE_TOO_LARGE. Keep the file path
+                // and let sendResult / sendPathResult stream or rename it directly.
+                resultData = tempOutPath;  // file path, not Uint8Array
             } else {
                 const { writeFile, getOutputFormat } = splatLib;
                 const outFs = new MemoryFileSystem();
@@ -756,20 +773,33 @@ async function lodConvert(inputPath, originalName, levels = [5, 25, 100]) {
             const base = path.basename(writeFilename, ext);
             const serveName = `${base}_${Date.now()}${ext}`;
             const servePath = path.join(TEMP_DIR, serveName);
-            const fd = fs.openSync(servePath, 'w');
-            try {
-                const CHUNK = 256 * 1024 * 1024;
-                for (let offset = 0; offset < resultData.length; offset += CHUNK) {
-                    const slice = Buffer.from(resultData.subarray(offset, offset + CHUNK));
-                    fs.writeSync(fd, slice, 0, slice.length, offset);
-                }
-            } finally { fs.closeSync(fd); }
+
+            if (typeof resultData === 'string') {
+                // Native path: file already on disk → just rename to serve path
+                fs.renameSync(resultData, servePath);
+            } else {
+                // JS fallback: write in-memory Uint8Array in chunks
+                const fd = fs.openSync(servePath, 'w');
+                try {
+                    const CHUNK = 256 * 1024 * 1024;
+                    for (let offset = 0; offset < resultData.length; offset += CHUNK) {
+                        const slice = Buffer.from(resultData.subarray(offset, offset + CHUNK));
+                        fs.writeSync(fd, slice, 0, slice.length, offset);
+                    }
+                } finally { fs.closeSync(fd); }
+            }
             setTimeout(() => cleanup(servePath), 30 * 60 * 1000);
 
             const url = `http://localhost:${PORT}/temp/${encodeURIComponent(serveName)}`;
             const sizeMB = fs.statSync(servePath).size / (1024 * 1024);
             console.log(`[lod]   Level ${lvl}%: ${lvlDataTable.numRows.toLocaleString()} Gaussians, ${sizeMB.toFixed(1)} MB, ${((performance.now() - tLvl) / 1000).toFixed(1)}s`);
             lodResults.push({ level: lvl, count: lvlDataTable.numRows, url, sizeBytes: fs.statSync(servePath).size });
+
+            // Release per-iteration buffers — lvlDataTable arrays can be 1-2GB;
+            // null refs let V8 GC them before next allocation. (resultData is now
+            // a file path or null, not a huge Uint8Array.)
+            lvlDataTable = null;
+            if (global.gc) global.gc();
         }
 
         const totalSec = ((performance.now() - t0) / 1000).toFixed(1);
@@ -880,8 +910,8 @@ app.post('/api/merge-path', express.json(), async (req, res) => {
                 outputPath: tempOutPath,
                 shBands
             });
-            resultData = new Uint8Array(fs.readFileSync(tempOutPath));
-            cleanup(tempOutPath);
+            // C++ native path: keep file on disk — rename later instead of readFileSync (avoids >2GB crash)
+            resultData = tempOutPath;
         } else {
             const { writeFile, getOutputFormat, MemoryFileSystem } = splatLib;
             const dataTable = new DataTable(mergedColumns, Transform.PLY.clone());
@@ -905,22 +935,29 @@ app.post('/api/merge-path', express.json(), async (req, res) => {
         const base = path.basename(writeFilename, ext);
         const serveName = `${base}_${Date.now()}${ext}`;
         const servePath = path.join(TEMP_DIR, serveName);
-        const fd = fs.openSync(servePath, 'w');
-        try {
-            const CHUNK = 256 * 1024 * 1024;
-            for (let offset = 0; offset < resultData.length; offset += CHUNK) {
-                const slice = Buffer.from(resultData.subarray(offset, offset + CHUNK));
-                fs.writeSync(fd, slice, 0, slice.length, offset);
-            }
-        } finally { fs.closeSync(fd); }
+
+        if (typeof resultData === 'string') {
+            // Native path: file already on disk → rename directly
+            fs.renameSync(resultData, servePath);
+        } else {
+            // JS fallback: write in-memory Uint8Array in chunks
+            const fd = fs.openSync(servePath, 'w');
+            try {
+                const CHUNK = 256 * 1024 * 1024;
+                for (let offset = 0; offset < resultData.length; offset += CHUNK) {
+                    const slice = Buffer.from(resultData.subarray(offset, offset + CHUNK));
+                    fs.writeSync(fd, slice, 0, slice.length, offset);
+                }
+            } finally { fs.closeSync(fd); }
+        }
         setTimeout(() => cleanup(servePath), 30 * 60 * 1000);
 
-        const outputSizeMB = resultData.length / (1024 * 1024);
+        const outputSizeMB = fs.statSync(servePath).size / (1024 * 1024);
         const totalSec = ((performance.now() - t0) / 1000).toFixed(1);
         const url = `http://localhost:${PORT}/temp/${encodeURIComponent(serveName)}`;
         console.log(`[merge] Done! Write (${((performance.now() - t2) / 1000).toFixed(1)}s) | Output: ${outputSizeMB.toFixed(1)} MB, ${mergedNumRows.toLocaleString()} Gaussians | Total: ${totalSec}s`);
 
-        res.json({ url, filename: writeFilename, count: mergedNumRows, sizeBytes: resultData.length });
+        res.json({ url, filename: writeFilename, count: mergedNumRows, sizeBytes: fs.statSync(servePath).size });
 
     } catch (error) {
         console.error('[merge] Error:', error);
