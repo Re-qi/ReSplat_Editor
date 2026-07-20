@@ -103,7 +103,7 @@ const registerEditorEvents = (events: Events, editHistory: EditHistory, scene: S
     // through preload's IPC channels when the user closes the window.
     if (isElectron) {
         const electronAPI = (window as any).electronAPI;
-        electronAPI.registerDirtyChecker(async () => {
+        electronAPI.registerDirtyChecker(() => {
             return {
                 dirty: !!events.invoke('scene.dirty'),
                 docName: events.invoke('doc.name') as string | null
@@ -322,9 +322,9 @@ const registerEditorEvents = (events: Events, editHistory: EditHistory, scene: S
             // Focus on wrapper shape
             const pivot = shapeSel.pivot;
             const focalPoint = pivot.getPosition();
-            const radius = shapeSel instanceof SphereShape
-                ? shapeSel.radius
-                : pivot.getLocalScale().length() / 2;
+            const radius = shapeSel instanceof SphereShape ?
+                shapeSel.radius :
+                pivot.getLocalScale().length() / 2;
             scene.camera.focus({
                 focalPoint: focalPoint.clone(),
                 radius,
@@ -480,13 +480,13 @@ const registerEditorEvents = (events: Events, editHistory: EditHistory, scene: S
         local.sub2(worldPoint, shapePos);
         invRot.transformVector(local, local);
         if (shape instanceof BoxShape) {
-            return Math.abs(local.x) <= shape.lenX / 2
-                && Math.abs(local.y) <= shape.lenY / 2
-                && Math.abs(local.z) <= shape.lenZ / 2;
+            return Math.abs(local.x) <= shape.lenX / 2 &&
+                Math.abs(local.y) <= shape.lenY / 2 &&
+                Math.abs(local.z) <= shape.lenZ / 2;
         }
-        return (local.x * local.x) / (shape.radiusX * shape.radiusX)
-             + (local.y * local.y) / (shape.radiusY * shape.radiusY)
-             + (local.z * local.z) / (shape.radiusZ * shape.radiusZ) <= 1;
+        return (local.x * local.x) / (shape.radiusX * shape.radiusX) +
+             (local.y * local.y) / (shape.radiusY * shape.radiusY) +
+             (local.z * local.z) / (shape.radiusZ * shape.radiusZ) <= 1;
     };
 
     events.on('select.bySphere', async (op: 'add'|'remove'|'set', sphere: number[]) => {

@@ -26,8 +26,7 @@ import { Tooltips } from './tooltips';
 import { VideoSettingsDialog } from './video-settings-dialog';
 import { ViewCube } from './view-cube';
 import { version } from '../../package.json';
-import { VersionCheck } from '../version-check';
-import type { UpdateState } from '../version-check';
+import { VersionCheck, UpdateState } from '../version-check';
 
 // ts compiler and vscode find this type, but eslint does not
 type FilePickerAcceptType = unknown;
@@ -212,7 +211,7 @@ class EditorUI {
         const timelinePanel = new TimelinePanel(events, tooltips);
         const dataPanel = new DataPanel(events, tooltips);
         const statusBar = new StatusBar(events, tooltips);
-        new VersionCheck(events, version);
+        void new VersionCheck(events, version);
 
         timelinePanel.hidden = true;
 
