@@ -211,7 +211,8 @@ class EditorUI {
         const timelinePanel = new TimelinePanel(events, tooltips);
         const dataPanel = new DataPanel(events, tooltips);
         const statusBar = new StatusBar(events, tooltips);
-        void new VersionCheck(events, version);
+        // eslint-disable-next-line @typescript-eslint/no-unused-vars
+        const _versionCheck = new VersionCheck(events, version);
 
         timelinePanel.hidden = true;
 
