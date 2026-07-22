@@ -73,9 +73,6 @@ async function createWindow() {
         console.log('[electron] WebGPU check failed:', e.message);
     }
 
-    // Open DevTools
-    mainWindow.webContents.openDevTools();
-
     mainWindow.on('closed', () => {
         mainWindow = null;
     });
