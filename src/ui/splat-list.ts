@@ -433,6 +433,14 @@ class SplatList extends Container {
                 splat.destroy();
             }
         });
+
+        // Highlight current (gizmo-controlled) splat
+        events.on('current.changed', (payload: any) => {
+            const isSplatCurrent = payload && payload.type === 'splat' && payload.element;
+            items.forEach((value, key) => {
+                value.class[isSplatCurrent && key === payload.element ? 'add' : 'remove']('current');
+            });
+        });
     }
 
     protected _onAppendChild(element: PcuiElement): void {

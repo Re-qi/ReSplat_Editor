@@ -13,6 +13,7 @@ import { localize } from './localization';
 import { Menu } from './menu';
 import { ModeSwitch } from './mode-switch';
 import { ModeToggle } from './mode-toggle';
+import { openUrl } from '../open-url';
 import { OverlayToggle } from './overlay-toggle';
 // import logo from './playcanvas-logo.png';
 import { Popup, ShowOptions } from './popup';
@@ -80,21 +81,46 @@ class EditorUI {
             text: localize('status-bar.version.checking')
         });
         appLabel.dom.style.cursor = 'pointer';
-        let versionUrl = 'https://github.com/Re-qi/ReSplat_Editor/releases';
+        let versionUrl = 'https://github.com/Re-qi/ReSplat/releases';
         let versionTimer: ReturnType<typeof setTimeout> | null = null;
 
         const openVersionUrl = () => {
-            const api = (window as any).electronAPI;
-            if (api?.openExternal) {
-                api.openExternal(versionUrl);
-            } else {
-                window.open(versionUrl, '_blank');
-            }
+            console.log('[app-label] openVersionUrl called, url:', versionUrl);
+            openUrl(versionUrl);
         };
 
         appLabel.dom.addEventListener('click', (e: MouseEvent) => {
+            console.log('[app-label] click FIRE target:', (e.target as Element)?.tagName, 'currentTarget:', (e.currentTarget as Element)?.tagName, 'url:', versionUrl);
             e.stopPropagation();
-            openVersionUrl();
+            openUrl(versionUrl);
+        });
+
+        // Also listen on pointerdown/pointerup to check if click generation chain is intact
+        appLabel.dom.addEventListener('pointerdown', (e: PointerEvent) => {
+            console.log('[app-label] pointerdown FIRE target:', (e.target as Element)?.tagName, 'defaultPrevented:', e.defaultPrevented);
+            // Stop propagation to prevent PointerController from calling
+            // setPointerCapture on canvasContainer, which suppresses click events
+            e.stopPropagation();
+        });
+        appLabel.dom.addEventListener('pointerup', (e: PointerEvent) => {
+            console.log('[app-label] pointerup FIRE target:', (e.target as Element)?.tagName, 'defaultPrevented:', e.defaultPrevented);
+        });
+
+        // Log all events on document to see if something prevents click generation
+        document.addEventListener('pointerdown', (e: PointerEvent) => {
+            if ((e.target as Element)?.id === 'app-label') {
+                console.log('[document] pointerdown app-label defaultPrevented:', e.defaultPrevented);
+            }
+        });
+        document.addEventListener('pointerup', (e: PointerEvent) => {
+            if ((e.target as Element)?.id === 'app-label') {
+                console.log('[document] pointerup app-label defaultPrevented:', e.defaultPrevented);
+            }
+        });
+        document.addEventListener('click', (e: MouseEvent) => {
+            if ((e.target as Element)?.id === 'app-label') {
+                console.log('[document] click FIRE on app-label!');
+            }
         });
 
         events.on('versionCheck.changed', (state: UpdateState) => {
@@ -184,7 +210,6 @@ class EditorUI {
         const menu = new Menu(events, tooltips);
 
         canvasContainer.dom.appendChild(canvas);
-        canvasContainer.append(appLabel);
         canvasContainer.append(operationLogLabel);
         canvasContainer.append(cursorLabel);
         canvasContainer.append(toolsContainer);
@@ -195,6 +220,7 @@ class EditorUI {
         canvasContainer.append(cameraModeSwitch);
         canvasContainer.append(modeSwitch);
         canvasContainer.append(menu);
+        canvasContainer.append(appLabel);
 
         // view axes container
         const viewCube = new ViewCube(events);
@@ -402,7 +428,12 @@ class EditorUI {
             spinnerCount = Math.max(0, spinnerCount - 1);
             if (spinnerCount === 0) {
                 spinner.hidden = true;
+                spinner.text = '';  // clear text when spinner hides
             }
+        });
+
+        events.on('spinnerText', (text: string) => {
+            spinner.text = text;
         });
 
         // progress
@@ -448,6 +479,8 @@ class EditorUI {
 
         // whenever the canvas container is clicked, set keyboard focus on the body
         canvasContainer.dom.addEventListener('pointerdown', (event: PointerEvent) => {
+            const target = event.target as Element;
+            console.log('[canvas-container] pointerdown CAPTURE target:', target?.tagName, 'id:', target?.id, 'class:', target?.className?.slice(0, 40));
             // set focus on the body if user is busy pressing on the canvas or a child of the tools
             // element
             if (event.target === canvas || toolsContainer.dom.contains(event.target as Node)) {

@@ -1,14 +1,28 @@
-import { ZipFileSystem, ZipReadFileSystem, ReadFileSystem } from '@playcanvas/splat-transform';
+import { ZipFileSystem, ZipReadFileSystem, ReadFileSystem, ReadSource } from '@playcanvas/splat-transform';
 
+import { BlockingPlane } from './blocking-plane';
+import { BoxShape } from './box-shape';
 import { EditHistory } from './edit-history';
+import { Element } from './element';
 import { Events } from './events';
-import { BrowserFileSystem, BlobReadSource, DecompressingReadSource, ZstdWriter, GZipWriter, isZstdSupported } from './io';
+import { BrowserFileSystem, BlobReadSource, DecompressingReadSource, TeeReadStream, ZstdWriter, GZipWriter, isZstdSupported } from './io';
 import { recentFiles } from './recent-files';
 import { Scene } from './scene';
+import { SphereShape } from './sphere-shape';
 import { Splat } from './splat';
 import { serializePlyToWriter, SerializeSettings } from './splat-serialize';
 import { Transform } from './transform';
 import { localize } from './ui/localization';
+
+// shape factory for document deserialization
+const createShapeFromDoc = (doc: any): Element => {
+    switch (doc.shapeType) {
+        case 'box': return new BoxShape();
+        case 'sphere': return new SphereShape();
+        case 'plane': return new BlockingPlane();
+        default: return null;
+    }
+};
 
 // ts compiler and vscode find this type, but eslint does not
 type FilePickerAcceptType = unknown;
@@ -60,6 +74,11 @@ const registerDocEvents = (scene: Scene, events: Events, editHistory: EditHistor
     // this file handle is updated as the current document is loaded and saved
     let documentFileHandle: FileSystemFileHandle = null;
 
+    // Cache of compressed PLY data per splat uid — enables instant re-save
+    // when splat hasn't changed since last save. Stored as an array of chunks
+    // to avoid allocating a single giant ArrayBuffer.
+    const _plyCache = new Map<number, Uint8Array[]>();
+
     // show the user a reset confirmation popup
     const getResetConfirmation = async () => {
         const result = await events.invoke('showPopup', {
@@ -81,11 +100,13 @@ const registerDocEvents = (scene: Scene, events: Events, editHistory: EditHistor
         events.fire('camera.reset');
         events.fire('doc.setName', null);
         documentFileHandle = null;
+        _plyCache.clear();
     };
 
     // load the document from the given file
     const loadDocument = async (file: File) => {
         events.fire('startSpinner');
+        events.fire('spinnerText', '正在打开工程...');
 
         // Create streaming ZIP reader from the file
         const blobSource = new BlobReadSource(file);
@@ -102,6 +123,9 @@ const registerDocEvents = (scene: Scene, events: Events, editHistory: EditHistor
             const document = JSON.parse(new TextDecoder().decode(docData));
 
             // run through each splat and load it
+            // Also cache raw compressed PLY bytes for instant first-save optimization
+            const loadingCache = new Map<number, Uint8Array[]>();
+
             for (let i = 0; i < document.splats.length; ++i) {
                 const splatSettings = document.splats[i];
 
@@ -109,7 +133,27 @@ const registerDocEvents = (scene: Scene, events: Events, editHistory: EditHistor
                 const ext = isZstdSupported() ? '.ply.zst' : '.ply.gz';
                 const algo = isZstdSupported() ? 'zstd' : 'gzip';
                 const compressedSource = await zipFs.createSource(`splat_${i}${ext}`);
-                const decompressingSource = new DecompressingReadSource(compressedSource, algo);
+
+                // TeeReadStream: simultaneously caches compressed data for instant
+                // re-save while streaming to the decompressor — pipelines the I/O
+                // and decompression instead of sequential read-then-decompress.
+                const cacheChunks: Uint8Array[] = [];
+                const teeStream = new TeeReadStream(compressedSource.read(), cacheChunks);
+                loadingCache.set(i, cacheChunks);
+
+                const teeSource: ReadSource = {
+                    size: compressedSource.size,
+                    seekable: false,
+                    read() {
+                        return teeStream;
+                    },
+                    close() {
+                        teeStream.close();
+                        compressedSource.close();
+                    }
+                };
+
+                const decompressingSource = new DecompressingReadSource(teeSource, algo);
 
                 // create a simple filesystem wrapper for the decompressing source
                 const plyFs: ReadFileSystem = {
@@ -124,12 +168,9 @@ const registerDocEvents = (scene: Scene, events: Events, editHistory: EditHistor
                 const splat = await scene.assetLoader.load(`splat_${i}.ply`, plyFs, false, true);
                 await scene.add(splat);
 
-                // PLY format bakes world transform into vertex data during save.
-                // Save the entity's current transform (set by PLY loader), restore
-                // non-transform properties via docDeserialize, then re-apply the
-                // PLY rotation so rendering stays correct.
-                const savedRot = splat.entity.getLocalRotation().clone();
-                splat.docDeserialize({ ...splatSettings, position: [0, 0, 0], rotation: [savedRot.x, savedRot.y, savedRot.z, savedRot.w], scale: [1, 1, 1] });
+                // Restore entity transform from doc.json (no longer baked into PLY).
+                // editHistory replay will handle intermediate transform states.
+                splat.docDeserialize(splatSettings);
             }
 
             // FIXME: trigger scene bound calc in a better way
@@ -159,6 +200,23 @@ const registerDocEvents = (scene: Scene, events: Events, editHistory: EditHistor
                 }
             }
 
+            // restore shapes (must happen before editHistory deserialization
+            // so that AddShapeOp can reference loaded shapes)
+            if (document.shapes) {
+                let maxUid = 0;
+                for (const shapeDoc of document.shapes) {
+                    const shape = createShapeFromDoc(shapeDoc);
+                    if (shape) {
+                        await scene.add(shape);
+                        shape.docDeserialize(shapeDoc);
+                        maxUid = Math.max(maxUid, shapeDoc.uid);
+                    }
+                }
+                if (maxUid >= Element.getNextUid()) {
+                    Element.setNextUid(maxUid + 1);
+                }
+            }
+
             // restore edit history (must await since it goes through commandQueue)
             if (document.editHistory) {
                 await editHistory.deserialize(document.editHistory, scene);
@@ -173,6 +231,17 @@ const registerDocEvents = (scene: Scene, events: Events, editHistory: EditHistor
                 currentSelection.getPivot(pivotOrigin, false, transform);
                 pivot.place(transform);
             }
+
+            // Populate save cache with compressed PLY data from the loaded document.
+            // This enables instant first-save when no modifications have been made.
+            const allSplats = events.invoke('scene.allSplats') as Splat[];
+            allSplats.forEach((splat, i) => {
+                const chunks = loadingCache.get(i);
+                if (chunks) {
+                    _plyCache.set(splat.uid, chunks);
+                    splat.markSaveClean();
+                }
+            });
         } catch (error) {
             await events.invoke('showPopup', {
                 type: 'error',
@@ -188,6 +257,18 @@ const registerDocEvents = (scene: Scene, events: Events, editHistory: EditHistor
 
     const saveDocument = async (options: { stream?: FileSystemWritableFileStream, filename?: string }) => {
         events.fire('startSpinner');
+        events.fire('spinnerText', '正在保存工程...');
+
+        // First save (no existing project file): show alternating warning
+        // that serialization may take a long time.
+        let saveMsgInterval: ReturnType<typeof setInterval> | null = null;
+        if (!documentFileHandle) {
+            let toggle = false;
+            saveMsgInterval = setInterval(() => {
+                toggle = !toggle;
+                events.fire('spinnerText', toggle ? '首次保存可能会很久' : '正在保存工程...');
+            }, 5000);
+        }
 
         try {
             const splats = events.invoke('scene.allSplats') as Splat[];
@@ -210,15 +291,18 @@ const registerDocEvents = (scene: Scene, events: Events, editHistory: EditHistor
                 timeline: events.invoke('docSerialize.timeline'),
                 splats: splats.map(s => s.docSerialize()),
                 groups: groups,
+                shapes: scene.elements
+                .filter(e => e.docSerialize() !== null)
+                .map(e => e.docSerialize()),
                 editHistory: editHistory.serialize()
             };
 
             const plySettings: SerializeSettings = {
                 keepStateData: false,
                 preserveDeleted: true,
-                keepWorldTransform: false,
+                keepWorldTransform: true,
                 keepColorTint: false,
-                skipPlyRotation: false
+                skipPlyRotation: true
             };
 
             // Create browser filesystem and zip filesystem
@@ -231,17 +315,56 @@ const registerDocEvents = (scene: Scene, events: Events, editHistory: EditHistor
             await docWriter.write(new TextEncoder().encode(JSON.stringify(document)));
             await docWriter.close();
 
-            // Write each splat as compressed PLY
+            // Write each splat as compressed PLY — reuse cached data if unchanged
+            const serializeStart = performance.now();
             for (let i = 0; i < splats.length; ++i) {
+                const splat = splats[i];
                 const ext = useZstd ? '.ply.zst' : '.ply.gz';
+
+                let plyChunks: Uint8Array[];
+                const cached = _plyCache.get(splat.uid);
+
+                if (cached && !splat.isSaveDirty()) {
+                    // Reuse cached compressed PLY chunks — skip serialization entirely
+                    plyChunks = cached;
+                } else {
+                    // Serialize to memory, cache the compressed chunks
+                    const chunks: Uint8Array[] = [];
+                    const memWriter = {
+                        bytesWritten: 0,
+                        write(data: Uint8Array) {
+                            chunks.push(data);
+                            this.bytesWritten += data.length;
+                            return Promise.resolve();
+                        },
+                        close() {
+                            return Promise.resolve();
+                        }
+                    };
+                    const compressedWriter = useZstd ? new ZstdWriter(memWriter) : new GZipWriter(memWriter);
+                    const t0 = performance.now();
+                    await serializePlyToWriter([splat], plySettings, compressedWriter);
+                    await compressedWriter.close();
+                    console.log(`[save] serialize: ${((performance.now() - t0) / 1000).toFixed(1)}s`);
+                    _plyCache.set(splat.uid, chunks);
+                    splat.markSaveClean();
+                    plyChunks = chunks;
+                }
+
+                const t0 = performance.now();
                 const zipWriter = await zipFs.createWriter(`splat_${i}${ext}`);
-                const compressedWriter = useZstd ? new ZstdWriter(zipWriter) : new GZipWriter(zipWriter);
-                await serializePlyToWriter([splats[i]], plySettings, compressedWriter);
-                await compressedWriter.close();
+                for (const chunk of plyChunks) {
+                    await zipWriter.write(chunk);
+                }
+                await zipWriter.close();
+                console.log(`[save] zip+write: ${((performance.now() - t0) / 1000).toFixed(1)}s (${(plyChunks.reduce((s, c) => s + c.length, 0) / 1048576).toFixed(1)} MB)`);
             }
 
             // Close zip (also closes underlying browser writer)
+            const t0 = performance.now();
             await zipFs.close();
+            console.log(`[save] zip finalize: ${((performance.now() - t0) / 1000).toFixed(1)}s`);
+            console.log(`[save] total: ${((performance.now() - serializeStart) / 1000).toFixed(1)}s`);
         } catch (error) {
             await events.invoke('showPopup', {
                 type: 'error',
@@ -249,6 +372,7 @@ const registerDocEvents = (scene: Scene, events: Events, editHistory: EditHistor
                 message: `'${error.message ?? error}'`
             });
         } finally {
+            if (saveMsgInterval) clearInterval(saveMsgInterval);
             events.fire('stopSpinner');
         }
     };

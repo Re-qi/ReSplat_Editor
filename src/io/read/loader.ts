@@ -396,17 +396,28 @@ const readPlyMeta = async (fileSystem: ReadFileSystem, filename: string): Promis
     try {
         source = await fileSystem.createSource(filename);
         try {
-            // Read only the header (~8 KB) to avoid loading the entire file
-            let stream;
-            if (source.seekable && source.size && source.size > 8192) {
-                stream = source.read(0, 8192);
-            } else {
-                stream = source.read();
+            // Read up to 64 KB for the header — large PLY files with many SH coefficients
+            // can have headers exceeding 8 KB. If end_header is not found, we try larger
+            // reads progressively to avoid loading the entire file unnecessarily.
+            const HEADER_READ_SIZES = [8192, 32768, 65536];
+            let header = '';
+            let endIdx = -1;
+
+            for (const readSize of HEADER_READ_SIZES) {
+                if (source.size && source.size <= readSize) {
+                    header = new TextDecoder().decode(await source.read().readAll());
+                } else {
+                    header = new TextDecoder().decode(await source.read(0, readSize).readAll());
+                }
+                endIdx = header.indexOf('end_header');
+                if (endIdx >= 0) break;
+                if (source.size && source.size <= readSize) break;  // already read whole file
             }
-            const headerBytes = await stream.readAll();
-            const header = new TextDecoder().decode(headerBytes);
-            const endIdx = header.indexOf('end_header');
-            if (endIdx < 0) return null;
+
+            if (endIdx < 0) {
+                console.warn(`[import] PLY header not found in first ${HEADER_READ_SIZES[HEADER_READ_SIZES.length - 1] / 1024}KB of ${filename}`);
+                return null;
+            }
 
             const headerSection = header.substring(0, endIdx);
             const match = headerSection.match(/element\s+vertex\s+(\d+)/i);

@@ -23,6 +23,7 @@ import selectSeparate from './svg/select-separate.svg';
 import squaresUnite from './svg/squares-unite.svg';
 import wrenchIcon from './svg/wrench.svg';
 import { Tooltips } from './tooltips';
+import { openUrl } from '../open-url';
 
 const createSvg = (svgString: string) => {
     const decodedStr = decodeURIComponent(svgString.substring('data:image/svg+xml,'.length));
@@ -281,19 +282,11 @@ class Menu extends Container {
         const videoTutorialsMenuPanel = new MenuPanel([{
             text: localize('menu.help.video-tutorials.basics'),
             icon: 'E261',
-            onSelect: () => window.open('https://youtu.be/MwzaEM2I55I', '_blank')?.focus()
+            onSelect: () => openUrl('https://www.bilibili.com/video/BV1ZXTC63Ema/?spm_id_from=333.1387.homepage.video_card.click')
         }, {
             text: localize('menu.help.video-tutorials.in-depth'),
             icon: 'E261',
-            onSelect: () => window.open('https://youtu.be/J37rTieKgJ8', '_blank')?.focus()
-        }, {
-            text: localize('menu.help.video-tutorials.deleting-floaters'),
-            icon: 'E261',
-            onSelect: () => window.open('https://youtu.be/8qaLfwkkSdU', '_blank')?.focus()
-        }, {
-            text: localize('menu.help.video-tutorials.scaling'),
-            icon: 'E261',
-            onSelect: () => window.open('https://youtu.be/fRK1vVMg_EU', '_blank')?.focus()
+            onSelect: () => openUrl('https://www.bilibili.com/video/BV1v6Nu6vEgE?spm_id_from=333.788.videopod.sections&vd_source=f154045dbf2add36b59ecb76904972d2')
         }]);
 
         const helpMenuPanel = new MenuPanel([{
@@ -303,7 +296,7 @@ class Menu extends Container {
         }, {
             text: localize('menu.help.user-guide'),
             icon: 'E232',
-            onSelect: () => window.open('https://developer.playcanvas.com/user-manual/gaussian-splatting/editing/ReSplat/', '_blank')?.focus()
+            onSelect: () => openUrl('https://my.feishu.cn/wiki/Zi4QwJ3Alin6oLkazSGcRywKnBf?from=from_copylink')
         }, {
             text: localize('menu.help.shortcuts'),
             icon: 'E136',
@@ -311,23 +304,13 @@ class Menu extends Container {
         }, {
             // separator
         }, {
-            text: localize('menu.help.discord'),
-            icon: 'E233',
-            onSelect: () => window.open('https://discord.gg/T3pnhRTTAY', '_blank')?.focus()
-        }, {
-            text: localize('menu.help.forum'),
-            icon: 'E432',
-            onSelect: () => window.open('https://forum.playcanvas.com', '_blank')?.focus()
-        }, {
-            // separator
-        }, {
             text: localize('menu.help.github-repo'),
             icon: 'E259',
-            onSelect: () => window.open('https://github.com/playcanvas/ReSplat', '_blank')?.focus()
+            onSelect: () => openUrl('https://github.com/Re-qi/ReSplat')
         }, {
             text: localize('menu.help.log-issue'),
             icon: 'E336',
-            onSelect: () => window.open('https://github.com/playcanvas/ReSplat/issues', '_blank')?.focus()
+            onSelect: () => openUrl('https://github.com/Re-qi/ReSplat/discussions')
         }, {
             // separator
         }, {

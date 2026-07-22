@@ -72,8 +72,21 @@ class PolygonSelection {
             paint();
         };
 
+        const getPos = (e: MouseEvent) => {
+            const rect = parent.getBoundingClientRect();
+            let x = e.clientX - rect.left;
+            let y = e.clientY - rect.top;
+            // Compensate for CSS zoom on the tools container
+            // (ZoomManager applies counter-zoom to cancel browser zoom)
+            if (rect.width > 0 && rect.height > 0) {
+                x *= parent.offsetWidth / rect.width;
+                y *= parent.offsetHeight / rect.height;
+            }
+            return { x, y };
+        };
+
         const pointermove = (e: PointerEvent) => {
-            currentPoint = { x: e.offsetX, y: e.offsetY };
+            currentPoint = getPos(e);
 
             if (points.length > 0) {
                 paint();

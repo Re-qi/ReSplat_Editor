@@ -2,6 +2,7 @@ import { Container, Label, Element as PcuiElement } from '@playcanvas/pcui';
 
 import { BlockingPlane } from '../blocking-plane';
 import { BoxShape } from '../box-shape';
+import { DeleteShapeOp } from '../edit-ops';
 import { Element } from '../element';
 import { Events } from '../events';
 import { SphereShape } from '../sphere-shape';
@@ -25,9 +26,11 @@ class WrapperList extends Container {
     private sphereCount = 0;
     private boxCount = 0;
     private blockingPlaneCount = 0;
+    private shapeLabels = new Map<number, string>();
 
     private updateVisibility() {
         const total = this.sphereItems.size + this.boxItems.size + this.blockingPlaneItems.size;
+        console.log(`[wrapper-list] updateVisibility: total=${total}, spheres=${this.sphereItems.size}, boxes=${this.boxItems.size}, planes=${this.blockingPlaneItems.size}`);
         this.hidden = total === 0;
     }
 
@@ -126,7 +129,10 @@ class WrapperList extends Container {
             // Click to select / toggle
             shapeItem.dom.addEventListener('click', (e: MouseEvent) => {
                 e.stopPropagation();
-                if (events.invoke('shapeSelection') === shape) {
+                // If the shape is already selected AND no group is active,
+                // toggle it off. If a group is currently active, make the
+                // shape the current (gizmo-controlled) element instead.
+                if (events.invoke('shapeSelection') === shape && !events.invoke('pointCloudGroup.activeGroup')) {
                     events.fire('selection.clearShape');
                     return;
                 }
@@ -145,25 +151,40 @@ class WrapperList extends Container {
             // Delete button
             removeBtn.dom.addEventListener('click', (e: MouseEvent) => {
                 e.stopPropagation();
-                shape.destroy();
+                const op = new DeleteShapeOp({ scene: shape.scene, shape });
+                events.fire('edit.add', op);
             });
         };
 
         events.on('scene.elementAdded', (element: Element) => {
+            console.log(`[wrapper-list] elementAdded: ${(element as any).constructor?.name}#${element.uid}`);
             if (element instanceof SphereShape) {
-                this.sphereCount++;
-                addShapeItem(element, `包裹球 #${this.sphereCount}`, this.sphereItems);
+                let labelText = this.shapeLabels.get(element.uid);
+                if (!labelText) {
+                    labelText = `包裹球 #${++this.sphereCount}`;
+                    this.shapeLabels.set(element.uid, labelText);
+                }
+                addShapeItem(element, labelText, this.sphereItems);
             } else if (element instanceof BoxShape) {
-                this.boxCount++;
-                addShapeItem(element, `包裹盒 #${this.boxCount}`, this.boxItems);
+                let labelText = this.shapeLabels.get(element.uid);
+                if (!labelText) {
+                    labelText = `包裹盒 #${++this.boxCount}`;
+                    this.shapeLabels.set(element.uid, labelText);
+                }
+                addShapeItem(element, labelText, this.boxItems);
             } else if (element instanceof BlockingPlane) {
-                this.blockingPlaneCount++;
-                addShapeItem(element, `阻挡平面 #${this.blockingPlaneCount}`, this.blockingPlaneItems);
+                let labelText = this.shapeLabels.get(element.uid);
+                if (!labelText) {
+                    labelText = `阻挡平面 #${++this.blockingPlaneCount}`;
+                    this.shapeLabels.set(element.uid, labelText);
+                }
+                addShapeItem(element, labelText, this.blockingPlaneItems);
             }
             this.updateVisibility();
         });
 
         events.on('scene.elementRemoved', (element: Element) => {
+            console.log(`[wrapper-list] elementRemoved: ${(element as any).constructor.name}#${element.uid}`);
             if (element instanceof SphereShape) {
                 const item = this.sphereItems.get(element);
                 if (item) {
@@ -188,6 +209,7 @@ class WrapperList extends Container {
 
         // Highlight selected shape
         events.on('selection.shapeChanged', (selection: Element) => {
+            console.log('[wrapper-list] shapeChanged:', selection ? `${(selection as any).constructor.name}#${selection.uid}` : 'null');
             this.sphereItems.forEach((item, sphere) => {
                 item.class[sphere === selection ? 'add' : 'remove']('selected');
             });
@@ -196,6 +218,21 @@ class WrapperList extends Container {
             });
             this.blockingPlaneItems.forEach((item, plane) => {
                 item.class[plane === selection ? 'add' : 'remove']('selected');
+            });
+        });
+
+        // Highlight current (gizmo-controlled) element
+        events.on('current.changed', (payload: any) => {
+            console.log('[wrapper-list] current.changed:', payload);
+            const isShapeCurrent = payload && payload.type === 'shape' && payload.element;
+            this.sphereItems.forEach((item, sphere) => {
+                item.class[isShapeCurrent && sphere === payload.element ? 'add' : 'remove']('current');
+            });
+            this.boxItems.forEach((item, box) => {
+                item.class[isShapeCurrent && box === payload.element ? 'add' : 'remove']('current');
+            });
+            this.blockingPlaneItems.forEach((item, plane) => {
+                item.class[isShapeCurrent && plane === payload.element ? 'add' : 'remove']('current');
             });
         });
     }

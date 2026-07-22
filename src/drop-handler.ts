@@ -102,7 +102,10 @@ const CreateDropHandler = (target: HTMLElement, dropHandler: DropHandlerFunc) =>
                 const handle = await item.getAsFileSystemHandle();
                 if (handle?.kind === 'file') {
                     const fileHandle = handle as FileSystemFileHandle;
-                    const file = await fileHandle.getFile();
+                    // Prefer dataTransfer.files[0] — in Electron it preserves the
+                    // file path; FileSystemFileHandle.getFile() returns a snapshot
+                    // without path info, breaking webUtils.getPathForFile().
+                    const file = ev.dataTransfer.files[0] || await fileHandle.getFile();
                     const droppedFile = new DroppedFile(file.name, file, fileHandle);
                     dropHandler([droppedFile], ev.shiftKey);
                     return;

@@ -1,7 +1,7 @@
-import { Container, Label, version as pcuiVersion, revision as pcuiRevision } from '@playcanvas/pcui';
-import { version as engineVersion, revision as engineRevision } from 'playcanvas';
+import { Container, Label } from '@playcanvas/pcui';
 
 import { version as appVersion } from '../../package.json';
+import { openUrl } from '../open-url';
 
 // Inline SVG for the ReSplat logo
 const logoSvg = `
@@ -64,7 +64,7 @@ class AboutPopup extends Container {
         });
         logoContainer.dom.innerHTML = logoSvg;
         logoContainer.dom.addEventListener('click', () => {
-            window.open('https://github.com/playcanvas/ReSplat', '_blank')?.focus();
+            openUrl('https://github.com/Re-qi/ReSplat');
         });
 
         // App name and version
@@ -72,7 +72,7 @@ class AboutPopup extends Container {
             id: 'about-app-info'
         });
         appInfo.dom.addEventListener('click', () => {
-            window.open('https://github.com/playcanvas/ReSplat', '_blank')?.focus();
+            openUrl('https://github.com/Re-qi/ReSplat');
         });
 
         const appName = new Label({
@@ -93,13 +93,21 @@ class AboutPopup extends Container {
             id: 'about-deps'
         });
 
+        // Contact
+        const contactRow = new Container({
+            class: 'about-dep-row'
+        });
+        const contactText = new Label({ class: 'about-dep-name', text: '联系我：reqi24@foxmail.com' });
+        contactRow.append(contactText);
+
         // Powered by
         const poweredByRow = new Container({
             class: 'about-dep-row'
         });
-        const poweredByText = new Label({ class: 'about-dep-name', text: 'powered by SuperSplat v2.27.0' });
+        const poweredByText = new Label({ class: 'about-dep-name', text: 'powered by SuperSplat' });
         poweredByRow.append(poweredByText);
 
+        depsContainer.append(contactRow);
         depsContainer.append(poweredByRow);
 
         // Assemble content

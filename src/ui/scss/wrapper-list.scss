@@ -70,6 +70,13 @@
         }
     }
 
+    &.current {
+        background-color: $clr-hilight;
+        .wrapper-list-item-name {
+            color: $clr-active;
+        }
+    }
+
     &.visible {
         .wrapper-list-item-name {
             color: $text-primary;

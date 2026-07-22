@@ -690,48 +690,33 @@ async function lodConvert(inputPath, originalName, levels = [100]) {
     const result = readPlyFast(inputPath);
         console.log(`[lod] Read complete (${((performance.now() - t0) / 1000).toFixed(1)}s), ${result.numRows.toLocaleString()} Gaussians`);
 
-        const lodResults = [];
-        const sortedLevels = [...levels].sort((a, b) => b - a); // process 100% first, then descending
-
-        // Keep a pristine copy of column data for cloning
         const pristineColumns = result.columns;
+        const sortedLevels = [...levels].sort((a, b) => b - a); // 100% first, then descending
 
-        for (let li = 0; li < sortedLevels.length; li++) {
-            const lvl = sortedLevels[li];
+        // — Helper: generate a single LOD level (sampling + compress + serve) —
+        const generateLevel = async (lvl) => {
             const tLvl = performance.now();
             console.log(`[lod] Generating ${lvl}% LOD...`);
 
-            // Sample directly from pristine columns — interval sampling is read-only,
-            // so no full-size clone is needed (the old clone was for processDataTable
-            // mutation, which no longer runs in this path). For 28M×62prop files this
-            // avoids a redundant 7GB allocation per sampled level.
             let lvlDataTable;
             if (lvl < 100) {
-                // Fast interval sampling: take every Nth splat, preserving Morton order
-                // Much faster than MPMM decimate (262s → <1s for 5M points)
-                const numRows = result.numRows;
                 const sampleRatio = lvl / 100;
-                const sampleCount = Math.max(1, Math.floor(numRows * sampleRatio));
-                const step = Math.max(1, Math.floor(numRows / sampleCount));
-
+                const sampleCount = Math.max(1, Math.floor(result.numRows * sampleRatio));
+                const step = Math.max(1, Math.floor(result.numRows / sampleCount));
                 const sampledColumns = pristineColumns.map(c => {
                     const src = c.data;
                     const dst = new Float32Array(sampleCount);
-                    for (let i = 0; i < sampleCount; i++) {
-                        dst[i] = src[i * step];
-                    }
+                    for (let i = 0; i < sampleCount; i++) dst[i] = src[i * step];
                     return new Column(c.name, dst);
                 });
                 lvlDataTable = new DataTable(sampledColumns, Transform.PLY.clone());
             } else {
-                // 100% level: wrap pristine data directly (no clone, no mutation)
                 const lvlColumns = pristineColumns.map(c => new Column(c.name, c.data));
                 lvlDataTable = new DataTable(lvlColumns, Transform.PLY.clone());
             }
 
             const writeFilename = originalName.replace(/\.\w+$/, `.lod${lvl}.compressed.ply`);
             let resultData;
-
             if (native) {
                 const colMap = {};
                 for (const col of lvlDataTable.columns) colMap[col.name] = col.data;
@@ -740,7 +725,6 @@ async function lodConvert(inputPath, originalName, levels = [100]) {
                 if (restCount >= 45) shBands = 3;
                 else if (restCount >= 24) shBands = 2;
                 else if (restCount >= 9) shBands = 1;
-
                 const tempOutPath = path.join(TEMP_DIR, `${Date.now()}_${path.basename(writeFilename)}`);
                 native.writeCompressedPly({
                     columns: colMap,
@@ -748,10 +732,7 @@ async function lodConvert(inputPath, originalName, levels = [100]) {
                     outputPath: tempOutPath,
                     shBands
                 });
-                // C++ native path: writeCompressedPly writes to disk. Don't readFileSync
-                // — for >2 GB files it hits ERR_FS_FILE_TOO_LARGE. Keep the file path
-                // and let sendResult / sendPathResult stream or rename it directly.
-                resultData = tempOutPath;  // file path, not Uint8Array
+                resultData = tempOutPath;
             } else {
                 const { writeFile, getOutputFormat } = splatLib;
                 const outFs = new MemoryFileSystem();
@@ -775,10 +756,8 @@ async function lodConvert(inputPath, originalName, levels = [100]) {
             const servePath = path.join(TEMP_DIR, serveName);
 
             if (typeof resultData === 'string') {
-                // Native path: file already on disk → just rename to serve path
                 fs.renameSync(resultData, servePath);
             } else {
-                // JS fallback: write in-memory Uint8Array in chunks
                 const fd = fs.openSync(servePath, 'w');
                 try {
                     const CHUNK = 256 * 1024 * 1024;
@@ -791,15 +770,25 @@ async function lodConvert(inputPath, originalName, levels = [100]) {
             setTimeout(() => cleanup(servePath), 30 * 60 * 1000);
 
             const url = `http://localhost:${PORT}/temp/${encodeURIComponent(serveName)}`;
-            const sizeMB = fs.statSync(servePath).size / (1024 * 1024);
+            const { size: sizeBytes } = fs.statSync(servePath);
+            const sizeMB = sizeBytes / (1024 * 1024);
             console.log(`[lod]   Level ${lvl}%: ${lvlDataTable.numRows.toLocaleString()} Gaussians, ${sizeMB.toFixed(1)} MB, ${((performance.now() - tLvl) / 1000).toFixed(1)}s`);
-            lodResults.push({ level: lvl, count: lvlDataTable.numRows, url, sizeBytes: fs.statSync(servePath).size });
 
-            // Release per-iteration buffers — lvlDataTable arrays can be 1-2GB;
-            // null refs let V8 GC them before next allocation. (resultData is now
-            // a file path or null, not a huge Uint8Array.)
+            // Release per-level buffers
+            const resultCount = lvlDataTable.numRows;
             lvlDataTable = null;
             if (global.gc) global.gc();
+
+            return { level: lvl, count: resultCount, url, sizeBytes };
+        };
+
+        // — Process: 100% first (needs pristine), then sub-levels in parallel —
+        const lodResults = [];
+        const maxLevel = sortedLevels[0]; // 100%
+        lodResults.push(await generateLevel(maxLevel));
+        if (sortedLevels.length > 1) {
+            const subResults = await Promise.all(sortedLevels.slice(1).map(generateLevel));
+            lodResults.push(...subResults);
         }
 
         const totalSec = ((performance.now() - t0) / 1000).toFixed(1);

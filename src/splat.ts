@@ -76,6 +76,22 @@ class Splat extends Element {
 
     originalFilePath: string | null = null;
 
+    // Save-dirty tracking: incremented on any change that affects PLY output
+    // (transform, color properties, state). Compared against _savedDirtyVersion
+    // to decide whether to reuse cached serialized data.
+    _saveDirtyVersion = 1;
+    _savedDirtyVersion = 0;
+
+    markSaveDirty() {
+        this._saveDirtyVersion++;
+    }
+    isSaveDirty() {
+        return this._saveDirtyVersion !== this._savedDirtyVersion;
+    }
+    markSaveClean() {
+        this._savedDirtyVersion = this._saveDirtyVersion;
+    }
+
     measurePoints: Vec3[] = [];
     measureSelection = -1;
 
@@ -429,6 +445,7 @@ class Splat extends Element {
             entity.setLocalScale(scale);
         }
 
+        this.markSaveDirty();
         this.updateWorldBound();
 
         if (this.scene) {
@@ -482,6 +499,7 @@ class Splat extends Element {
     set tintClr(value: Color) {
         if (!this._tintClr.equals(value)) {
             this._tintClr.set(value.r, value.g, value.b);
+            this.markSaveDirty();
             this.scene.events.fire('splat.tintClr', this);
         }
     }
@@ -493,6 +511,7 @@ class Splat extends Element {
     set temperature(value: number) {
         if (value !== this._temperature) {
             this._temperature = value;
+            this.markSaveDirty();
             this.scene.events.fire('splat.temperature', this);
         }
     }
@@ -504,6 +523,7 @@ class Splat extends Element {
     set saturation(value: number) {
         if (value !== this._saturation) {
             this._saturation = value;
+            this.markSaveDirty();
             this.scene.events.fire('splat.saturation', this);
         }
     }
@@ -515,6 +535,7 @@ class Splat extends Element {
     set brightness(value: number) {
         if (value !== this._brightness) {
             this._brightness = value;
+            this.markSaveDirty();
             this.scene.events.fire('splat.brightness', this);
         }
     }
@@ -526,6 +547,7 @@ class Splat extends Element {
     set blackPoint(value: number) {
         if (value !== this._blackPoint) {
             this._blackPoint = value;
+            this.markSaveDirty();
             this.scene.events.fire('splat.blackPoint', this);
         }
     }
@@ -537,6 +559,7 @@ class Splat extends Element {
     set whitePoint(value: number) {
         if (value !== this._whitePoint) {
             this._whitePoint = value;
+            this.markSaveDirty();
             this.scene.events.fire('splat.whitePoint', this);
         }
     }
@@ -548,6 +571,7 @@ class Splat extends Element {
     set transparency(value: number) {
         if (value !== this._transparency) {
             this._transparency = value;
+            this.markSaveDirty();
             this.scene.events.fire('splat.transparency', this);
         }
     }

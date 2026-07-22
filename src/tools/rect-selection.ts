@@ -32,6 +32,19 @@ class RectSelection {
             rect.setAttribute('height', height.toString());
         };
 
+        const getPos = (e: PointerEvent) => {
+            const rect = parent.getBoundingClientRect();
+            let x = e.clientX - rect.left;
+            let y = e.clientY - rect.top;
+            // Compensate for CSS zoom on the tools container
+            // (ZoomManager applies counter-zoom to cancel browser zoom)
+            if (rect.width > 0 && rect.height > 0) {
+                x *= parent.offsetWidth / rect.width;
+                y *= parent.offsetHeight / rect.height;
+            }
+            return { x, y };
+        };
+
         const pointerdown = (e: PointerEvent) => {
             if (dragId === undefined && (e.pointerType === 'mouse' ? e.button === 0 : e.isPrimary)) {
                 e.preventDefault();
@@ -41,8 +54,9 @@ class RectSelection {
                 dragMoved = false;
                 parent.setPointerCapture(dragId);
 
-                start.x = end.x = e.offsetX;
-                start.y = end.y = e.offsetY;
+                const pos = getPos(e);
+                start.x = end.x = pos.x;
+                start.y = end.y = pos.y;
 
                 updateRect();
 
@@ -56,8 +70,9 @@ class RectSelection {
                 e.stopPropagation();
 
                 dragMoved = true;
-                end.x = e.offsetX;
-                end.y = e.offsetY;
+                const pos = getPos(e);
+                end.x = pos.x;
+                end.y = pos.y;
 
                 updateRect();
             }
@@ -87,10 +102,11 @@ class RectSelection {
                         });
                 } else {
                     // pick - wait for selection to complete before hiding rect
+                    const pos = getPos(e);
                     await events.invoke(
                         'select.point',
                         e.shiftKey ? 'add' : (e.ctrlKey ? 'remove' : 'set'),
-                        { x: e.offsetX / parent.clientWidth, y: e.offsetY / parent.clientHeight }
+                        { x: pos.x / parent.clientWidth, y: pos.y / parent.clientHeight }
                     );
                 }
 

@@ -13,6 +13,60 @@ import {
 // Read blob in 4MB chunks to balance async overhead vs memory usage
 const BLOB_CHUNK_SIZE = 4 * 1024 * 1024;
 
+/** Chunk size for caching — balances allocation count vs memory waste */
+const CACHE_CHUNK_SIZE = 64 * 1024 * 1024;
+
+/**
+ * ReadStream that transparently caches all bytes passing through it.
+ * Used to collect compressed data for instant re-save while streaming
+ * to the decompressor — avoids a separate read pass.
+ *
+ * Accumulates data into 64MB chunks (matching the previous batch-read
+ * approach) to minimize ArrayBuffer allocation count and avoid memory
+ * fragmentation that triggers "Array buffer allocation failed".
+ */
+class TeeReadStream extends ReadStream {
+    private inner: ReadStream;
+    private chunks: Uint8Array[];
+    private buf: Uint8Array;
+    private offset = 0;
+
+    constructor(inner: ReadStream, chunks: Uint8Array[]) {
+        super(inner.expectedSize);
+        this.inner = inner;
+        this.chunks = chunks;
+        this.buf = new Uint8Array(CACHE_CHUNK_SIZE);
+    }
+
+    async pull(target: Uint8Array): Promise<number> {
+        const n = await this.inner.pull(target);
+        if (n > 0) {
+            this.bytesRead += n;
+            let srcOffset = 0;
+            while (srcOffset < n) {
+                const space = CACHE_CHUNK_SIZE - this.offset;
+                const copy = Math.min(n - srcOffset, space);
+                this.buf.set(target.subarray(srcOffset, srcOffset + copy), this.offset);
+                this.offset += copy;
+                srcOffset += copy;
+                if (this.offset >= CACHE_CHUNK_SIZE) {
+                    this.chunks.push(this.buf);
+                    this.buf = new Uint8Array(CACHE_CHUNK_SIZE);
+                    this.offset = 0;
+                }
+            }
+        }
+        return n;
+    }
+
+    close(): void {
+        if (this.offset > 0) {
+            this.chunks.push(this.buf.subarray(0, this.offset));
+        }
+        this.inner.close();
+    }
+}
+
 /**
  * ReadStream that decompresses data on-the-fly using browser DecompressionStream.
  * Avoids loading the entire decompressed file into memory.
@@ -241,5 +295,6 @@ class MappedReadFileSystem implements ReadFileSystem {
 export {
     BlobReadSource,
     DecompressingReadSource,
-    MappedReadFileSystem
+    MappedReadFileSystem,
+    TeeReadStream
 };

@@ -69,6 +69,20 @@ class Element {
     get worldBound(): BoundingBox | null {
         return null;
     }
+
+    docSerialize(): any {
+        return null;
+    }
+
+    docDeserialize(_doc: any): void {}
+
+    static setNextUid(uid: number) {
+        nextUid = uid;
+    }
+
+    static getNextUid() {
+        return nextUid;
+    }
 }
 
 export { ElementType, ElementTypeList, Element };

@@ -24,9 +24,21 @@ class BrushSelection {
         const prev = { x: 0, y: 0 };
         let dragId: number | undefined;
 
+        const getPos = (e: PointerEvent) => {
+            const rect = parent.getBoundingClientRect();
+            let x = e.clientX - rect.left;
+            let y = e.clientY - rect.top;
+            // Compensate for CSS zoom on the tools container
+            // (ZoomManager applies counter-zoom to cancel browser zoom)
+            if (rect.width > 0 && rect.height > 0) {
+                x *= parent.offsetWidth / rect.width;
+                y *= parent.offsetHeight / rect.height;
+            }
+            return { x, y };
+        };
+
         const update = (e: PointerEvent) => {
-            const x = e.offsetX;
-            const y = e.offsetY;
+            const { x, y } = getPos(e);
 
             circle.setAttribute('cx', x.toString());
             circle.setAttribute('cy', y.toString());
@@ -65,8 +77,9 @@ class BrushSelection {
                 // display it
                 canvas.style.display = 'inline';
 
-                prev.x = e.offsetX;
-                prev.y = e.offsetY;
+                const pos = getPos(e);
+                prev.x = pos.x;
+                prev.y = pos.y;
 
                 update(e);
             }

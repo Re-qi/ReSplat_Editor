@@ -5,7 +5,31 @@
  * The renderer can detect Electron environment and use native dialogs/file access.
  */
 
-const { contextBridge, ipcRenderer } = require('electron');
+const { contextBridge, ipcRenderer, webUtils } = require('electron');
+
+// ---------------------------------------------------------------------------
+// Drag-drop file path extraction
+// ---------------------------------------------------------------------------
+// In Electron with contextIsolation, passing a File object through
+// contextBridge structured-clones it, causing webUtils.getPathForFile() to
+// lose the internal filesystem reference. To work around this, we intercept
+// 'drop' events in the preload context (capture phase) and extract paths
+// using the original File objects BEFORE they enter the renderer world.
+const _dropFilePaths = new Map();
+
+document.addEventListener('drop', (e) => {
+    _dropFilePaths.clear();
+    for (const file of e.dataTransfer.files) {
+        try {
+            const path = webUtils.getPathForFile(file);
+            if (path) {
+                _dropFilePaths.set(`${file.name}|${file.size}`, path);
+            }
+        } catch (_err) {
+            // ignore — file has no accessible path
+        }
+    }
+}, true);  // capture phase — runs before the renderer's drop handler
 
 // Holds renderer-side callbacks registered for close-time save prompt.
 // These are populated by registerDirtyChecker / registerSaveHandler below.
@@ -87,6 +111,32 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
     /** WebGPU availability check */
     hasWebGPU: typeof navigator !== 'undefined' && !!navigator.gpu,
+
+    /** Get the absolute file path from a File object (drag-drop / file input).
+     *  @param {File} file - The File object to get the path for
+     *  @returns {string|undefined} The absolute file path, or undefined if not available
+     */
+    getFilePathForFile: (file) => {
+        try {
+            return webUtils.getPathForFile(file);
+        } catch (e) {
+            return undefined;
+        }
+    },
+
+    /**
+     * Retrieve the filesystem path of a drag-dropped file.
+     * Must be called from the renderer's drop handler (same tick) after a
+     * 'drop' event, before the file's data is consumed.
+     * @param {string} name - The file name
+     * @param {number} size - The file size in bytes
+     * @returns {string|undefined}
+     */
+    getDropFilePath: (name, size) => {
+        const path = _dropFilePaths.get(`${name}|${size}`);
+        _dropFilePaths.delete(`${name}|${size}`);
+        return path;
+    },
 
     /**
      * Register a callback invoked by the main process before closing the

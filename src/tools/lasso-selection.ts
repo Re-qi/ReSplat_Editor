@@ -37,8 +37,21 @@ class LassoSelection {
 
         let dragId: number | undefined;
 
+        const getPos = (e: MouseEvent) => {
+            const rect = parent.getBoundingClientRect();
+            let x = e.clientX - rect.left;
+            let y = e.clientY - rect.top;
+            // Compensate for CSS zoom on the tools container
+            // (ZoomManager applies counter-zoom to cancel browser zoom)
+            if (rect.width > 0 && rect.height > 0) {
+                x *= parent.offsetWidth / rect.width;
+                y *= parent.offsetHeight / rect.height;
+            }
+            return { x, y };
+        };
+
         const update = (e: PointerEvent) => {
-            currentPoint = { x: e.offsetX, y: e.offsetY };
+            currentPoint = getPos(e);
 
             const distance = points.length === 0 ? 0 : dist(currentPoint, points[points.length - 1]);
             const millis = Date.now() - lastPointTime;

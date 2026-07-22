@@ -69,6 +69,14 @@
             color: $text-primary;
         }
     }
+
+    &.current {
+        background-color: $clr-hilight;
+
+        .point-cloud-group-item-name {
+            color: $clr-active;
+        }
+    }
 }
 
 .point-cloud-group-item-name {

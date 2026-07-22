@@ -77,6 +77,32 @@ class BoxShape extends Element {
         }
     }
 
+    docSerialize() {
+        const p = this.pivot.getLocalPosition();
+        const r = this.pivot.getLocalRotation();
+        const s = this.pivot.getLocalScale();
+        return {
+            shapeType: 'box',
+            uid: this.uid,
+            position: [p.x, p.y, p.z],
+            rotation: [r.x, r.y, r.z, r.w],
+            scale: [s.x, s.y, s.z],
+            color: [this._color.r, this._color.g, this._color.b]
+        };
+    }
+
+    docDeserialize(doc: any) {
+        this.uid = doc.uid;
+        this.pivot.setLocalPosition(new Vec3(doc.position[0], doc.position[1], doc.position[2]));
+        this.pivot.setLocalRotation(new Quat(doc.rotation[0], doc.rotation[1], doc.rotation[2], doc.rotation[3]));
+        this.pivot.setLocalScale(new Vec3(doc.scale[0], doc.scale[1], doc.scale[2]));
+        this._lenX = doc.scale[0];
+        this._lenY = doc.scale[1];
+        this._lenZ = doc.scale[2];
+        this._color = new Color(doc.color[0], doc.color[1], doc.color[2]);
+        this.updateBound();
+    }
+
     serialize(serializer: Serializer): void {
         serializer.packa(this.pivot.getWorldTransform().data);
         serializer.pack(this.lenX);

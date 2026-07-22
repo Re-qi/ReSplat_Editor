@@ -1157,8 +1157,9 @@ const registerEditorEvents = (events: Events, editHistory: EditHistory, scene: S
         }
 
         // In-memory merge fallback — concatenate GSplatData properties directly.
+        // Count only non-deleted gaussians from each splat.
+        const totalCount = multiSelected.reduce((sum, s) => sum + s.numSplats, 0);
         const srcDatas = multiSelected.map(s => s.splatData);
-        const totalCount = srcDatas.reduce((sum, d) => sum + d.numSplats, 0);
 
         try {
             // Collect the property names from the first splat (they must share the same set)
@@ -1198,13 +1199,17 @@ const registerEditorEvents = (events: Events, editHistory: EditHistory, scene: S
                 });
             }
 
-            // Apply world transforms using SingleSplat and write to merged storage
+            // Apply world transforms using SingleSplat and write to merged storage.
+            // Skip deleted gaussians — they should not appear in the merged result.
             let writeOffset = 0;
 
             for (const splat of multiSelected) {
                 const numSplats = splat.splatData.numSplats;
+                const state = splat.splatData.getProp('state') as Uint8Array;
 
                 for (let i = 0; i < numSplats; i++) {
+                    if ((state[i] & State.deleted) !== 0) continue;
+
                     singleSplat.read(splat, i);
 
                     for (let pi = 0; pi < mergedProps.length; pi++) {

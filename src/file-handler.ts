@@ -288,6 +288,8 @@ const initFileHandler = (scene: Scene, events: Events, dropTarget: HTMLElement) 
 
     // import splat model(s) - handles single files, SOG, and LCC formats
     const importSplatModel = async (files: ImportFile[], animationFrame: boolean) => {
+        const firstFilename = files[0]?.filename ?? '?';
+        console.log(`[import] importSplatModel: ${firstFilename}, filePath=${files[0]?.filePath ?? 'none'}, hasContents=${!!files[0]?.contents}, fileSizeMB=${((files[0]?.contents as File)?.size ?? 0) / (1024 * 1024)}`);
         try {
             const filenames = files.map(f => f.filename.toLowerCase());
 
@@ -333,9 +335,13 @@ const initFileHandler = (scene: Scene, events: Events, dropTarget: HTMLElement) 
             // Pre-check for large PLY files: read header vertex count before full load
             // Skip for files served by our own backend (already processed)
             if (!isBackendResult && filename.toLowerCase().endsWith('.ply') && !filename.toLowerCase().endsWith('.compressed.ply')) {
+                const tMeta = performance.now();
                 const meta = await readPlyMeta(fileSystem, filename);
+                console.log(`[import] readPlyMeta: ${((performance.now() - tMeta) / 1000).toFixed(1)}s, ${meta?.count?.toLocaleString() ?? '?'} verts, ~${meta?.estMemMB ?? '?'} MB`);
                 if (meta && meta.estMemMB > PLY_MAX_MEMORY_MB) {
+                    const tCheck = performance.now();
                     const backendAvailable = await BackendClient.isAvailable();
+                    console.log(`[import] isAvailable check: ${((performance.now() - tCheck) / 1000).toFixed(1)}s`);
 
                     if (backendAvailable) {
                         const file = mainFile.contents as File;
@@ -343,12 +349,18 @@ const initFileHandler = (scene: Scene, events: Events, dropTarget: HTMLElement) 
                         if (!file && !filePath) {
                             // No local file blob or path — fall through to direct load
                             // (e.g. URL-loaded files can't be sent to backend)
+                            console.log('[import] No local file/path, falling through to direct load');
                         } else if (filePath) {
                             // Electron: use path-based API to avoid 6GB+ HTTP upload
                             console.log(`[auto-lod] Large PLY detected: ${meta.count.toLocaleString()} Gaussians, ~${meta.estMemMB} MB → compressing (path)`);
                             events.fire('startSpinner');
+                            const fileSizeMB = file?.size ? (file.size / (1024 * 1024)).toFixed(0) : '?';
+                            events.fire('spinnerText', `正在压缩 (${fileSizeMB} MB)...`);
                             try {
+                                const tLod = performance.now();
                                 const lodResult = await BackendClient.lodConvertPath(filePath, [100]);
+                                console.log(`[auto-lod] Server processing: ${((performance.now() - tLod) / 1000).toFixed(1)}s`);
+                                events.fire('spinnerText', '正在加载预览...');
                                 await loadLODLevels(lodResult, importFiles, events);
                                 return;
                             } catch (err) {
@@ -363,12 +375,18 @@ const initFileHandler = (scene: Scene, events: Events, dropTarget: HTMLElement) 
                                 events.fire('stopSpinner');
                             }
                         } else {
-                            // Auto LOD progressive loading — no user prompt
-                            console.log(`[auto-lod] Large PLY detected: ${meta.count.toLocaleString()} Gaussians, ~${meta.estMemMB} MB → compressing`);
+                            // Auto LOD progressive loading — no user prompt.
+                            // Upload mode: entire file sent as FormData (slow for large files).
+                            console.log(`[auto-lod] Large PLY detected: ${meta.count.toLocaleString()} Gaussians, ~${meta.estMemMB} MB → uploading (${((file?.size ?? 0) / (1024 * 1024)).toFixed(1)} MB)...`);
                             events.fire('startSpinner');
+                            const uploadSizeMB = ((file?.size ?? 0) / (1024 * 1024)).toFixed(0);
+                            events.fire('spinnerText', `正在上传 (${uploadSizeMB} MB)...`);
                             try {
-                                await BackendClient.lodConvert(file, [100]).then(lodResult => loadLODLevels(lodResult, importFiles, events)
-                                );
+                                const tLod = performance.now();
+                                const lodResult = await BackendClient.lodConvert(file, [100]);
+                                console.log(`[auto-lod] Upload + server: ${((performance.now() - tLod) / 1000).toFixed(1)}s`);
+                                events.fire('spinnerText', '正在加载预览...');
+                                await loadLODLevels(lodResult, importFiles, events);
                                 return; // LOD loading handles its own scene.add
                             } catch (err) {
                                 console.error('[auto-lod] Failed:', err);
@@ -390,10 +408,14 @@ const initFileHandler = (scene: Scene, events: Events, dropTarget: HTMLElement) 
                 }
             }
 
+            const tLoad = performance.now();
             const model = await scene.assetLoader.load(
                 filename, fileSystem, animationFrame, false, undefined
             );
+            console.log(`[import] assetLoader.load: ${((performance.now() - tLoad) / 1000).toFixed(1)}s`);
+            const tAdd = performance.now();
             await scene.add(model);
+            console.log(`[import] scene.add: ${((performance.now() - tAdd) / 1000).toFixed(1)}s`);
             return model;
         } catch (error) {
             const displayName = files[0]?.filename ?? 'unknown';
@@ -482,11 +504,13 @@ const initFileHandler = (scene: Scene, events: Events, dropTarget: HTMLElement) 
         fileSelector.onchange = () => {
             const files = [];
             for (let i = 0; i < fileSelector.files.length; i++) {
-                const file = fileSelector.files[i] as File & { path?: string };
+                const file = fileSelector.files[i];
+                const fp = (file as any).path || (window as any).electronAPI?.getFilePathForFile?.(file);
+                console.log(`[import] file picker: ${file.name}, path=${fp ?? 'none'}, sizeMB=${(file.size / (1024 * 1024)).toFixed(1)}`);
                 files.push({
                     filename: file.name,
                     contents: file,
-                    filePath: file.path  // Electron exposes absolute path via File.path
+                    filePath: fp  // Electron: absolute path via webUtils or File.path
                 });
             }
             importFiles(files);
@@ -498,10 +522,15 @@ const initFileHandler = (scene: Scene, events: Events, dropTarget: HTMLElement) 
     // create the file drag & drop handler
     CreateDropHandler(dropTarget, (entries, shift) => {
         importFiles(entries.map((e) => {
+            const fp = (e.file as any).path ||
+                (window as any).electronAPI?.getDropFilePath?.(e.filename, e.file.size) ||
+                (window as any).electronAPI?.getFilePathForFile?.(e.file);
+            console.log(`[import] drop entry: ${e.filename}, path=${fp ?? 'none'}, sizeMB=${(e.file.size / (1024 * 1024)).toFixed(1)}`);
             return {
                 filename: e.filename,
                 contents: e.file,
-                handle: e.handle
+                handle: e.handle,
+                filePath: fp  // Electron: absolute path via webUtils or File.path
             };
         }));
     });
@@ -574,24 +603,62 @@ const initFileHandler = (scene: Scene, events: Events, dropTarget: HTMLElement) 
         const levels = lodResult.levels.sort((a, b) => a.level - b.level);
         if (levels.length === 0) return;
 
+        // Download helper: XHR with progress callback (blob avoids double download)
+        const downloadWithProgress = (url: string, textFn: (pct: number) => string): Promise<Blob> => {
+            return new Promise((resolve, reject) => {
+                const xhr = new XMLHttpRequest();
+                xhr.open('GET', url);
+                xhr.responseType = 'blob';
+                xhr.onprogress = (e) => {
+                    if (e.lengthComputable) {
+                        evts.fire('spinnerText', textFn(Math.round((e.loaded / e.total) * 100)));
+                    }
+                };
+                xhr.onload = () => {
+                    if (xhr.status >= 200 && xhr.status < 300) resolve(xhr.response as Blob);
+                    else reject(new Error(`HTTP ${xhr.status}`));
+                };
+                xhr.onerror = () => reject(new Error('Download failed'));
+                xhr.send();
+            });
+        };
+
         // Load lowest LOD first — this is the fast preview that makes the
-        // model interactive. Stop the spinner here so the user can start
-        // working while higher levels load in the background.
+        // model interactive. Stop the spinner once the model is visible.
         const preview = levels[0];
-        console.log(`[LOD] Loading preview: ${preview.level}% (${preview.count.toLocaleString()} Gaussians)`);
-        const models = await importFn([{ filename: `lod_${preview.level}.compressed.ply`, url: preview.url }], false);
+        const tPreviewStart = performance.now();
+        const previewSizeMB = (preview.sizeBytes / (1024 * 1024)).toFixed(1);
+        console.log(`[LOD] Loading preview: ${preview.level}% (${preview.count.toLocaleString()} Gaussians, ${previewSizeMB} MB)`);
+
+        // Download with progress → pass as blob to skip redundant HTTP fetch in loader
+        const previewBlob = await downloadWithProgress(
+            preview.url,
+            pct => `正在加载预览 ${pct}% (${previewSizeMB} MB)`
+        );
+        console.log(`[LOD] Preview downloaded: ${((performance.now() - tPreviewStart) / 1000).toFixed(1)}s`);
+        const tParse = performance.now();
+
+        const models = await importFn([{ filename: `lod_${preview.level}.compressed.ply`, contents: previewBlob }], false);
+        console.log(`[LOD] Preview parsed: ${((performance.now() - tParse) / 1000).toFixed(1)}s`);
         let currentModel = models[0];
         evts.fire('stopSpinner');
 
         // Load remaining levels in background, replacing each time
         for (let i = 1; i < levels.length; i++) {
             const nextLevel = levels[i];
-            console.log(`[LOD] Upgrading to ${nextLevel.level}% (${nextLevel.count.toLocaleString()} Gaussians)`);
+            const nextSizeMB = (nextLevel.sizeBytes / (1024 * 1024)).toFixed(1);
+            const tUpgrade = performance.now();
+            console.log(`[LOD] Upgrading to ${nextLevel.level}% (${nextLevel.count.toLocaleString()} Gaussians, ${nextSizeMB} MB)`);
             try {
-                const nextModels = await importFn([{ filename: `lod_${nextLevel.level}.compressed.ply`, url: nextLevel.url }], false);
+                const upgradeBlob = await downloadWithProgress(
+                    nextLevel.url,
+                    pct => `正在下载 ${nextLevel.level}% ${pct}% (${nextSizeMB} MB)`
+                );
+                const tUpgradeParse = performance.now();
+                const nextModels = await importFn([{ filename: `lod_${nextLevel.level}.compressed.ply`, contents: upgradeBlob }], false);
+                console.log(`[LOD] Upgrade parsed: ${((performance.now() - tUpgradeParse) / 1000).toFixed(1)}s`);
                 const nextModel = nextModels[0];
                 if (nextModel && currentModel) {
-                    // Remove old, add new
                     scene.remove(currentModel);
                     currentModel.destroy();
                     await scene.add(nextModel);
@@ -600,8 +667,10 @@ const initFileHandler = (scene: Scene, events: Events, dropTarget: HTMLElement) 
             } catch (err) {
                 console.warn(`[LOD] Failed to load level ${nextLevel.level}%:`, err);
             }
+            console.log(`[LOD] Upgrade total: ${((performance.now() - tUpgrade) / 1000).toFixed(1)}s`);
         }
-        console.log('[LOD] All levels loaded');
+        const totalClient = ((performance.now() - tPreviewStart) / 1000).toFixed(1);
+        console.log(`[LOD] All levels loaded (total client: ${totalClient}s)`);
     };
 
     // open a folder

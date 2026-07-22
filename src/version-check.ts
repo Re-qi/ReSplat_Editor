@@ -25,7 +25,7 @@ class VersionCheck {
     private async check() {
         try {
             const response = await fetch(
-                'https://api.github.com/repos/Re-qi/ReSplat_Editor/releases/latest',
+                'https://api.github.com/repos/Re-qi/ReSplat/releases/latest',
                 { headers: { Accept: 'application/vnd.github.v3+json' } }
             );
             if (!response.ok) {
@@ -34,7 +34,7 @@ class VersionCheck {
             const data = await response.json();
             const tagName: string = data.tag_name || '';
             this.latestVersion = tagName.startsWith('v') ? tagName.slice(1) : tagName;
-            this.releaseUrl = data.html_url || `https://github.com/Re-qi/ReSplat_Editor/releases/tag/${tagName}`;
+            this.releaseUrl = data.html_url || `https://github.com/Re-qi/ReSplat/releases/tag/${tagName}`;
 
             if (this.compareVersions(this.latestVersion, this.currentVersion) > 0) {
                 this.state = { status: 'available', url: this.releaseUrl };

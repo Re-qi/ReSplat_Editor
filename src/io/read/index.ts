@@ -6,7 +6,8 @@
 export {
     BlobReadSource,
     DecompressingReadSource,
-    MappedReadFileSystem
+    MappedReadFileSystem,
+    TeeReadStream
 } from './file-systems';
 
 // Loading functions

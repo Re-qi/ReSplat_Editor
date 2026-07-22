@@ -29,6 +29,7 @@ const registerSelectionEvents = (events: Events, scene: Scene) => {
             splatSelection = element;
             if (element) lastSelected = 'splat';
             events.fire('selection.changed', splatSelection, prev);
+            computeCurrent();
         }
     };
 
@@ -38,16 +39,84 @@ const registerSelectionEvents = (events: Events, scene: Scene) => {
             shapeSelection = element;
             if (element) lastSelected = 'shape';
             events.fire('selection.shapeChanged', shapeSelection, prev);
+            computeCurrent();
         }
     };
 
+    // Compute which element the gizmo currently controls.
+    // Priority: active point cloud group > shape > splat.
+    // Only one element can be "current" at a time.
+    let currentElement: Element | null = null;
+    let lastClicked: Element | null = null;
+    let prevCurrentElement: Element | null = null;
+    const isGroupCurrent = () => {
+        return !!events.invoke('pointCloudGroup.activeGroup');
+    };
+
+    const logCurrentState = () => {
+        const describe = (el: Element | null) => {
+            if (!el) return 'none';
+            if (el instanceof Splat) return `splat#${el.uid}("${el.name}")`;
+            if (el instanceof SphereShape) return `sphere#${el.uid}`;
+            if (el instanceof BoxShape) return `box#${el.uid}`;
+            if (el instanceof BlockingPlane) return `plane#${el.uid}`;
+            return `element#${el.uid}`;
+        };
+        const isGroup = isGroupCurrent();
+        const current = isGroup ? 'group' : describe(currentElement);
+        console.log(
+            `[current] prev: ${describe(prevCurrentElement)} | ` +
+            `clicked: ${describe(lastClicked)} | ` +
+            `current: ${current}`
+        );
+        prevCurrentElement = currentElement;
+    };
+
+    const computeCurrent = () => {
+        // Group mode: active group + selected gaussians
+        if (isGroupCurrent()) {
+            currentElement = null;
+            events.fire('current.changed', { type: 'group' });
+            logCurrentState();
+            return;
+        }
+        // Shape selected
+        if (shapeSelection) {
+            if (currentElement !== shapeSelection) {
+                currentElement = shapeSelection;
+                events.fire('current.changed', { type: 'shape', element: shapeSelection });
+            }
+            logCurrentState();
+            return;
+        }
+        // Splat selected
+        if (splatSelection) {
+            if (currentElement !== splatSelection) {
+                currentElement = splatSelection;
+                events.fire('current.changed', { type: 'splat', element: splatSelection });
+            }
+            logCurrentState();
+            return;
+        }
+        // Nothing selected
+        if (currentElement !== null) {
+            currentElement = null;
+            events.fire('current.changed', null);
+        }
+        logCurrentState();
+    };
+
     events.on('selection', (element: Element | null) => {
+        lastClicked = element;
         if (element instanceof Splat) {
+            // Clear shape so the splat can become current (shape always takes
+            // priority over splat when both coexist in transform handler).
+            setShapeSelection(null);
             setSplatSelection(element);
         } else if (isShape(element)) {
+            // Keep splat selected (grey) — only shape becomes current (orange).
             setShapeSelection(element);
         } else if (element === null) {
-            // Clear both
             setSplatSelection(null);
             setShapeSelection(null);
         }
@@ -195,6 +264,12 @@ const registerSelectionEvents = (events: Events, scene: Scene) => {
 
     events.on('camera.focalPointPicked', (details: { splat: Splat }) => {
         setSplatSelection(details.splat);
+    });
+
+    // Recompute current when gaussian selection changes
+    // (e.g. selecting gaussians in a group makes the group "current")
+    events.on('splat.stateChanged', () => {
+        computeCurrent();
     });
 };
 

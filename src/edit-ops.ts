@@ -978,6 +978,43 @@ class AddShapeOp {
     }
 }
 
+class DeleteShapeOp {
+    name = 'deleteShape';
+    scene: Scene;
+    shape: Element;
+
+    constructor(options: { scene: Scene, shape: Element }) {
+        this.scene = options.scene;
+        this.shape = options.shape;
+    }
+
+    do() {
+        this.scene.remove(this.shape);
+    }
+
+    undo() {
+        this.scene.add(this.shape);
+    }
+
+    serialize() {
+        return {
+            type: this.name,
+            data: {
+                shapeUid: this.shape.uid,
+                shapeType: this.shape.type
+            }
+        };
+    }
+
+    static deserialize(data: any, scene: Scene): DeleteShapeOp | null {
+        const shape = scene.elements.find(e => e.uid === data.shapeUid) as Element;
+        if (!shape) {
+            return null;
+        }
+        return new DeleteShapeOp({ scene, shape });
+    }
+}
+
 interface SerializedGroupData {
     name: string;
     indices: Uint32Array;
@@ -1175,6 +1212,8 @@ function deserializeEditOp(
             return ReplaceSelectionOp.deserialize(opData.data, scene);
         case 'addShape':
             return AddShapeOp.deserialize(opData.data, scene);
+        case 'deleteShape':
+            return DeleteShapeOp.deserialize(opData.data, scene);
         default:
             throw new Error(`Unknown EditOp type: ${opData.type}`);
     }
@@ -1204,6 +1243,7 @@ export {
     AddSplatOp,
     SplatRenameOp,
     AddShapeOp,
+    DeleteShapeOp,
     MergeOp,
     AddGroupOp,
     DeleteGroupOp,

@@ -108,11 +108,11 @@ class PointCloudGroup extends Container {
     private groupItems: PointCloudGroupItem[] = [];
     private listContainer: Container;
     private editInput: TextInput;
-    private groupCounter = 1;
     private events: Events;
     private tooltips: Tooltips;
     private currentSplat: Splat | null = null;
     private _activeGroup = false;
+    private _needsGaussianSelection = false;
     private selectedGroupData: PointCloudGroupData | null = null;
     private toolbar: Container;
     private toolbarSelectBtn: Button;
@@ -290,6 +290,7 @@ class PointCloudGroup extends Container {
                 // back to entity-level control.
                 if (this._activeGroup) {
                     this._activeGroup = false;
+                    this._needsGaussianSelection = false;
                     for (const item of this.groupItems) {
                         item.selected = false;
                     }
@@ -314,12 +315,27 @@ class PointCloudGroup extends Container {
                 // Update _activeGroup state when selection is cleared
                 if (this._activeGroup) {
                     this._activeGroup = false;
+                    this._needsGaussianSelection = false;
                 }
             }
         };
 
         events.on('selection.changed', (selection: any) => {
             updateVisibility(selection);
+        });
+
+        // When a shape (wrapper) is selected, deactivate the group so the
+        // gizmo switches from group mode to shape control.
+        events.on('selection.shapeChanged', () => {
+            console.log('[point-cloud-group] selection.shapeChanged: _activeGroup was', this._activeGroup);
+            if (this._activeGroup) {
+                this._activeGroup = false;
+                this._needsGaussianSelection = false;
+                for (const item of this.groupItems) {
+                    item.selected = false;
+                }
+                this.setSelectedGroupData(null);
+            }
         });
 
         // Initialize visibility if a splat is already selected
@@ -351,7 +367,7 @@ class PointCloudGroup extends Container {
             if (!selectedRanges || selectedRanges.empty) return;
 
             const groupData: PointCloudGroupData = {
-                name: `${localize('panel.point-cloud-group')} ${this.groupCounter++}`,
+                name: `${localize('panel.point-cloud-group')} ${this.getNextGroupNumber()}`,
                 splat: splat,
                 ranges: selectedRanges
             };
@@ -386,6 +402,28 @@ class PointCloudGroup extends Container {
                 }
             }
         });
+
+        // Highlight current (gizmo-controlled) group
+        events.on('current.changed', (payload: any) => {
+            const isGroupCurrent = payload && payload.type === 'group';
+            this.groupItems.forEach((item) => {
+                item.class[isGroupCurrent && item.groupData === this.selectedGroupData ? 'add' : 'remove']('current');
+            });
+        });
+    }
+
+    private getNextGroupNumber(): number {
+        let maxNum = 0;
+        const prefix = localize('panel.point-cloud-group');
+        for (const g of this.groups) {
+            if (g.name.startsWith(prefix)) {
+                const num = parseInt(g.name.substring(prefix.length).trim(), 10);
+                if (!isNaN(num)) {
+                    maxNum = Math.max(maxNum, num);
+                }
+            }
+        }
+        return maxNum + 1;
     }
 
     private renderGroupsForSplat(splat: Splat) {
@@ -416,6 +454,9 @@ class PointCloudGroup extends Container {
         }
         if (hasSelected !== this._activeGroup) {
             this._activeGroup = hasSelected;
+            if (!hasSelected) {
+                this._needsGaussianSelection = false;
+            }
             // 触发重新渲染 - 使用 camera.bound 事件来强制重新渲染
             this.events.fire('camera.bound');
         }
@@ -553,22 +594,50 @@ class PointCloudGroup extends Container {
                 };
                 this.events.on('splat.stateChanged', onStateChanged);
 
-                // Force-select the group's gaussians using ReplaceSelectionOp,
-                // which clears all selected bits then sets only the target
-                // indices. Guarantees a visible state change every time.
-                this.selectGroupGaussians(groupData);
+                // When switching from a wrapper shape, activate the group
+                // without auto-selecting gaussians. The second click on the
+                // same group will select them.
+                if (this.events.invoke('shapeSelection')) {
+                    this._needsGaussianSelection = true;
+                    // Fire stateChanged so computeCurrent() picks up _activeGroup
+                    if (this.currentSplat) {
+                        this.events.fire('splat.stateChanged', this.currentSplat);
+                    }
+                } else {
+                    this._needsGaussianSelection = false;
+                    this.selectGroupGaussians(groupData);
 
-                // Force origin to boundCenter
-                this.events.fire('pivot.setOrigin', 'boundCenter');
+                    // Force origin to boundCenter
+                    this.events.fire('pivot.setOrigin', 'boundCenter');
 
-                // Enable show bound if not already enabled
-                if (!this.events.invoke('camera.bound')) {
-                    this.events.fire('camera.setBound', true);
+                    // Enable show bound if not already enabled
+                    if (!this.events.invoke('camera.bound')) {
+                        this.events.fire('camera.setBound', true);
+                    }
                 }
             } else {
-                // Group deselected - update state immediately
-                this.setSelectedGroupData(null);
-                this.updateActiveGroupState();
+                // Group already selected.
+                // If gaussians haven't been selected yet (shape→group first
+                // click), select them now on the second click.
+                if (this._needsGaussianSelection) {
+                    this._needsGaussianSelection = false;
+
+                    const onStateChanged = () => {
+                        this.events.invoke('queue', () => Promise.resolve());
+                        this.events.off('splat.stateChanged', onStateChanged);
+                    };
+                    this.events.on('splat.stateChanged', onStateChanged);
+
+                    this.selectGroupGaussians(groupData);
+                    this.events.fire('pivot.setOrigin', 'boundCenter');
+                    if (!this.events.invoke('camera.bound')) {
+                        this.events.fire('camera.setBound', true);
+                    }
+                } else {
+                    // Group deselected - update state immediately
+                    this.setSelectedGroupData(null);
+                    this.updateActiveGroupState();
+                }
             }
         };
         this.listContainer.append(item);

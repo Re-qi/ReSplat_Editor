@@ -23,6 +23,14 @@
             background-color: $bcg-darker;
         }
 
+        &.current {
+            background-color: $clr-hilight;
+
+            .splat-item-text {
+                color: $clr-active;
+            }
+        }
+
         #splat-edit {
             margin: 0;
             flex-grow: 1;
