@@ -12,6 +12,7 @@ export {
 
 // Loading functions
 export {
+    defaultLodIndex,
     loadGSplatData,
     loadSogDecimated,
     readSogMeta,

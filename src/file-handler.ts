@@ -1,3 +1,4 @@
+import { type FileSystem } from '@playcanvas/splat-transform';
 import { path, Quat, Vec3 } from 'playcanvas';
 
 import { BackendClient } from './backend';
@@ -5,18 +6,19 @@ import { CreateDropHandler } from './drop-handler';
 import { ElementType } from './element';
 import { Events } from './events';
 import { BrowserFileSystem, MappedReadFileSystem, readSogMeta, readPlyMeta } from './io';
+import { createDirectoryFileSystem } from './io/write';
 import { Scene } from './scene';
 import { Splat } from './splat';
-import { serializePly, serializePlyCompressed, serializeStandardPly, SerializeSettings, serializeSog, serializeSplat, serializeViewer, SogSettings, ViewerExportSettings } from './splat-serialize';
+import { serializeLcc2, serializePly, serializePlyCompressed, serializeStandardPly, SerializeSettings, serializeSog, serializeSplat, serializeViewer, SogSettings, ViewerExportSettings } from './splat-serialize';
 import { showDownloadPrompt } from './ui/download-prompt';
 import { localize } from './ui/localization';
 
 // ts compiler and vscode find this type, but eslint does not
 type FilePickerAcceptType = unknown;
 
-type ExportType = 'ply' | 'standardPly' | 'splat' | 'sog' | 'viewer';
+type ExportType = 'ply' | 'standardPly' | 'splat' | 'sog' | 'lcc2' | 'viewer';
 
-type FileType = 'ply' | 'compressedPly' | 'standardPly' | 'splat' | 'sog' | 'htmlViewer' | 'packageViewer';
+type FileType = 'ply' | 'compressedPly' | 'standardPly' | 'splat' | 'sog' | 'lcc2' | 'htmlViewer' | 'packageViewer';
 
 interface SceneExportOptions {
     filename: string;
@@ -28,6 +30,9 @@ interface SceneExportOptions {
 
     // sog
     sogIterations?: number;
+
+    // lcc2
+    lodLevels?: number;
 
     // viewer
     viewerExportSettings?: ViewerExportSettings;
@@ -62,8 +67,13 @@ const filePickerTypes: { [key: string]: FilePickerAcceptType } = {
     'lcc': {
         description: 'LCC Scene',
         accept: {
-            'application/json': ['.lcc'],
-            'application/octet-stream': ['.bin']
+            'application/x-lcc': ['.lcc', '.lcc2', '.bin']
+        }
+    },
+    'lcc2': {
+        description: 'LCC2 Scene',
+        accept: {
+            'application/x-lcc': ['.lcc2']
         }
     },
     'splat': {
@@ -110,8 +120,7 @@ const allImportTypes = {
         'application/ply': ['.ply'],
         'application/x-gaussian-splat': ['.json', '.sog', '.splat', '.ksplat', '.spz'],
         'image/webp': ['.webp'],
-        'application/json': ['.lcc'],
-        'application/octet-stream': ['.bin'],
+        'application/x-lcc': ['.lcc', '.lcc2', '.bin'],
         'text/plain': ['.txt']
     }
 };
@@ -146,16 +155,17 @@ const isSog = (filenames: string[]) => {
     return count('meta.json') === 1;
 };
 
-// The LCC file contains meta.lcc, index.bin, data.bin and shcoef.bin (optional)
+// The LCC file contains meta.lcc, index.bin, data.bin and shcoef.bin (optional).
+// LCC2 comprises a meta.lcc2 file and .sog/.spz chunk files.
 const isLcc = (filenames: string[]) => {
     const count = (extension: string) => filenames.reduce((sum, f) => sum + (f.endsWith(extension) ? 1 : 0), 0);
-    return count('.lcc') === 1;
+    return count('.lcc') === 1 || count('.lcc2') === 1;
 };
 
 type ImportFile = {
     filename: string;
     url?: string;
-    contents?: File;
+    contents?: File | Blob;
     handle?: FileSystemFileHandle;
     filePath?: string;  // Electron: absolute path from File.path extension
 };
@@ -297,8 +307,8 @@ const initFileHandler = (scene: Scene, events: Events, dropTarget: HTMLElement) 
             let mainIndex: number;
             if (filenames.some(f => f === 'meta.json')) {
                 mainIndex = filenames.findIndex(f => f === 'meta.json');
-            } else if (filenames.some(f => f.endsWith('.lcc'))) {
-                mainIndex = filenames.findIndex(f => f.endsWith('.lcc'));
+            } else if (filenames.some(f => f.endsWith('.lcc') || f.endsWith('.lcc2'))) {
+                mainIndex = filenames.findIndex(f => f.endsWith('.lcc') || f.endsWith('.lcc2'));
             } else {
                 mainIndex = 0;  // Single file case
             }
@@ -312,8 +322,13 @@ const initFileHandler = (scene: Scene, events: Events, dropTarget: HTMLElement) 
                 if (f.contents) fileSystem.addFile(f.filename, f.contents);
             });
 
+            // Multi-file container formats must load by their relative name so the
+            // library resolves sibling files against the file system's baseUrl
+            const lowerMainFilename = mainFile.filename.toLowerCase();
+            const isContainer = lowerMainFilename === 'meta.json' || lowerMainFilename.endsWith('.lcc') || lowerMainFilename.endsWith('.lcc2');
+
             // For URL-only single file, use full URL as filename
-            const filename = (files.length === 1 && !mainFile.contents && mainFile.url) ?
+            const filename = (files.length === 1 && !mainFile.contents && mainFile.url && !isContainer) ?
                 mainFile.url :
                 mainFile.filename;
 
@@ -361,7 +376,7 @@ const initFileHandler = (scene: Scene, events: Events, dropTarget: HTMLElement) 
                                 const lodResult = await BackendClient.lodConvertPath(filePath, [100]);
                                 console.log(`[auto-lod] Server processing: ${((performance.now() - tLod) / 1000).toFixed(1)}s`);
                                 events.fire('spinnerText', '正在加载预览...');
-                                await loadLODLevels(lodResult, importFiles, events);
+                                await loadLODLevels(lodResult, importFiles, events, mainFile.filename);
                                 return;
                             } catch (err) {
                                 console.error('[auto-lod] Failed:', err);
@@ -386,7 +401,7 @@ const initFileHandler = (scene: Scene, events: Events, dropTarget: HTMLElement) 
                                 const lodResult = await BackendClient.lodConvert(file, [100]);
                                 console.log(`[auto-lod] Upload + server: ${((performance.now() - tLod) / 1000).toFixed(1)}s`);
                                 events.fire('spinnerText', '正在加载预览...');
-                                await loadLODLevels(lodResult, importFiles, events);
+                                await loadLODLevels(lodResult, importFiles, events, mainFile.filename);
                                 return; // LOD loading handles its own scene.add
                             } catch (err) {
                                 console.error('[auto-lod] Failed:', err);
@@ -413,6 +428,10 @@ const initFileHandler = (scene: Scene, events: Events, dropTarget: HTMLElement) 
                 filename, fileSystem, animationFrame, false, undefined
             );
             console.log(`[import] assetLoader.load: ${((performance.now() - tLoad) / 1000).toFixed(1)}s`);
+            if (!model) {
+                // user cancelled the load (e.g. LOD selection)
+                return null;
+            }
             const tAdd = performance.now();
             await scene.add(model);
             console.log(`[import] scene.add: ${((performance.now() - tAdd) / 1000).toFixed(1)}s`);
@@ -434,24 +453,13 @@ const initFileHandler = (scene: Scene, events: Events, dropTarget: HTMLElement) 
             events.fire('plysequence.setFrames', files.map(f => f.contents));
             events.fire('timeline.frame', 0);
         } else if (isSog(filenames) || isLcc(filenames)) {
-            if (isLcc(filenames)) {
-                const response = await events.invoke('showPopup', {
-                    type: 'okcancel',
-                    header: 'LCC',
-                    message: localize('popup.lcc-upload-warning'),
-                    link: `${window.location.origin}/upload`
-                });
-                if (response.action === 'cancel') {
-                    return result;
-                }
-            }
             const model = await importSplatModel(files, animationFrame);
             if (model) result.push(model);
         } else {
             // check for unrecognized file types
             for (let i = 0; i < filenames.length; i++) {
                 const filename = filenames[i].toLowerCase();
-                if (['.respproj', '.ply', '.splat', '.sog', '.webp', 'images.txt', '.json', '.ksplat', '.spz'].every(ext => !filename.endsWith(ext))) {
+                if (['.respproj', '.ply', '.splat', '.sog', '.webp', 'images.txt', '.json', '.ksplat', '.spz', '.lcc', '.lcc2'].every(ext => !filename.endsWith(ext))) {
                     await showLoadError('Unrecognized file type', filename);
                     return;
                 }
@@ -498,7 +506,7 @@ const initFileHandler = (scene: Scene, events: Events, dropTarget: HTMLElement) 
         fileSelector = document.createElement('input');
         fileSelector.setAttribute('id', 'file-selector');
         fileSelector.setAttribute('type', 'file');
-        fileSelector.setAttribute('accept', '.ply,.splat,meta.json,.json,.webp,.respproj,.sog,.lcc,.bin,.txt,.ksplat,.spz');
+        fileSelector.setAttribute('accept', '.ply,.splat,meta.json,.json,.webp,.respproj,.sog,.lcc,.lcc2,.bin,.txt,.ksplat,.spz');
         fileSelector.setAttribute('multiple', 'true');
 
         fileSelector.onchange = () => {
@@ -598,7 +606,8 @@ const initFileHandler = (scene: Scene, events: Events, dropTarget: HTMLElement) 
     const loadLODLevels = async (
         lodResult: { levels: Array<{ level: number; count: number; url: string; sizeBytes: number }> },
         importFn: (files: ImportFile[], animFrame: boolean) => Promise<Splat[]>,
-        evts: Events
+        evts: Events,
+        originalFilename: string
     ) => {
         const levels = lodResult.levels.sort((a, b) => a.level - b.level);
         if (levels.length === 0) return;
@@ -641,6 +650,7 @@ const initFileHandler = (scene: Scene, events: Events, dropTarget: HTMLElement) 
         const models = await importFn([{ filename: `lod_${preview.level}.compressed.ply`, contents: previewBlob }], false);
         console.log(`[LOD] Preview parsed: ${((performance.now() - tParse) / 1000).toFixed(1)}s`);
         let currentModel = models[0];
+        if (currentModel) currentModel.name = originalFilename;
         evts.fire('stopSpinner');
 
         // Load remaining levels in background, replacing each time
@@ -658,6 +668,7 @@ const initFileHandler = (scene: Scene, events: Events, dropTarget: HTMLElement) 
                 const nextModels = await importFn([{ filename: `lod_${nextLevel.level}.compressed.ply`, contents: upgradeBlob }], false);
                 console.log(`[LOD] Upgrade parsed: ${((performance.now() - tUpgradeParse) / 1000).toFixed(1)}s`);
                 const nextModel = nextModels[0];
+                if (nextModel) nextModel.name = originalFilename;
                 if (nextModel && currentModel) {
                     scene.remove(currentModel);
                     currentModel.destroy();
@@ -724,11 +735,45 @@ const initFileHandler = (scene: Scene, events: Events, dropTarget: HTMLElement) 
 
         const hasFilePicker = !!window.showSaveFilePicker;
 
+        // LCC2 is a directory format: the directory picker does not supply a
+        // filename, so the popup's filename row (base name) must always be
+        // shown. Other formats only show it when no file picker is available.
+        const showFilenameEdit = exportType === 'lcc2' || !hasFilePicker;
+
         // show viewer export options
-        const options = await events.invoke('show.exportPopup', exportType, splats.map(s => s.name), !hasFilePicker) as SceneExportOptions;
+        const options = await events.invoke('show.exportPopup', exportType, splats.map(s => s.name), showFilenameEdit) as SceneExportOptions;
 
         // return if user cancelled
         if (!options) {
+            return;
+        }
+
+        // LCC2 writes a directory tree (XXX.lcc2 + data/3dgs/*.sog), so it
+        // skips the single-file showSaveFilePicker and asks the user to pick
+        // an output directory instead. createDirectoryFileSystem returns null
+        // when the user cancels the directory picker — bail silently, matching
+        // how showSaveFilePicker cancellation is handled below.
+        if (exportType === 'lcc2') {
+            // Warn about SOG encoding performance for very large scenes (>15M
+            // splats): splat-transform's GPU k-means + WebP encoding may be
+            // extremely slow or fail. Let the user confirm before proceeding.
+            const totalSplats = splats.reduce((sum, s) => sum + s.numSplats, 0);
+            if (totalSplats > 15_000_000) {
+                const result = await events.invoke('showPopup', {
+                    type: 'yesno',
+                    header: localize('popup.export.lcc2-large-scene-header'),
+                    message: `${totalSplats.toLocaleString()} splats\n${localize('popup.export.lcc2-large-scene-warning')}`
+                }) as { action: string };
+                if (result.action !== 'yes') {
+                    return;
+                }
+            }
+
+            const dirFs = await createDirectoryFileSystem();
+            if (!dirFs) {
+                return;
+            }
+            await events.invoke('scene.write', 'lcc2', options, dirFs);
             return;
         }
 
@@ -756,9 +801,9 @@ const initFileHandler = (scene: Scene, events: Events, dropTarget: HTMLElement) 
         }
     });
 
-    events.function('scene.write', async (fileType: FileType, options: SceneExportOptions, stream?: FileSystemWritableFileStream) => {
-        // SOG and viewer exports have their own progress UI, other formats use spinner
-        const useSpinner = fileType !== 'sog' && fileType !== 'htmlViewer' && fileType !== 'packageViewer';
+    events.function('scene.write', async (fileType: FileType, options: SceneExportOptions, stream?: FileSystemWritableFileStream | FileSystem) => {
+        // SOG, viewer, and LCC2 exports have their own progress UI, other formats use spinner
+        const useSpinner = fileType !== 'sog' && fileType !== 'htmlViewer' && fileType !== 'packageViewer' && fileType !== 'lcc2';
 
         if (useSpinner) {
             events.fire('startSpinner');
@@ -772,10 +817,26 @@ const initFileHandler = (scene: Scene, events: Events, dropTarget: HTMLElement) 
 
             const { filename, splatIdx, serializeSettings, viewerExportSettings } = options;
 
-            // Create FileSystem for output
-            const fs = new BrowserFileSystem(filename, stream);
+            // LCC2 receives a directory-capable FileSystem (DirectoryFileSystem or
+            // MemoryFileSystem fallback) directly from scene.export; other formats
+            // wrap the single-file picker stream in a BrowserFileSystem.
+            const fs: FileSystem = fileType === 'lcc2' ?
+                stream as FileSystem :
+                new BrowserFileSystem(filename, stream as FileSystemWritableFileStream | undefined);
 
             const splats = splatIdx === 'all' ? getSplats() : [getSplats()[splatIdx]];
+
+            // Shared SogSettings construction for the 'sog' and 'lcc2' cases —
+            // both reuse serializeSog's underlying path (extractDataTable +
+            // writeSogInternal), so the settings shape (minOpacity, removeInvalid,
+            // iterations, events) must be identical.
+            const buildSogSettings = (): SogSettings => ({
+                ...serializeSettings,
+                minOpacity: 1 / 255,
+                removeInvalid: true,
+                iterations: options.sogIterations ?? 10,
+                events
+            });
 
             switch (fileType) {
                 case 'ply':
@@ -792,15 +853,22 @@ const initFileHandler = (scene: Scene, events: Events, dropTarget: HTMLElement) 
                 case 'splat':
                     await serializeSplat(splats, serializeSettings, fs);
                     break;
-                case 'sog': {
-                    const sogSettings: SogSettings = {
-                        ...serializeSettings,
-                        minOpacity: 1 / 255,
-                        removeInvalid: true,
-                        iterations: options.sogIterations ?? 10,
-                        events
-                    };
-                    await serializeSog(splats, sogSettings, fs);
+                case 'sog':
+                    await serializeSog(splats, buildSogSettings(), fs);
+                    break;
+                case 'lcc2': {
+                    // serializeLcc2 writes `${name}.lcc2` + `data/3dgs/${name}_lod*.sog`
+                    // itself, so strip any extension the popup may have appended to
+                    // get a clean base name. lodLevels>1 triggers Phase 2 multi-LOD
+                    // generation (round-robin axis binary tree, 1/2^k downsampling).
+                    const baseName = removeExtension(filename);
+                    await serializeLcc2(splats, {
+                        name: baseName,
+                        splatIdx: null,
+                        serializeSettings: buildSogSettings(),
+                        lodLevels: options.lodLevels ?? 1,
+                        splatType: '.sog'
+                    }, fs);
                     break;
                 }
                 case 'htmlViewer':

@@ -1,4 +1,4 @@
-import { Button, Container, Label } from '@playcanvas/pcui';
+import { Button, Container, Label, SelectInput } from '@playcanvas/pcui';
 
 import { localize } from './localization';
 import { Tooltips } from './tooltips';
@@ -8,16 +8,31 @@ interface ShowOptions {
     message: string;
     header?: string;
     link?: string;
+    icon?: boolean;     // show the type icon before the message (default true)
+    select?: {
+        options: { v: string, t: string }[];
+        value: string;
+    };
+    warning?: {         // secondary note below the select
+        text: string;
+        link?: string;  // optional link rendered inline after the text
+    };
 }
 
+type ShowResult = {
+    action: string;
+    value?: string;
+};
+
 class Popup extends Container {
-    show: (options: ShowOptions) => void;
+    show: (options: ShowOptions) => Promise<ShowResult>;
     hide: () => void;
     destroy: () => void;
 
     constructor(tooltips: Tooltips, args = {}) {
         args = {
             id: 'popup',
+            class: 'blocks-shortcuts',
             hidden: true,
             tabIndex: -1,
             ...args
@@ -53,6 +68,20 @@ class Popup extends Container {
         linkRow.append(linkText);
         linkRow.append(linkCopy);
 
+        const selectInput = new SelectInput({
+            id: 'popup-select'
+        });
+
+        const selectRow = new Container({
+            id: 'popup-select-row'
+        });
+
+        selectRow.append(selectInput);
+
+        const warningText = new Label({
+            id: 'popup-warning-text'
+        });
+
         const okButton = new Button({
             class: 'popup-button',
             text: localize('popup.ok')
@@ -84,6 +113,8 @@ class Popup extends Container {
 
         dialog.append(header);
         dialog.append(text);
+        dialog.append(selectRow);
+        dialog.append(warningText);
         dialog.append(linkRow);
         dialog.append(buttons);
 
@@ -128,10 +159,10 @@ class Popup extends Container {
             header.text = options.header;
             text.text = options.message;
 
-            const { type, link } = options;
+            const { type, link, select, warning } = options;
 
             ['error', 'info', 'yesno', 'okcancel'].forEach((t) => {
-                text.class[t === type ? 'add' : 'remove'](t);
+                text.class[t === type && options.icon !== false ? 'add' : 'remove'](t);
             });
 
             // configure based on message type
@@ -147,14 +178,34 @@ class Popup extends Container {
                 linkCopy.icon = 'E352';
             }
 
+            // the select dropdown list renders outside the dialog bounds
+            dialog.class[select ? 'add' : 'remove']('has-select');
+            selectRow.hidden = select === undefined;
+            if (select !== undefined) {
+                selectInput.options = select.options;
+                selectInput.value = select.value;
+            }
+
+            warningText.hidden = warning === undefined;
+            warningText.dom.textContent = warning?.text ?? '';
+            if (warning?.link) {
+                const anchor = document.createElement('a');
+                anchor.href = warning.link;
+                anchor.target = '_blank';
+                anchor.rel = 'noopener noreferrer';
+                anchor.textContent = warning.link;
+                warningText.dom.append(' ', anchor);
+            }
+
             // take keyboard focus so shortcuts stop working
             this.dom.focus();
 
-            return new Promise<{action: string, value?: string}>((resolve) => {
+            return new Promise<ShowResult>((resolve) => {
                 okFn = () => {
                     this.hide();
                     resolve({
-                        action: 'ok'
+                        action: 'ok',
+                        value: select ? selectInput.value : undefined
                     });
                 };
                 cancelFn = () => {
@@ -194,4 +245,4 @@ class Popup extends Container {
     }
 }
 
-export { ShowOptions, Popup };
+export { ShowOptions, ShowResult, Popup };

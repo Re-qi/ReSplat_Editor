@@ -8,6 +8,7 @@ export {
     DecompressingReadSource,
     MappedReadFileSystem,
     TeeReadStream,
+    defaultLodIndex,
     loadGSplatData,
     loadSogDecimated,
     readSogMeta,

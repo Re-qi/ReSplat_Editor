@@ -100,6 +100,21 @@ contextBridge.exposeInMainWorld('electronAPI', {
     /** List files in a directory (returns full paths) */
     readDir: (dirPath) => ipcRenderer.invoke('fs:readDir', dirPath),
 
+    /** Create a directory (recursive when opts.recursive is true) */
+    mkdir: (filePath, opts) => ipcRenderer.invoke('fs:mkdir', filePath, opts),
+
+    /** Open a streaming write file; resolves to a numeric stream id */
+    writeStreamOpen: (filePath) => ipcRenderer.invoke('fs:writeStreamOpen', filePath),
+
+    /** Append a chunk (Uint8Array/Buffer) to an open stream; resolves to bytes written */
+    writeStreamChunk: (id, data) => ipcRenderer.invoke('fs:writeStreamChunk', id, data),
+
+    /** Close and finalize a streaming write file */
+    writeStreamClose: (id) => ipcRenderer.invoke('fs:writeStreamClose', id),
+
+    /** Best-effort delete a file (used by writer abort cleanup); resolves to true on success */
+    unlink: (filePath) => ipcRenderer.invoke('fs:unlink', filePath),
+
     /** Get the current browser zoom factor */
     getZoomFactor: () => ipcRenderer.invoke('zoom:get'),
 
@@ -108,6 +123,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
     /** Open a URL in the system default browser */
     openExternal: (url) => ipcRenderer.invoke('shell:openExternal', url),
+
+    /** Open Electron DevTools */
+    openDevTools: () => ipcRenderer.invoke('devtools:open'),
+
+    /** Close Electron DevTools */
+    closeDevTools: () => ipcRenderer.invoke('devtools:close'),
 
     /** WebGPU availability check */
     hasWebGPU: typeof navigator !== 'undefined' && !!navigator.gpu,

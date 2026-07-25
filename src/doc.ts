@@ -1,11 +1,11 @@
-import { ZipFileSystem, ZipReadFileSystem, ReadFileSystem, ReadSource } from '@playcanvas/splat-transform';
+import { ZipFileSystem, ZipReadFileSystem, ReadFileSystem } from '@playcanvas/splat-transform';
 
 import { BlockingPlane } from './blocking-plane';
 import { BoxShape } from './box-shape';
 import { EditHistory } from './edit-history';
 import { Element } from './element';
 import { Events } from './events';
-import { BrowserFileSystem, BlobReadSource, DecompressingReadSource, TeeReadStream, ZstdWriter, GZipWriter, isZstdSupported } from './io';
+import { BrowserFileSystem, BlobReadSource, ZstdWriter, GZipWriter, isZstdSupported } from './io';
 import { recentFiles } from './recent-files';
 import { Scene } from './scene';
 import { SphereShape } from './sphere-shape';
@@ -129,37 +129,47 @@ const registerDocEvents = (scene: Scene, events: Events, editHistory: EditHistor
             for (let i = 0; i < document.splats.length; ++i) {
                 const splatSettings = document.splats[i];
 
-                // load compressed PLY via streaming decompression (avoids OOM for large files)
+                // load compressed PLY from ZIP
                 const ext = isZstdSupported() ? '.ply.zst' : '.ply.gz';
                 const algo = isZstdSupported() ? 'zstd' : 'gzip';
                 const compressedSource = await zipFs.createSource(`splat_${i}${ext}`);
 
-                // TeeReadStream: simultaneously caches compressed data for instant
-                // re-save while streaming to the decompressor — pipelines the I/O
-                // and decompression instead of sequential read-then-decompress.
-                const cacheChunks: Uint8Array[] = [];
-                const teeStream = new TeeReadStream(compressedSource.read(), cacheChunks);
-                loadingCache.set(i, cacheChunks);
+                // Read compressed data fully and cache for instant first-save
+                const compressedData = await compressedSource.read().readAll();
+                compressedSource.close();
+                loadingCache.set(i, [compressedData]);
 
-                const teeSource: ReadSource = {
-                    size: compressedSource.size,
-                    seekable: false,
-                    read() {
-                        return teeStream;
-                    },
-                    close() {
-                        teeStream.close();
-                        compressedSource.close();
-                    }
-                };
+                // Decompress PLY fully into memory — readPly requires a seekable source,
+                // so streaming decompression is not possible.
+                const ds = new DecompressionStream(algo as any);
+                const writer = ds.writable.getWriter();
+                writer.write(compressedData as any);
+                writer.close();
 
-                const decompressingSource = new DecompressingReadSource(teeSource, algo);
+                const reader = ds.readable.getReader();
+                const decompressedChunks: Uint8Array[] = [];
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
+                    decompressedChunks.push(value);
+                }
 
-                // create a simple filesystem wrapper for the decompressing source
+                // Merge decompressed chunks into a single buffer
+                let totalLen = 0;
+                for (const c of decompressedChunks) totalLen += c.length;
+                const decompressed = new Uint8Array(totalLen);
+                let offset = 0;
+                for (const c of decompressedChunks) {
+                    decompressed.set(c, offset);
+                    offset += c.length;
+                }
+
+                // Create seekable source from decompressed PLY data
+                const plyBlob = new Blob([decompressed]);
                 const plyFs: ReadFileSystem = {
                     createSource: (filename: string) => {
                         if (filename === `splat_${i}.ply`) {
-                            return Promise.resolve(decompressingSource);
+                            return Promise.resolve(new BlobReadSource(plyBlob));
                         }
                         return Promise.reject(new Error(`File not found: ${filename}`));
                     }
@@ -339,7 +349,8 @@ const registerDocEvents = (scene: Scene, events: Events, editHistory: EditHistor
                         },
                         close() {
                             return Promise.resolve();
-                        }
+                        },
+                        abort() {}
                     };
                     const compressedWriter = useZstd ? new ZstdWriter(memWriter) : new GZipWriter(memWriter);
                     const t0 = performance.now();

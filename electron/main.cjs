@@ -150,9 +150,100 @@ ipcMain.handle('fs:readDir', async (_event, dirPath) => {
     return fs.readdirSync(dirPath).map(name => path.join(dirPath, name));
 });
 
+// Create a directory. `opts.recursive` mirrors fs.promises.mkdir semantics.
+// Accepts an absolute path (e.g. from openFolderDialog).
+ipcMain.handle('fs:mkdir', async (_event, p, opts) => {
+    const fs = require('fs');
+    return fs.promises.mkdir(p, { recursive: !!(opts && opts.recursive) });
+});
+
+// Streaming write file — keeps large files out of renderer memory.
+// A Map<id, WriteStream> is maintained in main; chunks arrive over IPC.
+const writeStreams = new Map();
+let nextStreamId = 1;
+
+// Open a write stream for `path`. Creates the parent directory first.
+// Returns a numeric stream id the renderer uses for subsequent chunk/close calls.
+ipcMain.handle('fs:writeStreamOpen', async (_event, p) => {
+    const fs = require('fs');
+    const path = require('path');
+    await fs.promises.mkdir(path.dirname(p), { recursive: true });
+    const stream = fs.createWriteStream(p, { flags: 'w' });
+    const id = nextStreamId++;
+    writeStreams.set(id, stream);
+    return id;
+});
+
+// Append a chunk (Uint8Array/Buffer) to an open write stream.
+// Resolves with the number of bytes written. Handles backpressure via 'drain'.
+ipcMain.handle('fs:writeStreamChunk', async (_event, id, data) => {
+    const stream = writeStreams.get(id);
+    if (!stream) {
+        throw new Error(`writeStreamChunk: unknown stream id ${id}`);
+    }
+    // data crosses contextBridge as a Uint8Array; build a Buffer view over its
+    // underlying ArrayBuffer (honouring byteOffset/byteLength) without copying.
+    const buf = Buffer.isBuffer(data)
+        ? data
+        : Buffer.from(data.buffer, data.byteOffset, data.byteLength);
+    return new Promise((resolve, reject) => {
+        const onError = (err) => {
+            stream.removeListener('drain', onDrain);
+            reject(err);
+        };
+        const onDrain = () => {
+            stream.removeListener('error', onError);
+            resolve(buf.length);
+        };
+        stream.once('error', onError);
+        if (stream.write(buf)) {
+            stream.removeListener('error', onError);
+            resolve(buf.length);
+        } else {
+            stream.once('drain', onDrain);
+        }
+    });
+});
+
+// Finalize and close a write stream, then drop it from the map.
+ipcMain.handle('fs:writeStreamClose', async (_event, id) => {
+    const stream = writeStreams.get(id);
+    if (!stream) return;  // already closed or unknown id
+    writeStreams.delete(id);
+    return new Promise((resolve, reject) => {
+        stream.once('error', reject);
+        stream.end(() => resolve());
+    });
+});
+
+// Best-effort file deletion (used by DirectoryFileSystem writer abort cleanup).
+ipcMain.handle('fs:unlink', async (_event, p) => {
+    const fs = require('fs');
+    try {
+        await fs.promises.unlink(p);
+        return true;
+    } catch (_err) {
+        return false;
+    }
+});
+
 // Open URL in system default browser
 ipcMain.handle('shell:openExternal', async (_event, url) => {
     await shell.openExternal(url);
+});
+
+// Open Electron DevTools for the main window
+ipcMain.handle('devtools:open', async () => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.openDevTools();
+    }
+});
+
+// Close Electron DevTools for the main window
+ipcMain.handle('devtools:close', async () => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.closeDevTools();
+    }
 });
 
 // ---------------------------------------------------------------------------

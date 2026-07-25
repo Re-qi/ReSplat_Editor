@@ -374,6 +374,38 @@ class ViewPanel extends Container {
         showCameraPosesRow.append(showCameraPosesLabel);
         showCameraPosesRow.append(showCameraPosesToggle);
 
+        // developer console (Electron only)
+        const isElectron = !!(window as any).electronAPI?.isElectron;
+        let devConsoleRow: Container | null = null;
+        if (isElectron) {
+            devConsoleRow = new Container({
+                class: 'view-panel-row'
+            });
+
+            const devConsoleLabel = new Label({
+                text: localize('panel.view-options.dev-console'),
+                class: 'view-panel-row-label'
+            });
+
+            const devConsoleToggle = new BooleanInput({
+                type: 'toggle',
+                class: 'view-panel-row-toggle',
+                value: false
+            });
+
+            devConsoleToggle.on('change', () => {
+                const api = (window as any).electronAPI;
+                if (devConsoleToggle.value) {
+                    api.openDevTools();
+                } else {
+                    api.closeDevTools();
+                }
+            });
+
+            devConsoleRow.append(devConsoleLabel);
+            devConsoleRow.append(devConsoleToggle);
+        }
+
         this.append(header);
         this.append(clrRow);
         this.append(tonemappingRow);
@@ -387,6 +419,7 @@ class ViewPanel extends Container {
         this.append(showBoundRow);
         this.append(showBoundDimensionsRow);
         this.append(showCameraPosesRow);
+        if (devConsoleRow) this.append(devConsoleRow);
 
         // handle panel visibility (skip in embedded mode, managed by scene-panel)
 

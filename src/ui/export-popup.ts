@@ -22,6 +22,7 @@ const removeKnownExtension = (filename: string) => {
         '.ksplat',
         '.splat',
         '.html',
+        '.lcc2',
         '.ply',
         '.sog',
         '.spz',
@@ -278,6 +279,31 @@ class ExportPopup extends Container {
         iterationsRow.append(iterationsLabel);
         iterationsRow.append(iterationsSlider);
 
+        // lcc2 lod levels (Phase 2: multi-level LOD generation). 1 = single
+        // LOD (Phase 1 behavior); >1 builds a round-robin axis binary tree of
+        // that depth with 1/2^k per-level downsampling. Capped at 6 in
+        // serializeLcc2 (2^6 = 64 leaves).
+
+        const lodRow = new Container({
+            class: 'row'
+        });
+
+        const lodLabel = new Label({
+            class: 'label',
+            text: localize('popup.export.lod-levels')
+        });
+
+        const lodSlider = new SliderInput({
+            class: 'slider',
+            min: 1,
+            max: 6,
+            precision: 0,
+            value: 6
+        });
+
+        lodRow.append(lodLabel);
+        lodRow.append(lodSlider);
+
         // filename
 
         const filenameRow = new Container({
@@ -308,6 +334,7 @@ class ExportPopup extends Container {
         content.append(splatsRow);
         content.append(bandsRow);
         content.append(iterationsRow);
+        content.append(lodRow);
         content.append(filenameRow);
 
         // footer
@@ -373,7 +400,7 @@ class ExportPopup extends Container {
 
         const reset = (exportType: ExportType, splatNames: string[], hasPoses: boolean) => {
             const allRows = [
-                viewerTypeRow, animationRow, loopRow, colorRow, fovRow, startRow, compressRow, splatsRow, bandsRow, iterationsRow, filenameRow
+                viewerTypeRow, animationRow, loopRow, colorRow, fovRow, startRow, compressRow, splatsRow, bandsRow, iterationsRow, lodRow, filenameRow
             ];
 
             const activeRows = {
@@ -381,6 +408,7 @@ class ExportPopup extends Container {
                 standardPly: [splatsRow, bandsRow, filenameRow],
                 splat: [splatsRow, filenameRow],
                 sog: [splatsRow, bandsRow, iterationsRow, filenameRow],
+                lcc2: [splatsRow, bandsRow, lodRow, filenameRow],
                 viewer: [viewerTypeRow, animationRow, loopRow, colorRow, fovRow, startRow, splatsRow, bandsRow, filenameRow]
             }[exportType] as Container[];
 
@@ -407,6 +435,9 @@ class ExportPopup extends Container {
             // sog
             iterationsSlider.value = 10;
 
+            // lcc2
+            lodSlider.value = 6;
+
             // filename
             filenameEntry.value = splatNames[0];
             switch (exportType) {
@@ -419,6 +450,9 @@ class ExportPopup extends Container {
                     break;
                 case 'sog':
                     updateExtension('.sog');
+                    break;
+                case 'lcc2':
+                    updateExtension('.lcc2');
                     break;
                 case 'viewer':
                     updateExtension(viewerTypeSelect.value === 'html' ? '.html' : '.zip');
@@ -486,6 +520,18 @@ class ExportPopup extends Container {
                         maxSHBands: bandsSlider.value
                     },
                     sogIterations: iterationsSlider.value
+                };
+            };
+
+            // LCC2 options: splat selection, SH bands, LOD levels, filename.
+            const assembleLcc2Options = () : SceneExportOptions => {
+                return {
+                    filename: filenameEntry.value,
+                    splatIdx: splatsSelect.value === 'all' ? 'all' : parseInt(splatsSelect.value, 10),
+                    serializeSettings: {
+                        maxSHBands: bandsSlider.value
+                    },
+                    lodLevels: lodSlider.value
                 };
             };
 
@@ -577,6 +623,9 @@ class ExportPopup extends Container {
                             break;
                         case 'sog':
                             resolve(assembleSogOptions());
+                            break;
+                        case 'lcc2':
+                            resolve(assembleLcc2Options());
                             break;
                         case 'viewer':
                             resolve(assembleViewerOptions());

@@ -27,7 +27,8 @@ class WriterFileSystem implements FileSystem {
                 return inner.bytesWritten;
             },
             write: (data: Uint8Array) => inner.write(data),
-            close: () => Promise.resolve()
+            close: () => Promise.resolve(),
+            abort: () => {}
         };
     }
 
@@ -134,6 +135,8 @@ class PublishWriter implements Writer {
     get bytesWritten(): number {
         return this.cursor;
     }
+
+    abort(): void {}
 
     static async create(publishSettings: PublishSettings) {
         const { user } = publishSettings;

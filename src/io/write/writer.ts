@@ -17,6 +17,9 @@ class GZipWriter implements Writer {
         return this.cursor;
     }
 
+    // no-op: gzip streams can't be cleanly aborted mid-write
+    abort(): void {}
+
     constructor(writer: Writer) {
         const stream = new CompressionStream('gzip');
         const streamWriter = stream.writable.getWriter();
@@ -60,6 +63,8 @@ class ProgressWriter implements Writer {
         return this.cursor;
     }
 
+    abort(): void {}
+
     constructor(writer: Writer, totalBytes: number, progress?: (progress: number, total: number) => void) {
         this.write = async (data: Uint8Array) => {
             this.cursor += data.byteLength;
@@ -88,6 +93,9 @@ class ZstdWriter implements Writer {
     get bytesWritten(): number {
         return this.cursor;
     }
+
+    // no-op: zstd streams can't be cleanly aborted mid-write
+    abort(): void {}
 
     constructor(writer: Writer) {
         const stream = new CompressionStream('zstd' as any);

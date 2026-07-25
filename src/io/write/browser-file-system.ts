@@ -12,6 +12,7 @@ class BrowserFileWriter implements Writer {
     private stream: FileSystemWritableFileStream;
     private cursor: number = 0;
     private ready: Promise<void>;
+    private aborted: boolean = false;
 
     constructor(stream: FileSystemWritableFileStream) {
         this.stream = stream;
@@ -22,6 +23,10 @@ class BrowserFileWriter implements Writer {
         return this.cursor;
     }
 
+    abort(): void {
+        this.aborted = true;
+    }
+
     async write(data: Uint8Array): Promise<void> {
         await this.ready;
         this.cursor += data.byteLength;
@@ -29,6 +34,7 @@ class BrowserFileWriter implements Writer {
     }
 
     async close(): Promise<void> {
+        if (this.aborted) return;
         await this.ready;
         await this.stream.truncate(this.cursor);
         await this.stream.close();
@@ -69,6 +75,7 @@ class BrowserDownloadWriter implements Writer {
     private memFs: MemoryFileSystem;
     private innerWriter: Writer;
     private filename: string;
+    private aborted: boolean = false;
 
     constructor(filename: string) {
         this.filename = filename;
@@ -80,11 +87,16 @@ class BrowserDownloadWriter implements Writer {
         return this.innerWriter.bytesWritten;
     }
 
+    abort(): void {
+        this.aborted = true;
+    }
+
     write(data: Uint8Array): void {
         this.innerWriter.write(data);
     }
 
     close(): void {
+        if (this.aborted) return;
         this.innerWriter.close();
         const data = this.memFs.results.get(this.filename);
         if (data) {
