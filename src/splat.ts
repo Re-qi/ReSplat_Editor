@@ -95,6 +95,17 @@ class Splat extends Element {
     measurePoints: Vec3[] = [];
     measureSelection = -1;
 
+    // orient tool: user-picked surface points defining a plane
+    orientPoints: Vec3[] = [];
+    orientSelection = -1;
+
+    // user-defined local frame (relative to the data frame), set from the
+    // orient tool's picked plane: origin at the first picked point, rotation
+    // aligning +y with the plane normal. the transform gizmos and panel use
+    // it as the model's local coordinate space; the gaussian data is unaffected.
+    localFrameOrigin = new Vec3();
+    localFrame = new Quat();
+
     rebuildMaterial: (bands: number) => void;
 
     constructor(asset: Asset, rotation: Quat) {
@@ -596,6 +607,15 @@ class Splat extends Element {
         }
     }
 
+    setLocalFrame(origin: Vec3, rotation: Quat) {
+        this.localFrameOrigin.copy(origin);
+        this.localFrame.copy(rotation);
+    }
+
+    get hasLocalFrame() {
+        return !this.localFrameOrigin.equals(Vec3.ZERO) || !this.localFrame.equals(Quat.IDENTITY);
+    }
+
     docSerialize() {
         const pack3 = (v: Vec3) => [v.x, v.y, v.z];
         const pack4 = (q: Quat) => [q.x, q.y, q.z, q.w];
@@ -605,6 +625,8 @@ class Splat extends Element {
             position: pack3(this.entity.getLocalPosition()),
             rotation: pack4(this.entity.getLocalRotation()),
             scale: pack3(this.entity.getLocalScale()),
+            localFrameOrigin: pack3(this.localFrameOrigin),
+            localFrame: pack4(this.localFrame),
             visible: this.visible,
             tintClr: packC(this.tintClr),
             temperature: this.temperature,
@@ -622,6 +644,8 @@ class Splat extends Element {
 
         this.name = name;
         this.move(new Vec3(position), new Quat(rotation), new Vec3(scale));
+        this.localFrameOrigin = doc.localFrameOrigin ? new Vec3(doc.localFrameOrigin) : new Vec3();
+        this.localFrame = doc.localFrame ? new Quat(doc.localFrame) : new Quat();
         this.visible = visible;
         this.tintClr = new Color(tintClr[0], tintClr[1], tintClr[2], tintClr[3]);
         this.temperature = temperature ?? 0;

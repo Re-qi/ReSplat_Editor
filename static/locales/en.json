@@ -289,6 +289,8 @@
     "tooltip.right-toolbar.view-options": "View Options",
     "tooltip.left-toolbar.undo": "Undo",
     "tooltip.left-toolbar.redo": "Redo",
+    "tooltip.left-toolbar.orient": "Orient",
+    "tooltip.bottom-toolbar.orient": "Orient",
     "tooltip.bottom-toolbar.rect": "Rect Select",
     "tooltip.bottom-toolbar.lasso": "Lasso Select",
     "tooltip.bottom-toolbar.polygon": "Polygon Select",
@@ -348,5 +350,9 @@
     "status-bar.version.checking": "Checking for updates...",
     "status-bar.version.available": "New version available  Click to update",
     "status-bar.version.latest": "Up to date",
-    "status-bar.version.error": "Unable to connect to GitHub"
+    "status-bar.version.error": "Unable to connect to GitHub",
+    "orient.hint": "Click splat surface to place points defining a plane",
+    "orient.align": "Align",
+    "orient.clear": "Clear",
+    "orient.set-pivot": "Set Plane as Local Frame"
 }

@@ -76,4 +76,24 @@
             r: 5;
         }
     }
+
+    &#orient-tool-svg {
+        pointer-events: none;
+
+        >line {
+            stroke: white;
+            stroke-width: 1.5;
+        }
+
+        >polygon {
+            fill: rgba(255, 255, 255, 0.15);
+            stroke: none;
+        }
+
+        >use[href='#orient-dot-prototype'] {
+            fill: white;
+            stroke: #333;
+            stroke-width: 1.5;
+        }
+    }
 }

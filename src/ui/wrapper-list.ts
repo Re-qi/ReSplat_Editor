@@ -9,7 +9,7 @@ import { SphereShape } from '../sphere-shape';
 import { localize } from './localization';
 import deleteSvg from './svg/delete.svg';
 import hiddenSvg from './svg/hidden.svg';
-import selectSphereSvg from './svg/select-sphere.svg';
+import originSvg from './svg/origin.svg';
 import shownSvg from './svg/shown.svg';
 
 const createSvg = (svgString: string) => {
@@ -51,7 +51,7 @@ class WrapperList extends Container {
         });
 
         const icon = new PcuiElement({
-            dom: createSvg(selectSphereSvg),
+            dom: createSvg(originSvg),
             class: 'panel-header-icon'
         });
 

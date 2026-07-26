@@ -6,6 +6,7 @@ import { localize, formatTooltipWithShortcut } from './localization';
 import coordSpaceSvg from './svg/compass.svg';
 import translateSvg from './svg/move.svg';
 import originSvg from './svg/origin.svg';
+import balanceSvg from './svg/balance.svg';
 import redoSvg from './svg/redo.svg';
 import rotateSvg from './svg/rotate.svg';
 import measureSvg from './svg/ruler.svg';
@@ -116,6 +117,11 @@ class LeftToolbar extends Container {
             class: 'left-toolbar-tool'
         });
 
+        const orient = new Button({
+            id: 'left-toolbar-orient',
+            class: 'left-toolbar-tool'
+        });
+
         const coordSpace = new Button({
             id: 'left-toolbar-coord-space',
             class: 'left-toolbar-toggle'
@@ -139,6 +145,7 @@ class LeftToolbar extends Container {
         rotate.dom.appendChild(createSvg(rotateSvg));
         scale.dom.appendChild(createSvg(scaleSvg));
         measure.dom.appendChild(createSvg(measureSvg));
+        orient.dom.appendChild(createSvg(balanceSvg));
         coordSpace.dom.appendChild(createSvg(coordSpaceSvg));
         origin.dom.appendChild(createSvg(originSvg));
         // crop.dom.appendChild(createSvg(cropSvg));
@@ -176,6 +183,7 @@ class LeftToolbar extends Container {
         this.append(scale);
         this.append(new Element({ class: 'left-toolbar-separator' }));
         this.append(measure);
+        this.append(orient);
         this.append(coordSpace);
         this.append(origin);
 
@@ -410,8 +418,15 @@ class LeftToolbar extends Container {
         rotate.dom.addEventListener('click', () => events.fire('tool.rotate'));
         scale.dom.addEventListener('click', () => events.fire('tool.scale'));
         measure.dom.addEventListener('click', () => events.fire('tool.measure'));
+        orient.dom.addEventListener('click', () => events.fire('tool.orient'));
         coordSpace.dom.addEventListener('click', () => events.fire('tool.toggleCoordSpace'));
-        origin.dom.addEventListener('click', () => events.fire('pivot.toggleOrigin'));
+        origin.dom.addEventListener('click', (e: MouseEvent) => {
+            if (events.invoke('tool.active') === 'orient') {
+                events.fire('orient.setPivot');
+            } else {
+                events.fire('pivot.toggleOrigin');
+            }
+        });
 
         events.on('edit.canUndo', (value: boolean) => {
             undo.enabled = value;
@@ -434,6 +449,7 @@ class LeftToolbar extends Container {
             rotate.class[toolName === 'rotate' ? 'add' : 'remove']('active');
             scale.class[toolName === 'scale' ? 'add' : 'remove']('active');
             measure.class[toolName === 'measure' ? 'add' : 'remove']('active');
+            orient.class[toolName === 'orient' ? 'add' : 'remove']('active');
             eyedropper.class[toolName === 'eyedropperSelection' ? 'add' : 'remove']('active');
             opacity.class[toolName === 'opacitySelection' ? 'add' : 'remove']('active');
             size.class[toolName === 'sizeSelection' ? 'add' : 'remove']('active');
@@ -481,6 +497,7 @@ class LeftToolbar extends Container {
         tooltips.register(rotate, tooltip('tooltip.left-toolbar.rotate', 'tool.rotate'));
         tooltips.register(scale, tooltip('tooltip.left-toolbar.scale', 'tool.scale'));
         tooltips.register(measure, tooltip('tooltip.left-toolbar.measure'));
+        tooltips.register(orient, tooltip('tooltip.left-toolbar.orient'));
         tooltips.register(coordSpace, tooltip('tooltip.left-toolbar.local-space', 'tool.toggleCoordSpace'));
         tooltips.register(origin, tooltip('tooltip.left-toolbar.bound-center'));
         tooltips.register(eyedropper, tooltip('tooltip.left-toolbar.eyedropper', 'tool.eyedropperSelection'));

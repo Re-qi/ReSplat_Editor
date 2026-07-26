@@ -31,6 +31,7 @@ import { LassoSelection } from './tools/lasso-selection';
 import { MeasureTool } from './tools/measure-tool';
 import { MoveTool } from './tools/move-tool';
 import { OpacitySelection } from './tools/opacity-selection';
+import { OrientTool } from './tools/orient-tool';
 import { PolygonSelection } from './tools/polygon-selection';
 import { RectSelection } from './tools/rect-selection';
 import { RotateTool } from './tools/rotate-tool';
@@ -454,6 +455,7 @@ const main = async () => {
     toolManager.register('rotate', new RotateTool(events, scene));
     toolManager.register('scale', new ScaleTool(events, scene));
     toolManager.register('measure', new MeasureTool(events, scene, editorUI.toolsContainer.dom, editorUI.canvasContainer));
+    toolManager.register('orient', new OrientTool(events, scene, editorUI.toolsContainer.dom, editorUI.canvasContainer));
 
     // Activate move tool by default so gizmo always shows for scene manager selection
     events.fire('tool.move');

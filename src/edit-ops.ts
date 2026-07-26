@@ -1,7 +1,7 @@
 import { Color, Mat4, Quat, Vec3 } from 'playcanvas';
 
 import { AnimTrack } from './anim-track';
-import { Element } from './element';
+import { Element, ElementType } from './element';
 import { Events } from './events';
 import { IndexRanges, sortedPredicate } from './index-ranges';
 import { Pivot } from './pivot';
@@ -490,6 +490,69 @@ class PlacePivotOp {
             pivot: events.invoke('pivot') as Pivot,
             oldt: unpackTransform(data.oldt),
             newt: unpackTransform(data.newt)
+        });
+    }
+}
+
+class SetLocalFrameOp {
+    name = 'setLocalFrame';
+    splat: Splat;
+    oldOrigin: Vec3;
+    oldFrame: Quat;
+    newOrigin: Vec3;
+    newFrame: Quat;
+
+    constructor(options: { splat: Splat, oldOrigin: Vec3, oldFrame: Quat, newOrigin: Vec3, newFrame: Quat }) {
+        this.splat = options.splat;
+        this.oldOrigin = options.oldOrigin;
+        this.oldFrame = options.oldFrame;
+        this.newOrigin = options.newOrigin;
+        this.newFrame = options.newFrame;
+    }
+
+    do() {
+        this.splat.setLocalFrame(this.newOrigin, this.newFrame);
+    }
+
+    undo() {
+        this.splat.setLocalFrame(this.oldOrigin, this.oldFrame);
+    }
+
+    destroy() {
+        this.splat = null;
+        this.oldOrigin = null;
+        this.oldFrame = null;
+        this.newOrigin = null;
+        this.newFrame = null;
+    }
+
+    serialize() {
+        const pack3 = (v: Vec3) => [v.x, v.y, v.z];
+        const pack4 = (q: Quat) => [q.x, q.y, q.z, q.w];
+        return {
+            type: this.name,
+            data: {
+                oldOrigin: pack3(this.oldOrigin),
+                oldFrame: pack4(this.oldFrame),
+                newOrigin: pack3(this.newOrigin),
+                newFrame: pack4(this.newFrame),
+                splatName: this.splat.name
+            }
+        };
+    }
+
+    static deserialize(data: any, scene: Scene): SetLocalFrameOp {
+        const splats = scene.getElementsByType(ElementType.splat) as Splat[];
+        const splat = splats.find(s => s.name === data.splatName);
+        if (!splat) {
+            throw new Error(`Splat not found: ${data.splatName}`);
+        }
+        return new SetLocalFrameOp({
+            splat,
+            oldOrigin: new Vec3(data.oldOrigin),
+            oldFrame: new Quat(data.oldFrame),
+            newOrigin: new Vec3(data.newOrigin),
+            newFrame: new Quat(data.newFrame)
         });
     }
 }
@@ -1190,6 +1253,8 @@ function deserializeEditOp(
             return SplatsTransformOp.deserialize(opData.data, scene);
         case 'setPivot':
             return PlacePivotOp.deserialize(opData.data, events);
+        case 'setLocalFrame':
+            return SetLocalFrameOp.deserialize(opData.data, scene);
         case 'setSplatColor':
             return SetSplatColorAdjustmentOp.deserialize(opData.data, scene);
         case 'animTrackEdit':
@@ -1236,6 +1301,7 @@ export {
     EntityTransformOp,
     SplatsTransformOp,
     PlacePivotOp,
+    SetLocalFrameOp,
     ColorAdjustment,
     SetSplatColorAdjustmentOp,
     AnimTrackEditOp,

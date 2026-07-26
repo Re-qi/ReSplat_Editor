@@ -303,6 +303,7 @@
     "tooltip.left-toolbar.rotate": "旋转",
     "tooltip.left-toolbar.scale": "缩放",
     "tooltip.left-toolbar.measure": "测量",
+    "tooltip.left-toolbar.orient": "找平",
     "measure.length": "长度",
     "tooltip.left-toolbar.local-space": "局部坐标系",
     "tooltip.left-toolbar.bound-center": "使用边界中心",
@@ -348,5 +349,9 @@
     "status-bar.version.checking": "正在检测有无新版本",
     "status-bar.version.available": "有新版本 点击更新",
     "status-bar.version.latest": "已是最新版本",
-    "status-bar.version.error": "无法连接到GitHub"
+    "status-bar.version.error": "无法连接到GitHub",
+    "orient.hint": "点击 splat 表面放置点，定义平面方向",
+    "orient.align": "对齐",
+    "orient.clear": "清除",
+    "orient.set-pivot": "将平面设为局部坐标系"
 }
