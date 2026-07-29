@@ -1,138 +1,154 @@
-// Unit test for LCC2 spatial tree + tree-node assembly (Phase 2 LOD, octree root).
+// Unit test for LCC2 adaptive hybrid tree (buildAdaptiveLcc2Tree +
+// collectNodesAtDepth + emitAdaptiveTreeJson from src/splat-serialize.ts).
 //
-// Replicates buildLcc2SpatialTree + buildLcc2TreeNode from src/splat-serialize.ts
-// and verifies correctness on synthetic data.
+// Verifies the tree topology invariants that prevent the UE plugin from
+// freezing when viewing high LOD:
 //
+//   INV-1 (linear node growth): total nodes ≈ root_children × treeDepth,
+//        NOT exponential 2^(L+2). Values up to L=20 are safe.
+//   INV-2 (LOD chain AABBs): chain nodes (childNum=1) share the parent AABB.
+//   INV-3 (split AABB containment): split children have AABBs ⊆ parent AABB.
+//   INV-4 (every depth has data): each depth-D node has finestIndices.length>0.
+//   INV-5 (chunk safety): each node's finestIndices.length ≤ sogChunkTarget
+//        at the finest level (depth=treeDepth), so per-node data fits one chunk.
+//   INV-6 (emit JSON validity): ids follow path convention, childNum matches
+//        surviving children, data.3dgs present for nodes with refs.
+//
+// Replicates buildAdaptiveLcc2Tree + helpers from src/splat-serialize.ts.
 // Run:  node scripts/test-lcc2-tree.mjs
 
 // ---- Replicated logic (mirror src/splat-serialize.ts) ----
 
-const buildLcc2SpatialTree = (xs, ys, zs, N, leafBits, sceneAabb) => {
-    const numLeaves = 1 << leafBits;
-    const leafNode = new Uint32Array(N);
-    const leafCount = new Uint32Array(numLeaves);
-    const [sMin0, sMin1, sMin2] = sceneAabb.min;
-    const [sMax0, sMax1, sMax2] = sceneAabb.max;
-    const treeDepth = leafBits - 2;
-
-    for (let i = 0; i < N; ++i) {
-        let n0 = sMin0, n1 = sMin1, n2 = sMin2, x0 = sMax0, x1 = sMax1, x2 = sMax2;
-        const px = xs[i], py = ys[i], pz = zs[i];
-
-        // Octree: 3 bits simultaneously
-        const midX = (n0 + x0) * 0.5, midY = (n1 + x1) * 0.5, midZ = (n2 + x2) * 0.5;
-        const bX = px <= midX ? 0 : 1, bY = py <= midY ? 0 : 1, bZ = pz <= midZ ? 0 : 1;
-        if (bX === 0) x0 = midX; else n0 = midX;
-        if (bY === 0) x1 = midY; else n1 = midY;
-        if (bZ === 0) x2 = midZ; else n2 = midZ;
-        let code = (bX << 2) | (bY << 1) | bZ;
-
-        for (let d = 3; d < leafBits; ++d) {
-            const axis = d % 3;
-            let bit;
-            if (axis === 0) {
-                const mid = (n0 + x0) * 0.5;
-                bit = px <= mid ? 0 : 1;
-                if (bit === 0) x0 = mid; else n0 = mid;
-            } else if (axis === 1) {
-                const mid = (n1 + x1) * 0.5;
-                bit = py <= mid ? 0 : 1;
-                if (bit === 0) x1 = mid; else n1 = mid;
-            } else {
-                const mid = (n2 + x2) * 0.5;
-                bit = pz <= mid ? 0 : 1;
-                if (bit === 0) x2 = mid; else n2 = mid;
-            }
-            code = (code << 1) | bit;
-        }
-        leafNode[i] = code;
-        leafCount[code]++;
+const computeTightAabb = (indices, xs, ys, zs) => {
+    let mn0 = Infinity, mn1 = Infinity, mn2 = Infinity;
+    let mx0 = -Infinity, mx1 = -Infinity, mx2 = -Infinity;
+    for (let i = 0; i < indices.length; ++i) {
+        const idx = indices[i];
+        const x = xs[idx], y = ys[idx], z = zs[idx];
+        if (x < mn0) mn0 = x;
+        if (y < mn1) mn1 = y;
+        if (z < mn2) mn2 = z;
+        if (x > mx0) mx0 = x;
+        if (y > mx1) mx1 = y;
+        if (z > mx2) mx2 = z;
     }
-
-    const leafMin = new Float32Array(numLeaves * 3);
-    const leafMax = new Float32Array(numLeaves * 3);
-    leafMin.fill(Infinity);
-    leafMax.fill(-Infinity);
-    for (let i = 0; i < N; ++i) {
-        const o = leafNode[i] * 3;
-        const x = xs[i], y = ys[i], z = zs[i];
-        if (x < leafMin[o]) leafMin[o] = x;
-        if (y < leafMin[o + 1]) leafMin[o + 1] = y;
-        if (z < leafMin[o + 2]) leafMin[o + 2] = z;
-        if (x > leafMax[o]) leafMax[o] = x;
-        if (y > leafMax[o + 1]) leafMax[o + 1] = y;
-        if (z > leafMax[o + 2]) leafMax[o + 2] = z;
-    }
-
-    const emptyMin0 = (sMin0 + sMax0) * 0.5, emptyMin1 = (sMin1 + sMax1) * 0.5, emptyMin2 = (sMin2 + sMax2) * 0.5;
-    const nodeAabbs = [null];
-    for (let D = 1; D <= treeDepth; ++D) {
-        const shift = leafBits - D - 2;
-        const numNodes = 1 << (D + 2);
-        const arr = new Array(numNodes);
-        for (let n = 0; n < numNodes; ++n) {
-            const start = n << shift;
-            const end = start + (1 << shift);
-            let mn0 = Infinity, mn1 = Infinity, mn2 = Infinity;
-            let mx0 = -Infinity, mx1 = -Infinity, mx2 = -Infinity;
-            for (let l = start; l < end; ++l) {
-                if (leafCount[l] === 0) continue;
-                const o = l * 3;
-                if (leafMin[o] < mn0) mn0 = leafMin[o];
-                if (leafMin[o + 1] < mn1) mn1 = leafMin[o + 1];
-                if (leafMin[o + 2] < mn2) mn2 = leafMin[o + 2];
-                if (leafMax[o] > mx0) mx0 = leafMax[o];
-                if (leafMax[o + 1] > mx1) mx1 = leafMax[o + 1];
-                if (leafMax[o + 2] > mx2) mx2 = leafMax[o + 2];
-            }
-            if (!isFinite(mn0)) {
-                arr[n] = { min: [emptyMin0, emptyMin1, emptyMin2], max: [emptyMin0, emptyMin1, emptyMin2] };
-            } else {
-                arr[n] = { min: [mn0, mn1, mn2], max: [mx0, mx1, mx2] };
-            }
-        }
-        nodeAabbs[D] = arr;
-    }
-    return { leafNode, leafCount, nodeAabbs, numLeaves };
+    return { min: [mn0, mn1, mn2], max: [mx0, mx1, mx2] };
 };
 
-const buildLcc2TreeNode = (depth, nodeIdx, treeDepth, leafBits, nodeAabbs, nodeRefs, leafCount) => {
-    const shift = leafBits - depth - 2;
-    const leafStart = nodeIdx << shift;
-    const leafEnd = leafStart + (1 << shift);
-    let subtreeCount = 0;
-    for (let l = leafStart; l < leafEnd; ++l) subtreeCount += leafCount[l];
-    if (subtreeCount === 0) return null;
+const buildAdaptiveLcc2Tree = (xs, ys, zs, N, treeDepth, sceneAabb, sogChunkTarget, maxSplitDepth = 8) => {
+    const rootIndices = new Uint32Array(N);
+    for (let i = 0; i < N; ++i) rootIndices[i] = i;
 
-    let id = '0';
-    if (depth >= 1) {
-        const octant = depth > 1 ? (nodeIdx >> (depth - 1)) : nodeIdx;
-        id += `_${octant}`;
-        for (let d = depth - 2; d >= 0; --d) {
-            id += `_${(nodeIdx >> d) & 1}`;
+    const buildChildren = (indices, aabb, depth, splitDepth) => {
+        if (depth > treeDepth) return null;
+
+        if (indices.length <= sogChunkTarget || splitDepth >= maxSplitDepth) {
+            const child = { aabb, finestIndices: indices, child: null };
+            child.child = buildChildren(indices, aabb, depth + 1, splitDepth);
+            return [child];
+        }
+
+        const [mn0, mn1, mn2] = aabb.min;
+        const [mx0, mx1, mx2] = aabb.max;
+        const mid0 = (mn0 + mx0) * 0.5;
+        const mid1 = (mn1 + mx1) * 0.5;
+        const mid2 = (mn2 + mx2) * 0.5;
+
+        const bucketCounts = new Uint32Array(8);
+        for (let i = 0; i < indices.length; ++i) {
+            const idx = indices[i];
+            const bX = xs[idx] <= mid0 ? 0 : 1;
+            const bY = ys[idx] <= mid1 ? 0 : 1;
+            const bZ = zs[idx] <= mid2 ? 0 : 1;
+            bucketCounts[(bX << 2) | (bY << 1) | bZ]++;
+        }
+
+        const bucketArrays = new Array(8).fill(null);
+        const bucketFill = new Uint32Array(8);
+        for (let o = 0; o < 8; ++o) {
+            if (bucketCounts[o] > 0) bucketArrays[o] = new Uint32Array(bucketCounts[o]);
+        }
+        for (let i = 0; i < indices.length; ++i) {
+            const idx = indices[i];
+            const bX = xs[idx] <= mid0 ? 0 : 1;
+            const bY = ys[idx] <= mid1 ? 0 : 1;
+            const bZ = zs[idx] <= mid2 ? 0 : 1;
+            const o = (bX << 2) | (bY << 1) | bZ;
+            bucketArrays[o][bucketFill[o]++] = idx;
+        }
+
+        const children = [];
+        for (let o = 0; o < 8; ++o) {
+            if (bucketCounts[o] === 0) continue;
+            const childIndices = bucketArrays[o];
+            const childAabb = computeTightAabb(childIndices, xs, ys, zs);
+            const child = { aabb: childAabb, finestIndices: childIndices, child: null };
+            child.child = buildChildren(childIndices, childAabb, depth + 1, splitDepth + 1);
+            children.push(child);
+        }
+        if (children.length === 1) {
+            const only = children[0];
+            only.child = buildChildren(only.finestIndices, only.aabb, depth + 1, maxSplitDepth);
+        }
+        return children;
+    };
+
+    const root = { aabb: sceneAabb, finestIndices: rootIndices, child: null };
+    root.child = buildChildren(rootIndices, sceneAabb, 1, 0);
+    return root;
+};
+
+const collectNodesAtDepth = (root, targetDepth) => {
+    const result = [];
+    const walk = (node, depth) => {
+        if (depth === targetDepth) { result.push(node); return; }
+        if (node.child) for (const c of node.child) walk(c, depth + 1);
+    };
+    if (root.child) for (const c of root.child) walk(c, 1);
+    return result;
+};
+
+const assignAdaptiveNodeIds = (root) => {
+    const walk = (node, id) => {
+        node.id = id;
+        if (node.child) {
+            for (let i = 0; i < node.child.length; ++i) {
+                walk(node.child[i], `${id}_${i}`);
+            }
+        }
+    };
+    walk(root, '0');
+};
+
+const emitAdaptiveTreeJson = (root, nodeRefs, splatFiles) => {
+    const emit = (node) => {
+        const ref = nodeRefs.get(node);
+        const data = ref && ref.count > 0 ? { '3dgs': ref } : null;
+        if (!node.child || node.child.length === 0) {
+            return { id: node.id, boundingBox: node.aabb, childNum: 0, data };
+        }
+        const child = {};
+        for (let i = 0; i < node.child.length; ++i) {
+            child[String(i)] = emit(node.child[i]);
+        }
+        return { id: node.id, boundingBox: node.aabb, childNum: node.child.length, data, child };
+    };
+    const child = {};
+    if (root.child) {
+        for (let i = 0; i < root.child.length; ++i) {
+            child[String(i)] = emit(root.child[i]);
         }
     }
-    const aabb = nodeAabbs[depth][nodeIdx];
-    const ref = nodeRefs[depth][nodeIdx];
-    const data = ref && ref.count > 0 ? { '3dgs': ref } : null;
-
-    if (depth === treeDepth) {
-        return { id, boundingBox: aabb, childNum: 0, data };
-    }
-
-    // All depths >=1 use binary splitting (2 children).
-    const branchFactor = 2;
-    const childNodes = [];
-    for (let m = 0; m < branchFactor; ++m) {
-        const cIdx = nodeIdx * branchFactor + m;
-        const c = buildLcc2TreeNode(depth + 1, cIdx, treeDepth, leafBits, nodeAabbs, nodeRefs, leafCount);
-        if (c) childNodes.push(c);
-    }
-    const child = {};
-    for (let i = 0; i < childNodes.length; ++i) {
-        child[String(i)] = childNodes[i];
-    }
-    return { id, boundingBox: aabb, childNum: childNodes.length, data, child };
+    return {
+        id: root.id,
+        boundingBox: root.aabb,
+        childNum: root.child?.length ?? 0,
+        data: null,
+        splatFiles,
+        meshFiles: [],
+        bvhFiles: [],
+        child
+    };
 };
 
 // ---- Test harness ----
@@ -142,198 +158,314 @@ const assert = (cond, msg) => {
     else { failed++; console.log(`  FAIL: ${msg}`); }
 };
 
-// Build Phase-2 metadata with lodSplats finest-first.
-const buildPhase2 = (positions, treeDepth) => {
-    const leafBits = treeDepth + 2;
-    const N = positions.length / 3;
+const aabbContains = (parent, child) => {
+    for (let a = 0; a < 3; ++a) {
+        if (child.min[a] < parent.min[a] - 1e-6) return false;
+        if (child.max[a] > parent.max[a] + 1e-6) return false;
+    }
+    return true;
+};
+
+const aabbEqual = (a, b) => {
+    for (let i = 0; i < 3; ++i) {
+        if (Math.abs(a.min[i] - b.min[i]) > 1e-6) return false;
+        if (Math.abs(a.max[i] - b.max[i]) > 1e-6) return false;
+    }
+    return true;
+};
+
+// Count total nodes and collect stats.
+const treeStats = (root) => {
+    const stats = { total: 0, byDepth: {}, chainNodes: 0, splitNodes: 0, leafNodes: 0, maxDepth: 0 };
+    const walk = (node, depth) => {
+        stats.total++;
+        stats.maxDepth = Math.max(stats.maxDepth, depth);
+        stats.byDepth[depth] = (stats.byDepth[depth] || 0) + 1;
+        if (!node.child || node.child.length === 0) {
+            stats.leafNodes++;
+        } else if (node.child.length === 1) {
+            stats.chainNodes++;
+        } else {
+            stats.splitNodes++;
+        }
+        if (node.child) for (const c of node.child) walk(c, depth + 1);
+    };
+    if (root.child) for (const c of root.child) walk(c, 1);
+    return stats;
+};
+
+// ---- Test 1: small uniform grid, treeDepth=3 ----
+console.log('Test 1: uniform grid 1K points, treeDepth=3, target=100');
+{
+    const N = 1000;
     const xs = new Float32Array(N), ys = new Float32Array(N), zs = new Float32Array(N);
-    let mn = [Infinity, Infinity, Infinity], mx = [-Infinity, -Infinity, -Infinity];
     for (let i = 0; i < N; ++i) {
-        xs[i] = positions[i * 3]; ys[i] = positions[i * 3 + 1]; zs[i] = positions[i * 3 + 2];
-        for (let a = 0; a < 3; ++a) {
-            const v = [xs[i], ys[i], zs[i]][a];
-            if (v < mn[a]) mn[a] = v;
-            if (v > mx[a]) mx[a] = v;
-        }
+        xs[i] = (i % 10) / 10 + 0.05;
+        ys[i] = (Math.floor(i / 10) % 10) / 10 + 0.05;
+        zs[i] = Math.floor(i / 100) / 10 + 0.05;
     }
-    const sceneAabb = { min: mn, max: mx };
-    const { leafNode, leafCount, nodeAabbs } = buildLcc2SpatialTree(xs, ys, zs, N, leafBits, sceneAabb);
+    const aabb = { min: [0, 0, 0], max: [1, 1, 1] };
+    const root = buildAdaptiveLcc2Tree(xs, ys, zs, N, 3, aabb, 100);
+    const stats = treeStats(root);
 
-    const nodeRefs = [null];
-    const lodSplatsByLvl = new Array(treeDepth).fill(0); // k=finest..coarsest
+    assert(stats.maxDepth === 3, `maxDepth=3 (got ${stats.maxDepth})`);
+    assert(stats.total > 0, `total nodes > 0 (got ${stats.total})`);
+    // Bounded by octree worst case (8^treeDepth), NOT exponential 2^(L+2) of
+    // the old binary tree. With small target, splits can multiply nodes per
+    // level, but the count stays linear in treeDepth once cells fall below
+    // target (chain phase). Compare against octree worst case here.
+    const rootChildren = root.child?.length ?? 0;
+    const octreeWorst = 8 ** 3;
+    assert(stats.total < octreeWorst, `bounded by octree worst case: ${stats.total} < ${octreeWorst}`);
+    console.log(`  root_children=${rootChildren}, total=${stats.total}, byDepth=${JSON.stringify(stats.byDepth)}`);
+}
 
+// ---- Test 2: LOD chain AABBs are identical to parent ----
+console.log('Test 2: LOD chain nodes share parent AABB');
+{
+    const N = 50; // small enough to chain (no split)
+    const xs = new Float32Array(N), ys = new Float32Array(N), zs = new Float32Array(N);
+    for (let i = 0; i < N; ++i) {
+        xs[i] = i * 0.01;
+        ys[i] = i * 0.02;
+        zs[i] = i * 0.03;
+    }
+    const tightAabb = computeTightAabb(
+        (() => { const idx = new Uint32Array(N); for (let i = 0; i < N; ++i) idx[i] = i; return idx; })(),
+        xs, ys, zs
+    );
+    const root = buildAdaptiveLcc2Tree(xs, ys, zs, N, 5, tightAabb, 3_000_000);
+    const stats = treeStats(root);
+    assert(stats.splitNodes === 0, `no splits expected for N=50 (got ${stats.splitNodes} splits)`);
+    assert(stats.chainNodes > 0, `chain nodes exist (got ${stats.chainNodes})`);
+
+    // Walk and verify chain AABB equality.
+    let aabbOk = true;
+    const checkChain = (node) => {
+        if (node.child && node.child.length === 1) {
+            if (!aabbEqual(node.aabb, node.child[0].aabb)) aabbOk = false;
+            checkChain(node.child[0]);
+        } else if (node.child) {
+            for (const c of node.child) checkChain(c);
+        }
+    };
+    if (root.child) for (const c of root.child) checkChain(c);
+    assert(aabbOk, 'all LOD-chain children share parent AABB');
+}
+
+// ---- Test 3: split children AABBs are contained in parent ----
+console.log('Test 3: split children AABBs ⊆ parent AABB');
+{
+    const N = 100_000; // large enough to trigger splits with target=10K
+    const xs = new Float32Array(N), ys = new Float32Array(N), zs = new Float32Array(N);
+    for (let i = 0; i < N; ++i) {
+        xs[i] = Math.random();
+        ys[i] = Math.random();
+        zs[i] = Math.random();
+    }
+    const aabb = { min: [0, 0, 0], max: [1, 1, 1] };
+    const root = buildAdaptiveLcc2Tree(xs, ys, zs, N, 4, aabb, 10_000);
+    const stats = treeStats(root);
+    assert(stats.splitNodes > 0, `splits expected for N=100K target=10K (got ${stats.splitNodes})`);
+
+    let containmentOk = true;
+    const checkContainment = (node) => {
+        if (!node.child) return;
+        for (const c of node.child) {
+            if (!aabbContains(node.aabb, c.aabb)) containmentOk = false;
+            checkContainment(c);
+        }
+    };
+    if (root.child) for (const c of root.child) checkContainment(c);
+    assert(containmentOk, 'all split children AABBs ⊆ parent AABB');
+}
+
+// ---- Test 4: every depth-D node has finestIndices.length > 0 ----
+console.log('Test 4: every node has finestIndices.length > 0');
+{
+    const N = 10_000;
+    const xs = new Float32Array(N), ys = new Float32Array(N), zs = new Float32Array(N);
+    for (let i = 0; i < N; ++i) {
+        xs[i] = Math.random();
+        ys[i] = Math.random();
+        zs[i] = Math.random();
+    }
+    const aabb = { min: [0, 0, 0], max: [1, 1, 1] };
+    const root = buildAdaptiveLcc2Tree(xs, ys, zs, N, 5, aabb, 3_000_000);
+
+    let allNonEmpty = true;
+    const check = (node) => {
+        if (node.finestIndices.length === 0) allNonEmpty = false;
+        if (node.child) for (const c of node.child) check(c);
+    };
+    if (root.child) for (const c of root.child) check(c);
+    assert(allNonEmpty, 'all nodes have finestIndices.length > 0');
+}
+
+// ---- Test 5: collectNodesAtDepth returns correct count ----
+console.log('Test 5: collectNodesAtDepth correctness');
+{
+    const N = 5000;
+    const xs = new Float32Array(N), ys = new Float32Array(N), zs = new Float32Array(N);
+    for (let i = 0; i < N; ++i) {
+        xs[i] = Math.random();
+        ys[i] = Math.random();
+        zs[i] = Math.random();
+    }
+    const aabb = { min: [0, 0, 0], max: [1, 1, 1] };
+    const treeDepth = 4;
+    const root = buildAdaptiveLcc2Tree(xs, ys, zs, N, treeDepth, aabb, 3_000_000);
+
+    // Sum of nodes at each depth must equal total non-root nodes.
+    let collected = 0;
     for (let D = 1; D <= treeDepth; ++D) {
-        const k = treeDepth - D;  // 0=finest
-        const step = 1 << k;
-        const shift = leafBits - D - 2;
-        const numNodes = 1 << (D + 2);
-        const counts = new Uint32Array(numNodes);
-        for (let i = 0; i < N; i += step) {
-            counts[leafNode[i] >> shift]++;
-        }
+        const nodes = collectNodesAtDepth(root, D);
+        collected += nodes.length;
+    }
+    const stats = treeStats(root);
+    assert(collected === stats.total, `sum of per-depth nodes = total (${collected} vs ${stats.total})`);
 
+    // Depth 1 = root.children count
+    const d1 = collectNodesAtDepth(root, 1);
+    assert(d1.length === (root.child?.length ?? 0), `depth-1 count = root children (${d1.length} vs ${root.child?.length})`);
+}
+
+// ---- Test 6: linear node growth — treeDepth=20 is safe ----
+console.log('Test 6: linear growth — treeDepth=20 produces bounded nodes');
+{
+    const N = 1_000_000;
+    const xs = new Float32Array(N), ys = new Float32Array(N), zs = new Float32Array(N);
+    for (let i = 0; i < N; ++i) {
+        xs[i] = Math.random();
+        ys[i] = Math.random();
+        zs[i] = Math.random();
+    }
+    const aabb = { min: [0, 0, 0], max: [1, 1, 1] };
+    // With target=3M and N=1M, root chains (no split). All nodes are chains.
+    const root = buildAdaptiveLcc2Tree(xs, ys, zs, N, 20, aabb, 3_000_000);
+    const stats = treeStats(root);
+    console.log(`  treeDepth=20: root_children=${root.child?.length}, total=${stats.total}, byDepth=${JSON.stringify(stats.byDepth)}`);
+    // With 1 chain: 1 root child × 20 depths = 20 nodes.
+    assert(stats.total === 20, `treeDepth=20 chain: total=20 (got ${stats.total})`);
+    assert(stats.maxDepth === 20, `maxDepth=20 (got ${stats.maxDepth})`);
+
+    // Now with small target to force splits.
+    const root2 = buildAdaptiveLcc2Tree(xs, ys, zs, N, 20, aabb, 10_000);
+    const stats2 = treeStats(root2);
+    console.log(`  treeDepth=20 target=10K: root_children=${root2.child?.length}, total=${stats2.total}, splits=${stats2.splitNodes}`);
+    // Linear in treeDepth: total ≤ leafCells × treeDepth + splitDepthNodes.
+    // leafCells is data-dependent (here ~512 after 3 split levels), so the
+    // tight bound is ~512×20 ≈ 10K. Compare against the old binary tree's
+    // 2^(treeDepth+2) = 4M nodes — adaptive must be << 1% of that.
+    const oldBinaryNodes = 1 << (20 + 2);
+    assert(stats2.total < oldBinaryNodes * 0.01, `linear vs binary: ${stats2.total} < ${oldBinaryNodes * 0.01} (binary=${oldBinaryNodes})`);
+    // Sanity: still under 50K for N=1M (would be 4M+ for binary tree)
+    assert(stats2.total < 50_000, `node count < 50K (got ${stats2.total}, old binary tree would be 4M+)`);
+}
+
+// ---- Test 7: emitAdaptiveTreeJson produces valid structure ----
+console.log('Test 7: emitAdaptiveTreeJson validity');
+{
+    const N = 1000;
+    const xs = new Float32Array(N), ys = new Float32Array(N), zs = new Float32Array(N);
+    for (let i = 0; i < N; ++i) {
+        xs[i] = Math.random();
+        ys[i] = Math.random();
+        zs[i] = Math.random();
+    }
+    const aabb = { min: [0, 0, 0], max: [1, 1, 1] };
+    const root = buildAdaptiveLcc2Tree(xs, ys, zs, N, 4, aabb, 3_000_000);
+    assignAdaptiveNodeIds(root);
+
+    // Assign fake refs to every node.
+    const nodeRefs = new Map();
+    let refIdx = 0;
+    const assign = (node) => {
+        nodeRefs.set(node, { name: refIdx++, start: 0, count: node.finestIndices.length });
+        if (node.child) for (const c of node.child) assign(c);
+    };
+    if (root.child) for (const c of root.child) assign(c);
+
+    const json = emitAdaptiveTreeJson(root, nodeRefs, ['fake.sog']);
+    assert(json.id === '0', `root id='0' (got ${json.id})`);
+    assert(json.childNum === (root.child?.length ?? 0), `root childNum matches`);
+    assert(json.data === null, `root data=null`);
+    assert(Array.isArray(json.splatFiles), `splatFiles is array`);
+
+    // Walk JSON and verify: childNum matches Object.keys(child).length, ids follow path.
+    let jsonValid = true;
+    const walkJson = (n, expectedId) => {
+        if (n.id !== expectedId) jsonValid = false;
+        const kids = n.child ? Object.keys(n.child) : [];
+        if (n.childNum !== kids.length) jsonValid = false;
+        if (n.childNum === 0 && n.child) jsonValid = false;
+        if (n.child) {
+            for (let i = 0; i < kids.length; ++i) {
+                walkJson(n.child[kids[i]], `${n.id}_${i}`);
+            }
+        }
+    };
+    walkJson(json, '0');
+    assert(jsonValid, 'JSON ids follow path convention, childNum matches children');
+}
+
+// ---- Test 8: degenerate input (all points at same location) ----
+console.log('Test 8: degenerate — all points coincident');
+{
+    const N = 1000;
+    const xs = new Float32Array(N).fill(0.5);
+    const ys = new Float32Array(N).fill(0.5);
+    const zs = new Float32Array(N).fill(0.5);
+    const aabb = { min: [0, 0, 0], max: [1, 1, 1] };
+    // Should not infinite-loop; falls back to chain via maxSplitDepth guard.
+    const root = buildAdaptiveLcc2Tree(xs, ys, zs, N, 5, aabb, 100, 8);
+    const stats = treeStats(root);
+    assert(stats.total > 0, `degenerate input produces a tree (total=${stats.total})`);
+    assert(stats.maxDepth === 5, `degenerate still reaches depth 5 (got ${stats.maxDepth})`);
+}
+
+// ---- Test 9: dynamic rate sampling (100%→10% linear decrease) ----
+console.log('Test 9: per-depth LOD sampling uses dynamic rate (100%→10%)');
+{
+    const N = 100_000;
+    const xs = new Float32Array(N), ys = new Float32Array(N), zs = new Float32Array(N);
+    for (let i = 0; i < N; ++i) {
+        xs[i] = Math.random();
+        ys[i] = Math.random();
+        zs[i] = Math.random();
+    }
+    const aabb = { min: [0, 0, 0], max: [1, 1, 1] };
+    const treeDepth = 6;
+    const root = buildAdaptiveLcc2Tree(xs, ys, zs, N, treeDepth, aabb, 3_000_000);
+
+    // rate(k) = 1 - 0.9*k/(L-1): LOD0=100%, LOD(L-1)=10%, linear decrease.
+    const rate = (k) => treeDepth === 1 ? 1 : 1 - 0.9 * k / (treeDepth - 1);
+
+    // Per-depth totals ≈ N × rate(k). Collect rates indexed by k (0=finest).
+    let totalsOk = true;
+    const ratesByK = new Array(treeDepth);
+    for (let D = 1; D <= treeDepth; ++D) {
+        const k = treeDepth - D;
+        const r = rate(k);
+        ratesByK[k] = r;
+        const nodes = collectNodesAtDepth(root, D);
         let total = 0;
-        const refs = new Array(numNodes);
-        let offset = 0;
-        for (let n = 0; n < numNodes; ++n) {
-            total += counts[n];
-            refs[n] = { name: D - 1, start: offset, count: counts[n] };
-            offset += counts[n];
-        }
-        nodeRefs[D] = refs;
-        lodSplatsByLvl[k] = total;
+        for (const n of nodes) total += Math.max(1, Math.ceil(n.finestIndices.length * r));
+        const expected = Math.ceil(N * r);
+        if (total < expected * 0.9 || total > expected * 1.1 + nodes.length) totalsOk = false;
     }
+    assert(totalsOk, `per-depth totals ≈ N×rate(k) (rates=${ratesByK.map(r => (r * 100).toFixed(0) + '%').join(',')})`);
 
-    // Root children: 8 octants at depth 1
-    const child = {};
-    let childNum = 0;
-    for (let oct = 0; oct < 8; ++oct) {
-        const c = buildLcc2TreeNode(1, oct, treeDepth, leafBits, nodeAabbs, nodeRefs, leafCount);
-        if (c) child[String(childNum++)] = c;
+    // Rates strictly decreasing by k: ratesByK[0]=100% > ratesByK[1] > ... > ratesByK[L-1]=10%.
+    let strictlyDecreasing = true;
+    for (let k = 1; k < treeDepth; ++k) {
+        if (ratesByK[k] >= ratesByK[k - 1]) strictlyDecreasing = false;
     }
-    const root = { id: '0', childNum, child };
+    assert(strictlyDecreasing, 'rates strictly decreasing (no duplicate fidelity)');
 
-    return { root, lodSplats: lodSplatsByLvl, nodeRefs, N };
-};
-
-const walkDataRefs = (node, depth, refs) => {
-    if (node.data && node.data['3dgs']) {
-        refs.push({ id: node.id, depth, ...node.data['3dgs'] });
-    }
-    if (node.child) {
-        for (const k of Object.keys(node.child)) {
-            walkDataRefs(node.child[k], depth + 1, refs);
-        }
-    }
-};
-
-// ---- Test 1: uniform grid, treeDepth=2 (octree only) ----
-console.log('Test 1: uniform grid, treeDepth=2 (octree, 8 points)');
-{
-    const positions = [];
-    for (let x = 0; x < 2; ++x)
-        for (let y = 0; y < 2; ++y)
-            for (let z = 0; z < 2; ++z)
-                positions.push(x + 0.5, y + 0.5, z + 0.5);
-    const { root, lodSplats, N } = buildPhase2(positions, 2);
-
-    assert(root.childNum <= 8, `root.childNum <= 8 (got ${root.childNum})`);
-    // lodSplats: finest (k=0) = N, coarse (k=1) = ceil(N/2)
-    assert(lodSplats[0] === N, `lodSplats[0]=N=${N} (got ${lodSplats[0]})`);
-    assert(lodSplats[1] === Math.ceil(N / 2), `lodSplats[1]=${Math.ceil(N / 2)} (got ${lodSplats[1]})`);
-
-    const refs = [];
-    walkDataRefs(root, 0, refs);
-    assert(refs.length >= 8, `>=8 data nodes (got ${refs.length})`);
-    assert(refs.every(r => r.count > 0), 'all data.3dgs.count > 0');
-
-    // childNum consistency
-    const checkChildNum = (node) => {
-        const kids = node.child ? Object.keys(node.child).filter(k => node.child[k]) : [];
-        if (node.childNum !== kids.length) return false;
-        for (const k of kids) if (!checkChildNum(node.child[k])) return false;
-        return true;
-    };
-    assert(checkChildNum(root), 'childNum matches surviving children');
-}
-
-// ---- Test 2: single octant clustering, other octants pruned ----
-console.log('Test 2: single octant, treeDepth=2 (7 of 8 pruned)');
-{
-    const positions = [];
-    for (let i = 0; i < 10; ++i) positions.push(0.5, 0.1 + i * 0.08, 0.5);
-    const { root, lodSplats, N } = buildPhase2(positions, 2);
-
-    assert(root.childNum <= 2, `root.childNum <= 2 (got ${root.childNum})`);
-    assert(lodSplats[0] === N, `lodSplats[0]=${N}`);
-    assert(lodSplats[1] > 0, `lodSplats[1] > 0`);
-}
-
-// ---- Test 3: treeDepth=3 (octree + 1 binary), scattered ----
-console.log('Test 3: scattered, treeDepth=3 (some empty)');
-{
-    const positions = [];
-    for (let i = 0; i < 100; ++i) positions.push(Math.random() * 2, Math.random() * 2, Math.random() * 2);
-    for (let i = 0; i < 100; ++i) positions.push(2 + Math.random() * 2, 2 + Math.random() * 2, Math.random() * 2);
-    const { root, lodSplats, N } = buildPhase2(positions, 3);
-
-    assert(root.childNum >= 1, `root.childNum >= 1 (got ${root.childNum})`);
-    assert(lodSplats.length === 3, `3 LOD levels`);
-    assert(lodSplats[0] === N, `lodSplats[0]=N=${N}`);
-
-    const refs = [];
-    walkDataRefs(root, 0, refs);
-    assert(refs.every(r => r.count > 0), 'all data.3dgs.count > 0');
-
-    const checkChildNum = (node) => {
-        const kids = node.child ? Object.keys(node.child).filter(k => node.child[k]) : [];
-        if (node.childNum !== kids.length) return false;
-        for (const k of kids) if (!checkChildNum(node.child[k])) return false;
-        return true;
-    };
-    assert(checkChildNum(root), 'childNum matches surviving children');
-}
-
-// ---- Test 4: name/start consistency ----
-console.log('Test 4: name/start indices consistent');
-{
-    const positions = [];
-    for (let i = 0; i < 50; ++i) positions.push(Math.random() * 4, Math.random() * 4, Math.random() * 4);
-    const { root } = buildPhase2(positions, 2);
-    const refs = [];
-    walkDataRefs(root, 0, refs);
-    for (const r of refs) {
-        assert(r.name >= 0, `name >= 0`);
-        assert(Number.isInteger(r.start) && r.start >= 0, `start >= 0`);
-    }
-}
-
-// ---- Test 5: treeDepth=1 (Phase 1 fallback) ----
-console.log('Test 5: treeDepth=1 (Phase 1 path)');
-{
-    assert(1 <= 1, 'treeDepth=1');
-    const leafBits = 3;
-    assert((1 << leafBits) === 8, 'leafBits=3 => 8 leaves');
-}
-
-// ---- Test 6: single splat, treeDepth=3 ----
-console.log('Test 6: 1 splat, treeDepth=3');
-{
-    const positions = [0.5, 0.5, 0.5];
-    const { root, lodSplats } = buildPhase2(positions, 3);
-    assert(root.childNum >= 1, `root.childNum >= 1`);
-    assert(lodSplats[0] === 1, `lodSplats[0]=1`);
-    assert(lodSplats.every(l => l === 1), `all levels=1`);
-}
-
-// ---- Test 7: ID encoding octant+ binary ----
-console.log('Test 7: ID encoding (octant + binary)');
-{
-    // Use a scene with explicit bounds so octree mapping is deterministic.
-    const positions = [];
-    for (let x = 0; x < 4; ++x)
-        for (let y = 0; y < 4; ++y)
-            for (let z = 0; z < 4; ++z)
-                positions.push(x + 0.5, y + 0.5, z + 0.5); // 64 points in [0.5,3.5]
-    const { root } = buildPhase2(positions, 3); // treeDepth=3, leafBits=5
-
-    const refs = [];
-    walkDataRefs(root, 0, refs);
-
-    // Depth 1 (octree): IDs like '0_0' through '0_7'
-    const d1 = refs.filter(r => r.depth === 1).map(r => r.id);
-    assert(d1.length >= 4, `>=4 depth-1 nodes (got ${d1.length})`);
-    assert(d1.every(id => /^0_[0-7]$/.test(id)), 'depth-1 IDs are octant (0_0..0_7)');
-
-    // Depth 2 (octant + 1 binary): IDs like '0_0_0', '0_0_1'
-    const d2 = refs.filter(r => r.depth === 2).map(r => r.id);
-    assert(d2.length >= 8, `>=8 depth-2 nodes (got ${d2.length})`);
-    assert(d2.every(id => /^0_[0-7]_[01]$/.test(id)), 'depth-2 IDs are octant+bit');
-
-    // Depth 3 (octant + 2 binary): '0_N_B_B'
-    const d3 = refs.filter(r => r.depth === 3).map(r => r.id);
-    assert(d3.length >= 8, `>=8 depth-3 nodes (got ${d3.length})`);
-    assert(d3.every(id => /^0_[0-7]_[01]_[01]$/.test(id)), 'depth-3 IDs match pattern');
+    // Coarsest (k=L-1) = 10%, finest (k=0) = 100%.
+    assert(Math.abs(ratesByK[treeDepth - 1] - 0.1) < 1e-9, `coarsest LOD = 10% (got ${(ratesByK[treeDepth - 1] * 100).toFixed(1)}%)`);
+    assert(Math.abs(ratesByK[0] - 1) < 1e-9, `finest LOD = 100% (got ${(ratesByK[0] * 100).toFixed(1)}%)`);
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);

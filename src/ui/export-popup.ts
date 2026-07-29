@@ -270,19 +270,22 @@ class ExportPopup extends Container {
 
         const iterationsSlider = new SliderInput({
             class: 'slider',
-            min: 1,
+            min: 0,
             max: 20,
             precision: 0,
-            value: 10
+            value: 0
         });
 
         iterationsRow.append(iterationsLabel);
         iterationsRow.append(iterationsSlider);
 
         // lcc2 lod levels (Phase 2: multi-level LOD generation). 1 = single
-        // LOD (Phase 1 behavior); >1 builds a round-robin axis binary tree of
-        // that depth with 1/2^k per-level downsampling. Capped at 6 in
-        // serializeLcc2 (2^6 = 64 leaves).
+        // LOD (Phase 1 behavior); >1 builds an adaptive hybrid tree of that
+        // depth with 1/2^k per-level downsampling. The adaptive tree chains
+        // small cells (LOD link, childNum=1) and splits large ones (octree,
+        // childNum=2..8), so node count grows LINEARLY in L — safe for the UE
+        // plugin up to the EndLevel cap of 20. See splat-serialize.ts
+        // (buildAdaptiveLcc2Tree) for details.
 
         const lodRow = new Container({
             class: 'row'
@@ -296,7 +299,7 @@ class ExportPopup extends Container {
         const lodSlider = new SliderInput({
             class: 'slider',
             min: 1,
-            max: 6,
+            max: 20,
             precision: 0,
             value: 6
         });
@@ -433,7 +436,7 @@ class ExportPopup extends Container {
             compressBoolean.value = false;
 
             // sog
-            iterationsSlider.value = 10;
+            iterationsSlider.value = 0;
 
             // lcc2
             lodSlider.value = 6;

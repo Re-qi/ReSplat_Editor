@@ -3,6 +3,7 @@ import { Container, Label } from '@playcanvas/pcui';
 import { ColorPanel } from './color-panel';
 import { Events } from '../events';
 import { localize } from './localization';
+import { LodSwitcher } from './lod-switcher';
 import { PointCloudGroup } from './point-cloud-group';
 import { SplatList } from './splat-list';
 import sceneImportSvg from './svg/import.svg';
@@ -144,6 +145,7 @@ class ScenePanel extends Container {
 
         this.append(sceneHeader);
         this.append(splatListContainer);
+        this.append(new LodSwitcher(events));
         this.append(pointCloudGroup);
         this.append(new WrapperList(events));
         this.append(transformHeader);

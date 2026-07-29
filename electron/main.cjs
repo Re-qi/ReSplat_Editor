@@ -6,9 +6,108 @@
  * same as the web version — zero frontend changes needed.
  */
 
-const { app: electronApp, BrowserWindow, ipcMain, dialog, shell, Menu } = require('electron');
+const { app: electronApp, BrowserWindow, ipcMain, dialog, shell, Menu, protocol, net } = require('electron');
 const path = require('path');
 const crypto = require('crypto');
+
+// ---------------------------------------------------------------------------
+// Raise renderer V8 heap limit above the ~4 GB default
+// ---------------------------------------------------------------------------
+// SH=3 LCC2 re-export (serializeLcc2FromLodLog) peaks at ~10.4 GB for a 35.7M
+// splat source: finest LOD treeDataTable 2 GB + LOD1 rawDataTable 4.2 GB +
+// extractDataTable result 4.2 GB. The default renderer heap (~4 GB) throws
+// "Array buffer allocation failed". Phase 1's SH cap prevents this for SH=0
+// sources (zero-fill columns), but SH=3 sources carry real SH data that
+// can't be dropped without quality loss. Raising --max-old-space-size lets
+// V8 grow the heap to fit the genuine 59-column working set.
+//
+// V8 allocates on demand (no pre-allocation), so a high limit is safe on
+// low-RAM machines — V8 OOMs at the system limit instead of the switch value.
+// Cap at 75% of system RAM (minus 2 GB for OS/GPU/main process), clamped to
+// [4 GB, 16 GB], to avoid triggering swap on memory-constrained machines.
+const totalMemMB = Math.floor(require('os').totalmem() / 1024 / 1024);
+const rendererMaxOldSpace = Math.min(16384, Math.max(4096, Math.floor((totalMemMB - 2048) * 0.75)));
+electronApp.commandLine.appendSwitch('js-flags', `--max-old-space-size=${rendererMaxOldSpace}`);
+console.log(`[electron] Renderer V8 heap limit: ${rendererMaxOldSpace} MB (system RAM: ${totalMemMB} MB)`);
+
+// ---------------------------------------------------------------------------
+// Register app:// privileged protocol BEFORE app.ready
+// ---------------------------------------------------------------------------
+// Replaces the previous file:// loading (loadFile) with a custom app://
+// scheme. This fixes three problems caused by file://:
+//   1. Module Workers can't spawn from file:// (CORS) → WorkerQueue hangs
+//   2. fetch('./worker.mjs') from file:// may fail for blob:-origin workers
+//   3. Service Worker (sw.js) can't register from file://
+//
+// With app:// + privileges (standard/secure/supportFetchAPI/allowServiceWorkers),
+// the renderer can spawn module workers, fetch assets, and register sw.js —
+// unblocking splat-transform's parallel WebP encoding (~3× SOG export speedup).
+//
+// Must be called synchronously at module top-level, BEFORE app.ready fires.
+protocol.registerSchemesAsPrivileged([
+    { scheme: 'app', privileges: { standard: true, secure: true, supportFetchAPI: true, allowServiceWorkers: true } }
+]);
+
+// MIME type map for app:// handler. Chromium's file:// fetch leaves .wasm and
+// .mjs at application/octet-stream, which breaks WebAssembly.instantiateStreaming
+// and module worker spawning. We override Content-Type explicitly.
+const APP_MIME_TYPES = {
+    '.html': 'text/html; charset=utf-8',
+    '.js':   'text/javascript; charset=utf-8',
+    '.mjs':  'text/javascript; charset=utf-8',
+    '.css':  'text/css; charset=utf-8',
+    '.json': 'application/json; charset=utf-8',
+    '.wasm': 'application/wasm',
+    '.png':  'image/png',
+    '.jpg':  'image/jpeg',
+    '.jpeg': 'image/jpeg',
+    '.svg':  'image/svg+xml',
+    '.ico':  'image/x-icon',
+    '.webp': 'image/webp',
+    '.woff': 'font/woff',
+    '.woff2': 'font/woff2',
+    '.ttf':  'font/ttf',
+    '.otf':  'font/otf',
+    '.map':  'application/json; charset=utf-8'
+};
+
+// Register the app:// protocol handler. Serves files from dist/ with correct
+// MIME types and path-traversal protection. Called after app.ready, before
+// createWindow.
+function registerAppProtocol() {
+    const distPath = path.join(__dirname, '..', 'dist');
+    protocol.handle('app', async (request) => {
+        const url = new URL(request.url);
+        // With standard:true, app://bundle/index.html → host='bundle', pathname='/index.html'
+        // We ignore host (always 'bundle') and serve from dist/ by pathname.
+        const filePath = decodeURIComponent(url.pathname).slice(1); // strip leading '/'
+
+        // Security: normalize + prevent traversal outside dist/
+        const resolved = path.normalize(path.join(distPath, filePath));
+        if (resolved !== distPath && !resolved.startsWith(distPath + path.sep)) {
+            return new Response('Forbidden', { status: 403 });
+        }
+
+        try {
+            // net.fetch streams the file from disk (no full read into memory).
+            // Convert Windows backslashes to forward slashes for the file:// URL.
+            const fileUrl = 'file://' + resolved.replace(/\\/g, '/');
+            const response = await net.fetch(fileUrl);
+
+            // Override Content-Type for types Chromium doesn't map correctly.
+            const ext = path.extname(resolved).toLowerCase();
+            const mimeType = APP_MIME_TYPES[ext];
+            if (mimeType) {
+                const headers = new Headers(response.headers);
+                headers.set('Content-Type', mimeType);
+                return new Response(response.body, { status: response.status, headers });
+            }
+            return response;
+        } catch (err) {
+            return new Response('Not Found', { status: 404 });
+        }
+    });
+}
 
 // Import Express app from server.js (won't auto-listen due to require.main check)
 const { app: expressApp, PORT } = require('../server.js');
@@ -61,9 +160,10 @@ async function createWindow() {
         }
     });
 
-    // Load the built SPA
-    const distIndex = path.join(__dirname, '..', 'dist', 'index.html');
-    await mainWindow.loadFile(distIndex);
+    // Load the built SPA via app:// protocol (registered in registerAppProtocol).
+    // app:// enables module workers, fetch(), and service workers — all blocked
+    // under the previous file:// loadFile approach.
+    await mainWindow.loadURL('app://bundle/index.html');
 
     // Check WebGPU availability in renderer
     try {
@@ -413,6 +513,7 @@ function shutdown() {
 electronApp.whenReady().then(async () => {
     try {
         await startServer();
+        registerAppProtocol();
         await createWindow();
         // Attach the close handler now that the window exists.
         mainWindow.on('close', handleWindowClose);

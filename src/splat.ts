@@ -18,6 +18,7 @@ import {
 import { BlockingPlane } from './blocking-plane';
 import { BoxShape } from './box-shape';
 import { Element, ElementType } from './element';
+import { LodEditLog } from './lod-edit-log';
 import { Serializer } from './serializer';
 import { vertexShader, fragmentShader, gsplatCenter } from './shaders/splat-shader';
 import { SphereShape } from './sphere-shape';
@@ -75,6 +76,17 @@ class Splat extends Element {
     _transparency = 1;
 
     originalFilePath: string | null = null;
+
+    // LCC multi-LOD editing: when non-null, this splat was imported from a
+    // multi-LOD LCC file. lodEditLog records spatial ops (select/delete/transform)
+    // as world-space voxel bitmaps so they can be replayed on other LODs during
+    // LOD switch or LCC2 export. lccFileSystem is a runtime-only reference (not
+    // serialized) used by loadLodDataTable to stream other LODs.
+    lccFilePath: string | null = null;
+    lccFileSystem: any = null;  // ReadFileSystem (runtime only)
+    lodCounts: number[] = [];
+    currentLodIndex = 0;
+    lodEditLog: LodEditLog | null = null;
 
     // Save-dirty tracking: incremented on any change that affects PLY output
     // (transform, color properties, state). Compared against _savedDirtyVersion
@@ -635,7 +647,11 @@ class Splat extends Element {
             blackPoint: this.blackPoint,
             whitePoint: this.whitePoint,
             transparency: this.transparency,
-            originalFilePath: this.originalFilePath ?? null
+            originalFilePath: this.originalFilePath ?? null,
+            lccFilePath: this.lccFilePath,
+            lodCounts: this.lodCounts.length > 0 ? this.lodCounts : null,
+            currentLodIndex: this.lodCounts.length > 0 ? this.currentLodIndex : null,
+            lodEditLog: this.lodEditLog?.serialize() ?? null
         };
     }
 
@@ -655,6 +671,14 @@ class Splat extends Element {
         this.whitePoint = whitePoint;
         this.transparency = transparency;
         this.originalFilePath = doc.originalFilePath ?? null;
+        // LCC multi-LOD metadata (null for non-LCC splats)
+        this.lccFilePath = doc.lccFilePath ?? null;
+        this.lodCounts = doc.lodCounts ?? [];
+        this.currentLodIndex = doc.currentLodIndex ?? 0;
+        if (doc.lodEditLog) {
+            this.lodEditLog = new LodEditLog();
+            this.lodEditLog.deserialize(doc.lodEditLog);
+        }
     }
 }
 

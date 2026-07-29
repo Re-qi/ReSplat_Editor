@@ -13,8 +13,12 @@ export {
 // Loading functions
 export {
     defaultLodIndex,
+    dataTableToGSplatData,
     loadGSplatData,
+    loadLodDataTable,
+    loadLodGSplatData,
     loadSogDecimated,
+    readLodMeta,
     readSogMeta,
     readPlyMeta,
     validateGSplatData,

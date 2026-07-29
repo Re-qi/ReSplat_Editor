@@ -519,10 +519,136 @@ const validateGSplatData = (gsplatData: GSplatData): void => {
     }
 };
 
+// Read raw ChunkSources from a file (SOG/LCC/PLY). Used by loadLodDataTable
+// and readLodMeta to share the file-reading logic with loadGSplatData.
+const readSources = async (filename: string, fileSystem: ReadFileSystem) => {
+    const inputFormat = getInputFormat(filename);
+    const lowerFilename = filename.toLowerCase();
+
+    if (inputFormat === 'sog' && lowerFilename.endsWith('.sog')) {
+        const source = await fileSystem.createSource(filename);
+        const zipFs = new ZipReadFileSystem(source);
+        try {
+            return {
+                sources: await readFile({
+                    filename: 'meta.json',
+                    inputFormat: 'sog',
+                    options: defaultOptions,
+                    params: [],
+                    fileSystem: zipFs
+                }),
+                zipFs
+            };
+        } catch (e) {
+            zipFs.close();
+            throw e;
+        }
+    }
+
+    return {
+        sources: await readFile({
+            filename,
+            inputFormat,
+            options: defaultOptions,
+            params: [],
+            fileSystem
+        }),
+        zipFs: null as ZipReadFileSystem | null
+    };
+};
+
+/**
+ * Stream-load a specific LOD from a multi-LOD file (LCC/SOG) as a DataTable,
+ * without going through the pickLod callback. Used for LOD switching and
+ * LCC2 export to load other LODs on demand.
+ */
+const loadLodDataTable = async (
+    filename: string,
+    fileSystem: ReadFileSystem,
+    lodIndex: number
+): Promise<DataTable> => {
+    const { sources, zipFs } = await readSources(filename, fileSystem);
+    try {
+        const source = sources[0];
+        const pool = createChunkDataPool({ chunkSize: source.meta.chunkSize });
+        try {
+            const single = source.meta.numLods > 1 ?
+                selectLod(source, lodIndex) :
+                source;
+            return await materializeToDataTable(single, pool);
+        } finally {
+            pool.destroy();
+        }
+    } finally {
+        for (const s of sources) await s.close();
+        if (zipFs) zipFs.close();
+    }
+};
+
+/**
+ * Stream-load a specific LOD from a multi-LOD file as a GSplatData ready for
+ * editing, applying Morton reorder to match the initial import behavior.
+ * Used by the LOD switcher (events.invoke('lod.switch')) to replace the
+ * current splat's data with another LOD of the same source file.
+ */
+const loadLodGSplatData = async (
+    filename: string,
+    fileSystem: ReadFileSystem,
+    lodIndex: number
+): Promise<LoadResult> => {
+    const dataTable = await loadLodDataTable(filename, fileSystem, lodIndex);
+
+    // Match loadGSplatData's reorder behavior: skip for SOG/compressed PLY
+    // (already Morton-sorted), apply for other formats.
+    const lowerFilename = filename.toLowerCase();
+    const inputFormat = getInputFormat(filename);
+    const isCompressedPly = lowerFilename.endsWith('.compressed.ply');
+    if (inputFormat !== 'sog' && !isCompressedPly) {
+        const indices = new Uint32Array(dataTable.numRows);
+        for (let i = 0; i < indices.length; i++) {
+            indices[i] = i;
+        }
+        sortMortonOrder(dataTable, indices);
+        dataTable.permuteRowsInPlace(indices);
+    }
+
+    return { gsplatData: dataTableToGSplatData(dataTable), transform: dataTable.transform };
+};
+
+/**
+ * Read LOD metadata (per-LOD gaussian counts) from a multi-LOD file without
+ * loading actual splat data. Returns null if the file cannot be read or is
+ * not a multi-LOD format.
+ */
+const readLodMeta = async (
+    filename: string,
+    fileSystem: ReadFileSystem
+): Promise<{ lodCounts: number[]; numLods: number } | null> => {
+    try {
+        const { sources, zipFs } = await readSources(filename, fileSystem);
+        try {
+            const meta = sources[0].meta;
+            return {
+                lodCounts: meta.lodCounts ? [...meta.lodCounts] : [meta.numGaussians ?? 0],
+                numLods: meta.numLods ?? 1
+            };
+        } finally {
+            for (const s of sources) await s.close();
+            if (zipFs) zipFs.close();
+        }
+    } catch {
+        return null;
+    }
+};
+
 export {
     defaultLodIndex,
+    dataTableToGSplatData,
     loadGSplatData,
+    loadLodDataTable,
+    loadLodGSplatData,
     loadSogDecimated,
+    readLodMeta,
     readSogMeta,
     readPlyMeta,
     validateGSplatData,

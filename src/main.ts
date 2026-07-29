@@ -1,6 +1,6 @@
 import { Button, Container, NumericInput } from '@playcanvas/pcui';
 import { WebPCodec } from '@playcanvas/splat-transform';
-import { Color, createGraphicsDevice, Mat4, Vec3, Quat } from 'playcanvas';
+import { Asset, Color, createGraphicsDevice, GSplatResource, Mat4, Vec3, Quat } from 'playcanvas';
 
 import { BackendClient } from './backend';
 import { BlockingPlane } from './blocking-plane';
@@ -14,6 +14,7 @@ import { ElementType } from './element';
 import { Events } from './events';
 import { initFileHandler } from './file-handler';
 import { registerIframeApi } from './iframe-api';
+import { loadLodGSplatData } from './io';
 import { registerPlyFixerEvents } from './ply-fixer';
 import { registerPlySequenceEvents } from './ply-sequence';
 import { registerRenderEvents } from './render';
@@ -22,6 +23,7 @@ import { getSceneConfig } from './scene-config';
 import { registerSelectionEvents } from './selection';
 import { ShortcutManager } from './shortcut-manager';
 import { Splat } from './splat';
+import { State } from './splat-state';
 import { registerTimelineEvents } from './timeline';
 import { BoxSelection } from './tools/box-selection';
 import { BrushSelection } from './tools/brush-selection';
@@ -87,6 +89,83 @@ const getURLArgs = () => {
     });
 
     return config;
+};
+
+// Register LOD switch events. When the user picks a different LOD for the
+// currently-selected multi-LOD splat, this streams the target LOD data from
+// the original LCC file, destroys the old Splat (preserving uid + lodEditLog),
+// constructs a new Splat, and replays all spatial operations from the log.
+const registerLodEvents = (events: Events, scene: Scene, editHistory: EditHistory) => {
+    events.function('lod.switch', async (targetLod: number) => {
+        const oldSplat = events.invoke('splatSelection') as Splat;
+        if (!oldSplat?.lodEditLog || !oldSplat.lccFileSystem || !oldSplat.lccFilePath) {
+            throw new Error('LOD switch requires a multi-LOD splat with valid lccFileSystem');
+        }
+        if (targetLod === oldSplat.currentLodIndex) return;
+        if (targetLod < 0 || targetLod >= oldSplat.lodCounts.length) {
+            throw new Error(`Invalid LOD index ${targetLod} (file has ${oldSplat.lodCounts.length} levels)`);
+        }
+
+        events.fire('startSpinner');
+        events.fire('spinnerText', localize('lod-switcher.switching'));
+
+        try {
+            // Capture state to carry over to the new Splat instance.
+            const doc = oldSplat.docSerialize();
+            const oldUid = oldSplat.uid;
+            const { lccFilePath, lccFileSystem, lodCounts, originalFilePath, lodEditLog } = oldSplat;
+
+            // Clear EditHistory for the old splat (entries are kept in lodEditLog
+            // for replay on the new LOD).
+            await editHistory.removeForSplat(oldSplat);
+            lodEditLog.onEditHistoryClear();
+
+            // Remove + destroy the old splat before loading the new LOD to
+            // free the previous GSplatData/GPU resources.
+            scene.remove(oldSplat);
+            oldSplat.destroy();
+
+            // Stream the target LOD from the original file.
+            const result = await loadLodGSplatData(lccFilePath, lccFileSystem, targetLod);
+            const { gsplatData, transform } = result;
+
+            // Construct a new Splat reusing the old uid so external references
+            // (e.g. _plyCache keyed by uid) stay consistent.
+            const asset = new Asset(lccFilePath, 'gsplat', { url: `lod-asset-${Date.now()}`, filename: lccFilePath });
+            scene.app.assets.add(asset);
+            asset.resource = new GSplatResource(scene.graphicsDevice, gsplatData);
+
+            const newSplat = new Splat(asset, transform.rotation);
+            newSplat.uid = oldUid;
+
+            // Restore transform / color / name / localFrame from the saved doc.
+            newSplat.docDeserialize(doc);
+
+            // Re-attach LCC metadata (docDeserialize already restored them,
+            // but lodEditLog / lccFileSystem may have been nulled — overwrite
+            // to be safe, since we explicitly preserved them above).
+            newSplat.lccFilePath = lccFilePath;
+            newSplat.lccFileSystem = lccFileSystem;
+            newSplat.lodCounts = lodCounts;
+            newSplat.currentLodIndex = targetLod;
+            newSplat.lodEditLog = lodEditLog;
+            newSplat.originalFilePath = originalFilePath;
+            newSplat.markSaveDirty();
+
+            await scene.add(newSplat);
+            events.fire('selection', newSplat);
+
+            // Replay all recorded spatial ops on the new LOD.
+            await newSplat.lodEditLog.replay(newSplat);
+            await newSplat.updateState(State.deleted | State.selected);
+            await newSplat.updateSorting();
+
+            scene.boundDirty = true;
+            events.fire('lod.switched', newSplat);
+        } finally {
+            events.fire('stopSpinner');
+        }
+    });
 };
 
 const main = async () => {
@@ -789,6 +868,7 @@ const main = async () => {
     registerDocEvents(scene, events, editHistory);
     registerRenderEvents(scene, events);
     initFileHandler(scene, events, editorUI.appContainer.dom);
+    registerLodEvents(events, scene, editHistory);
 
     // load async models
     scene.start();

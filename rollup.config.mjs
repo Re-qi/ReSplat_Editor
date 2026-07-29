@@ -65,7 +65,14 @@ const application = {
                 // The JS is bundled into index.js, but the .wasm binary must be
                 // fetched separately. configureSplatTransform() in
                 // splat-serialize.ts points WebPCodec.wasmUrl at ./webp.wasm.
-                { src: 'node_modules/@playcanvas/splat-transform/lib/webp.wasm' }
+                { src: 'node_modules/@playcanvas/splat-transform/lib/webp.wasm' },
+                // splat-transform worker script — needed for parallel WebP
+                // encoding + quantize1d. rollup doesn't rewrite
+                // `new Worker(new URL('./worker.mjs', import.meta.url))`, so we
+                // copy it to dist/ and configureSplatTransform() sets
+                // WorkerQueue.workerUrl to ./worker.mjs.
+                // NOTE: source is dist/worker.mjs (lib/ has only webp.wasm).
+                { src: 'node_modules/@playcanvas/splat-transform/dist/worker.mjs' }
             ]
         }),
         alias({

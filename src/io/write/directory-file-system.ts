@@ -87,7 +87,7 @@ class DirectoryWriter implements Writer {
  * files never need to be held whole in renderer memory.
  */
 class ElectronDirectoryBackend implements DirectoryBackend {
-    private rootAbsPath: string;
+    readonly rootAbsPath: string;
 
     constructor(rootAbsPath: string) {
         this.rootAbsPath = rootAbsPath;
@@ -179,6 +179,11 @@ class DirectoryFileSystem implements FileSystem {
 
     constructor(backend: DirectoryBackend) {
         this.backend = backend;
+    }
+
+    /** Returns the root path for Electron backends, or null for browser. */
+    getRootPath(): string | null {
+        return this.backend instanceof ElectronDirectoryBackend ? this.backend.rootAbsPath : null;
     }
 
     async mkdir(relPath: string): Promise<void> {

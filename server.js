@@ -199,9 +199,21 @@ class NodeFileReadFileSystem {
 // ---------------------------------------------------------------------------
 const app = express();
 
-// CORS: allow localhost origins for dev flexibility
+// CORS: allow localhost (browser/dev) and app:// (Electron with app://
+// privileged protocol — see electron/main.cjs registerAppProtocol). Without
+// app:// here, BackendClient's HTTP requests from the renderer would be
+// blocked: Chromium allows file://→http://localhost without CORS, but app://
+// is a custom scheme subject to normal CORS enforcement.
 app.use(cors({
-    origin: /^https?:\/\/localhost(:\d+)?$/,
+    origin: (origin, callback) => {
+        if (!origin ||                                                          // same-origin / curl / no Origin header
+            /^https?:\/\/localhost(:\d+)?$/.test(origin) ||                    // browser dev mode
+            /^app:\/\//.test(origin)) {                                         // Electron app:// protocol
+            callback(null, true);
+        } else {
+            callback(null, false);
+        }
+    },
     credentials: true
 }));
 
@@ -962,6 +974,43 @@ function cleanup(filePath) {
         try { fs.unlinkSync(filePath); } catch (_) { /* ignore */ }
     }
 }
+
+// ---------------------------------------------------------------------------
+// API: LCC2 Export (path) — full backend export pipeline
+// Reads a PLY file, builds adaptive tree, encodes SOG chunks, generates .lcc2
+// ---------------------------------------------------------------------------
+app.post('/api/lcc2-export-path', express.json(), async (req, res) => {
+    const { filePath, outputDir, name, lodLevels, shBands, iterations } = req.body;
+    if (!filePath || !fs.existsSync(filePath)) {
+        res.status(400).json({ error: 'Invalid file path' });
+        return;
+    }
+    if (!outputDir || !fs.existsSync(outputDir)) {
+        res.status(400).json({ error: 'Invalid output directory' });
+        return;
+    }
+    if (!name) {
+        res.status(400).json({ error: 'name is required' });
+        return;
+    }
+
+    console.log(`\n[lcc2-export] Request: ${path.basename(filePath)} → ${outputDir}/${name}`);
+
+    try {
+        const splatLib = await loadSplatTransform();
+        const { lcc2ExportToPath } = await import('./server/lcc2-export.mjs');
+        const result = await lcc2ExportToPath(filePath, outputDir, {
+            name,
+            lodLevels: lodLevels ?? 1,
+            shBands: shBands ?? 0,
+            iterations: iterations ?? 0
+        }, splatLib, native);
+        res.json(result);
+    } catch (error) {
+        console.error('[lcc2-export] Error:', error);
+        res.status(500).json({ error: error.message || 'LCC2 export failed' });
+    }
+});
 
 // ---------------------------------------------------------------------------
 // Start (if run directly, not required as a module)

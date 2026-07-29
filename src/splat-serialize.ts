@@ -28,7 +28,7 @@ import {
 import { version } from '../package.json';
 import { ColorGrade, dcDecode, dcEncode, sigmoid } from './color-grade';
 import { Events } from './events';
-import { BrowserFileSystem, ProgressWriter } from './io';
+import { BrowserFileSystem, dataTableToGSplatData, loadLodDataTable, ProgressWriter } from './io';
 import { SHRotation } from './sh-utils';
 import { Splat } from './splat';
 import { State } from './splat-state';
@@ -1257,27 +1257,41 @@ const serializeSplat = async (splats: Splat[], options: SerializeSettings, fs: F
 let cachedGpuDevice: WebgpuGraphicsDevice | null = null;
 let cachedBackbuffer: Texture | null = null;
 
-// Configure splat-transform's worker/WASM loading for the bundled Electron
-// environment. The rollup bundle inlines splat-transform's JS into dist/index.js,
-// but the worker script (dist/worker.mjs) and WASM binary (lib/webp.wasm) are
-// separate assets that splat-transform auto-resolves via `import.meta.url`.
-// In Electron the app loads from file:// — module workers cannot be spawned
-// from file:// (CORS), and the auto-resolved WASM path (../lib/webp.wasm
-// relative to the bundle) does not exist. This would cause the WorkerQueue
-// slot to hang forever in 'starting' state (onerror never fires for file://
-// module-worker failures), stalling the entire SOG encode pipeline.
+// Configure splat-transform's worker/WASM loading for the bundled environment.
 //
-// Fix: (1) force inline mode so no worker is spawned, and (2) point the WASM
-// URL at the webp.wasm asset that rollup copies into dist/ alongside index.js.
+// The rollup bundle inlines splat-transform's JS into dist/index.js, but the
+// worker script (dist/worker.mjs) and WASM binary (lib/webp.wasm) are separate
+// assets that splat-transform auto-resolves via `import.meta.url`. rollup does
+// NOT rewrite `new Worker(new URL('./worker.mjs', import.meta.url))` (that's a
+// Vite/webpack feature), so we must point WorkerQueue.workerUrl at the deployed
+// worker asset explicitly.
+//
+// History: previously this forced WorkerQueue.maxWorkers=0 (inline) because
+// Electron loaded the renderer from file://, where module workers cannot spawn
+// (CORS) and onerror never fires — stalling the WorkerQueue slot forever.
+// Now Electron registers an app:// privileged protocol (see electron/main.cjs
+// registerAppProtocol) which enables module workers, fetch(), and service
+// workers. So we let maxWorkers auto-size (min(4, cores-1)) for ~3× parallel
+// WebP encoding speedup. If a worker spawn fails at runtime, splat-transform
+// falls back to inline automatically (per WorkerQueue contract).
 let splatTransformConfigured = false;
 const configureSplatTransform = () => {
     if (splatTransformConfigured) return;
     splatTransformConfigured = true;
 
-    // Force all CPU-heavy tasks (WebP encode, quantize1d) to run inline on the
-    // calling thread. This is slower than worker parallelism but is the only
-    // mode that works reliably under file:// in Electron.
-    WorkerQueue.maxWorkers = 0;
+    // Auto-size worker pool: min(4, cores-1). Workers spawn lazily and run
+    // encodeWebp/quantize1d tasks off the main thread. Falls back to inline
+    // if spawn fails (file:// without app:// protocol, or no Worker support).
+    WorkerQueue.maxWorkers = null;
+
+    // Resolve worker.mjs relative to this module (dist/index.js after bundling).
+    // rollup.config.mjs copies dist/worker.mjs into dist/ alongside the bundle.
+    try {
+        WorkerQueue.workerUrl = new URL('./worker.mjs', import.meta.url).toString();
+    } catch {
+        // import.meta.url may be unavailable in some non-module contexts; leave
+        // the default and let splat-transform's own resolution attempt run.
+    }
 
     // Resolve webp.wasm relative to this module (dist/index.js after bundling).
     // rollup.config.mjs copies the wasm into dist/ alongside the bundle.
@@ -1461,7 +1475,7 @@ const serializeViewer = async (splats: Splat[], serializeSettings: SerializeSett
                 dataTable,
                 viewerSettingsJson: experienceSettings,
                 bundle: true,
-                iterations: 10,
+                iterations: 0,
                 createDevice: createGpuDevice
             }, fs);
         } else {
@@ -1472,7 +1486,7 @@ const serializeViewer = async (splats: Splat[], serializeSettings: SerializeSett
                 dataTable,
                 viewerSettingsJson: experienceSettings,
                 bundle: false,
-                iterations: 10,
+                iterations: 0,
                 createDevice: createGpuDevice
             }, memFs);
 
@@ -1517,7 +1531,7 @@ type Lcc2ExportOptions = {
 };
 
 const serializeSog = async (splats: Splat[], settings: SogSettings, fs: FileSystem): Promise<void> => {
-    const { iterations = 10, events, filename = 'output.sog' } = settings;
+    const { iterations = 0, events, filename = 'output.sog' } = settings;
 
     configureSplatTransform();
     splatTransformLogger.setRenderer(createProgressRenderer('Exporting SOG', events));
@@ -1634,223 +1648,417 @@ const applyLcc2CoordinateTransform = (dataTable: DataTable, maxSHBands: number):
 type Lcc2NodeRef = { name: number; start: number; count: number };
 type Lcc2Aabb = { min: [number, number, number]; max: [number, number, number] };
 
-// Build a hybrid octree+binary spatial tree on the finest splats.
-// The first 3 bits use OCTREE: the scene AABB is halved on ALL THREE axes
-// simultaneously (octant 0..7). Bits 4..leafBits use round-robin BINARY
-// subdivision within each octant.
+// Adaptive hybrid tree node. Built once on the finest splats and walked
+// per-depth to emit LOD-sampled chunks. Mirrors the reference LCC2 topology
+// (英华楼.lcc2: root has 21 spatial-cell children, ~234 LOD-chain nodes,
+// ~95 spatial-split nodes, node count grows linearly 21→21→24→33→49→67→113→182
+// across 8 depths — NOT exponentially).
 //
-//   leafBits: total bits in leaf path (>=3 for octree)
-//   treeDepth = leafBits - 2  (1 octree level + binary levels)
-//   totalLevels metadata = treeDepth
+//   child === null       → leaf (depth === treeDepth, finest LOD level)
+//   child.length === 1   → LOD chain (same AABB as parent; next-finer LOD
+//                          level in the SAME spatial cell). Dominant case.
+//   child.length > 1     → spatial split (each child has a smaller, tight
+//                          AABB; happens only when a cell's finest count
+//                          exceeds sogChunkTarget so it must subdivide for
+//                          streaming granularity).
 //
-// This matches the reference LCC2 structure (雕像群): 8 root children, each
-// with its own binary subtree, ~4-8 files per LOD level.
+// `finestIndices` holds ALL finest-level splat indices belonging to this
+// spatial cell (NOT LOD-sampled). LOD chains share the parent's array by
+// reference (zero copy); spatial splits allocate subset arrays (sum of
+// children lengths = parent length). Per-depth LOD subsets are extracted on
+// demand during chunk writing via interval sampling at step 2^(treeDepth-D).
+type AdaptiveNode = {
+    aabb: Lcc2Aabb;
+    finestIndices: Uint32Array;
+    child: AdaptiveNode[] | null;
+    id?: string;
+};
+
+// Compute a tight AABB around the given splat indices. Used at split time so
+// each child cell gets a minimal (data-fitted) bounding box rather than the
+// theoretical octant box — matches the reference structure where parent and
+// LOD-chain child share an identical tight AABB.
+const computeTightAabb = (
+    indices: Uint32Array,
+    xs: Float32Array, ys: Float32Array, zs: Float32Array
+): Lcc2Aabb => {
+    let mn0 = Infinity, mn1 = Infinity, mn2 = Infinity;
+    let mx0 = -Infinity, mx1 = -Infinity, mx2 = -Infinity;
+    for (let i = 0; i < indices.length; ++i) {
+        const idx = indices[i];
+        const x = xs[idx], y = ys[idx], z = zs[idx];
+        if (x < mn0) mn0 = x;
+        if (y < mn1) mn1 = y;
+        if (z < mn2) mn2 = z;
+        if (x > mx0) mx0 = x;
+        if (y > mx1) mx1 = y;
+        if (z > mx2) mx2 = z;
+    }
+    return { min: [mn0, mn1, mn2], max: [mx0, mx1, mx2] };
+};
+
+// Build an adaptive hybrid tree on the finest splats.
 //
-// Returns:
-//   leafNode[i]   - leafBits-bit leaf code for finest splat i; top 3 bits = octant
-//   leafCount[l]  - number of finest splats in leaf l (0 => empty leaf)
-//   nodeAabbs[D]  - array (indexed 0..2^(D+2)-1) of tight AABBs per depth-D node
-//   numLeaves     - 2^leafBits
-const buildLcc2SpatialTree = (
+// At each depth D (1..treeDepth) a node either:
+//   - chains: single child with the SAME aabb (LOD link to the next-finer
+//     level in the same spatial cell), OR
+//   - splits: octree 8-way subdivision (empty octants dropped), each child
+//     getting a tight data-fitted AABB.
+//
+// Split decision: subdivide when the cell's finest splat count exceeds
+// `sogChunkTarget`. This keeps per-cell finest data streamable in one chunk
+// and produces linear node growth (~cells × treeDepth) instead of the
+// exponential 2^(L+2) growth of the old fixed binary tree — which is what
+// froze the UE plugin for lodLevels > 6.
+//
+// The octree branch factor (max 8 children per split, empty octants dropped)
+// matches the reference's variable childNum distribution (2..5 observed; 8
+// max). Root childNum is data-dependent (8..64 typically), giving the UE
+// plugin enough spatial cells for streaming without an explosion of nodes.
+//
+// Memory: LOD chains share `finestIndices` by reference (zero copy). Only
+// spatial splits allocate new Uint32Arrays, and their lengths sum to the
+// parent's. Total allocation ≈ N × (number of split depths), typically 1-3
+// levels → 1N-3N, far below the 4GB browser limit.
+//
+// `maxSplitDepth` caps recursion for degenerate inputs (e.g. all splats at
+// one point) where octree subdivision never reduces cell count below target.
+const buildAdaptiveLcc2Tree = (
     xs: Float32Array, ys: Float32Array, zs: Float32Array,
-    N: number, leafBits: number, sceneAabb: Lcc2Aabb
-): { leafNode: Uint32Array; leafCount: Uint32Array; nodeAabbs: Lcc2Aabb[][]; numLeaves: number } => {
-    const numLeaves = 1 << leafBits;
-    const leafNode = new Uint32Array(N);
-    const leafCount = new Uint32Array(numLeaves);
-    const [sMin0, sMin1, sMin2] = sceneAabb.min;
-    const [sMax0, sMax1, sMax2] = sceneAabb.max;
-    const treeDepth = leafBits - 2; // 1 octree + (leafBits-3) binary = leafBits-2
+    N: number, treeDepth: number, sceneAabb: Lcc2Aabb,
+    splitTarget: number,
+    maxSplitDepth = 8
+): AdaptiveNode => {
+    const rootIndices = new Uint32Array(N);
+    for (let i = 0; i < N; ++i) rootIndices[i] = i;
 
-    // Descent: first 3 bits = octree (all 3 axes simultaneously), then round-
-    // robin binary within the octant sub-region. O(N*leafBits).
-    for (let i = 0; i < N; ++i) {
-        let n0 = sMin0, n1 = sMin1, n2 = sMin2, x0 = sMax0, x1 = sMax1, x2 = sMax2;
-        const px = xs[i], py = ys[i], pz = zs[i];
+    // Recursively build children for a cell holding `indices` at `depth`.
+    // Returns null past leaf depth, otherwise 1 (chain) or 2..8 (split) children.
+    // depth ranges 1..treeDepth inclusive: depth=treeDepth is the finest level
+    // (k=0), so we must NOT stop at depth===treeDepth — stopping there would
+    // drop the finest LOD and leave the UE plugin with no k=0 data (freeze).
+    const buildChildren = (
+        indices: Uint32Array, aabb: Lcc2Aabb, depth: number, splitDepth: number
+    ): AdaptiveNode[] | null => {
+        if (depth > treeDepth) return null;
 
-        // Octree: 3 bits encoding all axes simultaneously
-        const midX = (n0 + x0) * 0.5;
-        const midY = (n1 + x1) * 0.5;
-        const midZ = (n2 + x2) * 0.5;
-        const bX = px <= midX ? 0 : 1;
-        const bY = py <= midY ? 0 : 1;
-        const bZ = pz <= midZ ? 0 : 1;
-        if (bX === 0) x0 = midX; else n0 = midX;
-        if (bY === 0) x1 = midY; else n1 = midY;
-        if (bZ === 0) x2 = midZ; else n2 = midZ;
-        let code = (bX << 2) | (bY << 1) | bZ; // [2:0] = octant
-
-        // Binary: remaining leafBits-3 bits, one axis per bit
-        for (let d = 3; d < leafBits; ++d) {
-            const axis = d % 3;
-            let bit: number;
-            if (axis === 0) {
-                const mid = (n0 + x0) * 0.5;
-                bit = px <= mid ? 0 : 1;
-                if (bit === 0) x0 = mid; else n0 = mid;
-            } else if (axis === 1) {
-                const mid = (n1 + x1) * 0.5;
-                bit = py <= mid ? 0 : 1;
-                if (bit === 0) x1 = mid; else n1 = mid;
-            } else {
-                const mid = (n2 + x2) * 0.5;
-                bit = pz <= mid ? 0 : 1;
-                if (bit === 0) x2 = mid; else n2 = mid;
-            }
-            code = (code << 1) | bit;
+        // LOD chain when the cell is small enough OR we've exhausted split budget.
+        if (indices.length <= splitTarget || splitDepth >= maxSplitDepth) {
+            const child: AdaptiveNode = { aabb, finestIndices: indices, child: null };
+            child.child = buildChildren(indices, aabb, depth + 1, splitDepth);
+            return [child];
         }
-        leafNode[i] = code;
-        leafCount[code]++;
-    }
 
-    // Leaf AABBs (tight, over NON-EMPTY leaves only).
-    const leafMin = new Float32Array(numLeaves * 3);
-    const leafMax = new Float32Array(numLeaves * 3);
-    leafMin.fill(Infinity);
-    leafMax.fill(-Infinity);
-    for (let i = 0; i < N; ++i) {
-        const o = leafNode[i] * 3;
-        const x = xs[i], y = ys[i], z = zs[i];
-        if (x < leafMin[o]) leafMin[o] = x;
-        if (y < leafMin[o + 1]) leafMin[o + 1] = y;
-        if (z < leafMin[o + 2]) leafMin[o + 2] = z;
-        if (x > leafMax[o]) leafMax[o] = x;
-        if (y > leafMax[o + 1]) leafMax[o + 1] = y;
-        if (z > leafMax[o + 2]) leafMax[o + 2] = z;
-    }
+        // Spatial split: octree 8-way at the AABB midpoints, drop empty octants.
+        const [mn0, mn1, mn2] = aabb.min;
+        const [mx0, mx1, mx2] = aabb.max;
+        const mid0 = (mn0 + mx0) * 0.5;
+        const mid1 = (mn1 + mx1) * 0.5;
+        const mid2 = (mn2 + mx2) * 0.5;
 
-    // Per-depth node AABBs. Depth D has 2^(D+2) nodes for D>=1; each covers
-    // 2^(leafBits-D-2) leaves. Union only non-empty leaves; dead nodes get
-    // degenerate AABB (pruned on emit).
-    const emptyMin0 = (sMin0 + sMax0) * 0.5, emptyMin1 = (sMin1 + sMax1) * 0.5, emptyMin2 = (sMin2 + sMax2) * 0.5;
-    const nodeAabbs: Lcc2Aabb[][] = [null as never]; // index 0 unused
-    for (let D = 1; D <= treeDepth; ++D) {
-        const shift = leafBits - D - 2;
-        const numNodes = 1 << (D + 2);
-        const arr: Lcc2Aabb[] = new Array(numNodes);
-        for (let n = 0; n < numNodes; ++n) {
-            const start = n << shift;
-            const end = start + (1 << shift);
-            let mn0 = Infinity, mn1 = Infinity, mn2 = Infinity;
-            let mx0 = -Infinity, mx1 = -Infinity, mx2 = -Infinity;
-            for (let l = start; l < end; ++l) {
-                if (leafCount[l] === 0) continue;
-                const o = l * 3;
-                if (leafMin[o] < mn0) mn0 = leafMin[o];
-                if (leafMin[o + 1] < mn1) mn1 = leafMin[o + 1];
-                if (leafMin[o + 2] < mn2) mn2 = leafMin[o + 2];
-                if (leafMax[o] > mx0) mx0 = leafMax[o];
-                if (leafMax[o + 1] > mx1) mx1 = leafMax[o + 1];
-                if (leafMax[o + 2] > mx2) mx2 = leafMax[o + 2];
-            }
-            if (!isFinite(mn0)) {
-                arr[n] = { min: [emptyMin0, emptyMin1, emptyMin2], max: [emptyMin0, emptyMin1, emptyMin2] };
-            } else {
-                arr[n] = { min: [mn0, mn1, mn2], max: [mx0, mx1, mx2] };
-            }
+        const bucketCounts = new Uint32Array(8);
+        for (let i = 0; i < indices.length; ++i) {
+            const idx = indices[i];
+            const bX = xs[idx] <= mid0 ? 0 : 1;
+            const bY = ys[idx] <= mid1 ? 0 : 1;
+            const bZ = zs[idx] <= mid2 ? 0 : 1;
+            bucketCounts[(bX << 2) | (bY << 1) | bZ]++;
         }
-        nodeAabbs[D] = arr;
-    }
 
-    return { leafNode, leafCount, nodeAabbs, numLeaves };
+        // Pre-allocate per-octant index arrays.
+        const bucketArrays: (Uint32Array | null)[] = new Array(8).fill(null);
+        const bucketFill = new Uint32Array(8);
+        for (let o = 0; o < 8; ++o) {
+            if (bucketCounts[o] > 0) bucketArrays[o] = new Uint32Array(bucketCounts[o]);
+        }
+        for (let i = 0; i < indices.length; ++i) {
+            const idx = indices[i];
+            const bX = xs[idx] <= mid0 ? 0 : 1;
+            const bY = ys[idx] <= mid1 ? 0 : 1;
+            const bZ = zs[idx] <= mid2 ? 0 : 1;
+            const o = (bX << 2) | (bY << 1) | bZ;
+            bucketArrays[o]![bucketFill[o]++] = idx;
+        }
+
+        const children: AdaptiveNode[] = [];
+        for (let o = 0; o < 8; ++o) {
+            if (bucketCounts[o] === 0) continue; // drop empty octant
+            const childIndices = bucketArrays[o]!;
+            // Tighten AABB to actual splat bounds (smaller than the octant box).
+            const childAabb = computeTightAabb(childIndices, xs, ys, zs);
+            const child: AdaptiveNode = { aabb: childAabb, finestIndices: childIndices, child: null };
+            child.child = buildChildren(childIndices, childAabb, depth + 1, splitDepth + 1);
+            children.push(child);
+        }
+        // Guard: if all splats landed in one octant (degenerate data), fall back
+        // to a chain to avoid infinite recursion.
+        if (children.length === 1) {
+            // Already built — but force chain semantics by stopping further splits.
+            const only = children[0];
+            only.child = buildChildren(only.finestIndices, only.aabb, depth + 1, maxSplitDepth);
+        }
+        return children;
+    };
+
+    const root: AdaptiveNode = { aabb: sceneAabb, finestIndices: rootIndices, child: null };
+    root.child = buildChildren(rootIndices, sceneAabb, 1, 0);
+    return root;
 };
 
-// Build the nested LCC2 tree JSON for the root's children. Depth 1 uses octree
-// (8 children, octant digit 0-7); depth >=2 uses binary (2 children, 0/1 bits).
-// Build node ID from depth/nodeIdx. Matches buildLcc2TreeNode's convention.
-//   depth 1: octant → `0_{octant}`  (octant 0..7)
-//   depth 2: octant + 1 binary bit → `0_{octant}_{bit}`
-//   depth 3+: octant + (depth-1) binary bits
-const getNodeId = (depth: number, nodeIdx: number): string => {
-    let id = '0';
-    if (depth >= 1) {
-        const octant = depth > 1 ? (nodeIdx >> (depth - 1)) : nodeIdx;
-        id += `_${octant}`;
-        for (let d = depth - 2; d >= 0; --d) {
-            id += `_${(nodeIdx >> d) & 1}`;
+// Assign node IDs in the XGRIDS path convention: "0", "0_0", "0_0_1", ...
+// Called once after tree construction, before emitAdaptiveTreeJson or any
+// file naming that depends on node IDs. The child array index determines the
+// serial number in the ID.
+const assignAdaptiveNodeIds = (root: AdaptiveNode): void => {
+    const walk = (node: AdaptiveNode, id: string) => {
+        node.id = id;
+        if (node.child) {
+            for (let i = 0; i < node.child.length; ++i) {
+                walk(node.child[i], `${id}_${i}`);
+            }
         }
-    }
-    return id;
+    };
+    walk(root, '0');
 };
 
-// Fully-empty subtrees are pruned; data.3dgs only emitted when count>0.
-// Returns null for dead nodes (caller drops them).
-const buildLcc2TreeNode = (
-    depth: number, nodeIdx: number, treeDepth: number, leafBits: number,
-    nodeAabbs: Lcc2Aabb[][], nodeRefs: Lcc2NodeRef[][], leafCount: Uint32Array
+// Collect all tree nodes at exactly `targetDepth` (root is depth 0; root's
+// children are depth 1). Used by the per-depth chunk writer to iterate every
+// spatial cell that contributes data to LOD level (treeDepth - targetDepth).
+const collectNodesAtDepth = (root: AdaptiveNode, targetDepth: number): AdaptiveNode[] => {
+    const result: AdaptiveNode[] = [];
+    const walk = (node: AdaptiveNode, depth: number) => {
+        if (depth === targetDepth) {
+            result.push(node);
+            return;
+        }
+        if (node.child) {
+            for (const c of node.child) walk(c, depth + 1);
+        }
+    };
+    if (root.child) {
+        for (const c of root.child) walk(c, 1);
+    }
+    return result;
+};
+
+// Descend the adaptive tree to find the depth-`targetDepth` node whose AABB
+// contains the point (x,y,z). Used by serializeLcc2FromLodLog to bin coarser-
+// LOD splats (loaded from file) into the same tree that was built on the
+// finest LOD.
+//
+// Descent rules:
+//   - At the root, find the depth-1 child whose AABB contains the point.
+//   - At a LOD-chain node (childNum===1), follow the single child (same AABB).
+//   - At a spatial-split node (childNum>1), find the child whose AABB contains
+//     the point.
+//   - If no child contains the point (degenerate — point on a boundary, or
+//     floating-point drift), return the current node so the splat is not lost.
+//
+// O(targetDepth × max_children) per call. For targetDepth ≤ 20 and max 8
+// children: ≤160 comparisons per splat. Coarser LODs are small (N/2^k), so
+// total binning work across all coarser levels ≈ 6N comparisons (geometric
+// series) — a few seconds for N = 35M.
+const findAdaptiveNodeAtDepth = (
+    root: AdaptiveNode,
+    x: number, y: number, z: number,
+    targetDepth: number
+): AdaptiveNode | null => {
+    if (!root.child || root.child.length === 0) return null;
+
+    // Find the depth-1 child containing the point.
+    let node: AdaptiveNode | null = null;
+    for (const c of root.child) {
+        const [mn0, mn1, mn2] = c.aabb.min;
+        const [mx0, mx1, mx2] = c.aabb.max;
+        if (x >= mn0 && x <= mx0 && y >= mn1 && y <= mx1 && z >= mn2 && z <= mx2) {
+            node = c;
+            break;
+        }
+    }
+    if (!node) return null;
+
+    for (let d = 2; d <= targetDepth; ++d) {
+        if (!node.child || node.child.length === 0) return node; // leaf
+        if (node.child.length === 1) {
+            // LOD chain: child shares the same AABB, just follow.
+            node = node.child[0];
+            continue;
+        }
+        // Spatial split: find the child whose AABB contains the point.
+        let next: AdaptiveNode | null = null;
+        for (const c of node.child) {
+            const [mn0, mn1, mn2] = c.aabb.min;
+            const [mx0, mx1, mx2] = c.aabb.max;
+            if (x >= mn0 && x <= mx0 && y >= mn1 && y <= mx1 && z >= mn2 && z <= mx2) {
+                next = c;
+                break;
+            }
+        }
+        if (!next) return node; // degenerate: point on boundary or FP drift
+        node = next;
+    }
+    return node;
+};
+
+// Emit the nested LCC2 tree JSON from the adaptive tree. Node IDs follow the
+// path convention `0`, `0_0`, `0_0_0`, ... matching the reference structure.
+// `nodeRefs` maps each AdaptiveNode to its {name, start, count} chunk ref
+// (assigned during per-depth chunk writing). Nodes with no ref or count===0
+// get data:null — but with the adaptive tree every node has finest splats, so
+// every depth has data. Returns the root JSON object (without splatFiles/
+// meshFiles/bvhFiles, which the caller attaches).
+const emitAdaptiveTreeJson = (
+    root: AdaptiveNode,
+    nodeRefs: Map<AdaptiveNode, Lcc2NodeRef>,
+    splatFiles: string[]
 ): any => {
-    // Dead check: sum finest splats over this node's leaf range.
-    const shift = leafBits - depth - 2;
-    const leafStart = nodeIdx << shift;
-    const leafEnd = leafStart + (1 << shift);
-    let subtreeCount = 0;
-    for (let l = leafStart; l < leafEnd; ++l) subtreeCount += leafCount[l];
-    if (subtreeCount === 0) return null; // prune
+    const emit = (node: AdaptiveNode): any => {
+        const ref = nodeRefs.get(node);
+        let data = ref && ref.count > 0 ? { '3dgs': ref } : null;
+        if (!node.child || node.child.length === 0) {
+            return { id: node.id, boundingBox: node.aabb, childNum: 0, data };
+        }
+        const child: Record<string, any> = {};
+        for (let i = 0; i < node.child.length; ++i) {
+            child[String(i)] = emit(node.child[i]);
+        }
+        // Chain nodes (childNum=1, same AABB) with 0 own splats at their LOD
+        // level get a minimal 1-splat data reference from the first child.
+        // Degenerate cells (zero-volume AABB from coincident splats) can yield
+        // count=0 at coarser LODs; the UE plugin's LCC2Tree::ComputeError
+        // dereferences node.data.3dgs unconditionally, so null data →
+        // EXCEPTION_ACCESS_VIOLATION. We assign count=1 (not full inheritance)
+        // because full inheritance would make the UE plugin render the finer
+        // LOD's entire splat count for this cell — up to 2.8x more splats per
+        // frame (~20fps drop). 1 representative splat is enough for ComputeError
+        // and keeps render cost minimal; the plugin descends to finer LODs
+        // (showing full detail) when the camera is close. Children are emitted
+        // above, so child['0'].data is already resolved (cascades through
+        // multi-level chains).
+        if (!data && child['0'] && child['0'].data && child['0'].data['3dgs']) {
+            const cd = child['0'].data['3dgs'] as { name: number; start: number; count: number };
+            data = { '3dgs': { name: cd.name, start: cd.start, count: 1 } };
+        }
+        return { id: node.id, boundingBox: node.aabb, childNum: node.child.length, data, child };
+    };
 
-    const id = getNodeId(depth, nodeIdx);
-    const aabb = nodeAabbs[depth][nodeIdx];
-    const ref = nodeRefs[depth][nodeIdx];
-    const data = ref && ref.count > 0 ? { '3dgs': ref } : null;
-
-    if (depth === treeDepth) {
-        return { id, boundingBox: aabb, childNum: 0, data };
-    }
-
-    // All depths >=1 use binary splitting (2 children).
-    // The 8-way octree split only occurs at depth 0→1, handled manually when
-    // building the root's children.
-    const branchFactor = 2;
-    const childNodes: (any)[] = [];
-    for (let m = 0; m < branchFactor; ++m) {
-        const cIdx = nodeIdx * branchFactor + m;
-        const c = buildLcc2TreeNode(depth + 1, cIdx, treeDepth, leafBits, nodeAabbs, nodeRefs, leafCount);
-        if (c) childNodes.push(c);
-    }
     const child: Record<string, any> = {};
-    for (let i = 0; i < childNodes.length; ++i) {
-        child[String(i)] = childNodes[i];
+    if (root.child) {
+        for (let i = 0; i < root.child.length; ++i) {
+            child[String(i)] = emit(root.child[i]);
+        }
     }
-    return { id, boundingBox: aabb, childNum: childNodes.length, data, child };
+    return {
+        id: root.id,
+        boundingBox: root.aabb,
+        childNum: root.child?.length ?? 0,
+        data: null,
+        splatFiles,
+        meshFiles: [] as string[],
+        bvhFiles: [] as string[],
+        child
+    };
 };
 
 // LCC2 (Lixel CyberColor 2) directory-format serialization. Phase 1 writes a
 // single LOD; Phase 2 (lodLevels>1) builds a multi-level LOD tree.
 //
-// Phase 2 LOD generation:
-//   - A round-robin axis binary tree of depth L is built on the finest splats.
-//   - LOD level k (0=finest..L-1=coarsest) is a 1/2^k interval sample of the
-//     finest, binned by depth-(L-k) tree node. Each node's [start,count] is a
-//     contiguous span in its level's chunk.
-//   - The finest level (k=0) is written directly from the original DataTable
-//     with `indices` = the node-ordered full permutation (no clone; writeSog
-//     skips its internal Morton sort and emits in our order).
-//   - Coarser levels (k≥1) are written from a `clone({ rows })` subset (sized
-//     to N/2^k, never full-size) with identity `indices` to preserve node
-//     order. Peak memory = finest + one smaller clone.
+// Phase 2 LOD generation (adaptive hybrid tree):
+//   - An adaptive tree of depth L is built on the finest splats. Each node
+//     either chains (childNum=1, same AABB → LOD link to next-finer level in
+//     the same spatial cell) or splits (octree 8-way, empty octants dropped →
+//     spatial subdivision for streaming granularity). See buildAdaptiveLcc2Tree.
+//   - LOD level k (0=finest..L-1=coarsest) samples each cell's finestIndices
+//     at rate = 1 - 0.9*k/(L-1): LOD0=100%, LOD(L-1)=10%, linear in between.
+//     This guarantees strictly decreasing fidelity per level (no duplicates),
+//     with the coarsest level always holding 10% — unlike the old step=2^k
+//     scheme which collapsed to 100/50/25/12.5… and starved coarse LODs.
+//   - All depth-D nodes' samples are concatenated into one or more .sog chunks
+//     (≤ SOG_CHUNK_TARGET splats each); each node's {name, start, count} points
+//     into its level's chunk(s).
+//   - The finest level (k=0, rate=100%) is written directly from the finest
+//     DataTable with `indices` = the node-ordered full permutation (no clone;
+//     writeSog skips its internal Morton sort and emits in our order).
+//   - Coarser levels (k≥1) are written from a column-by-column subset (sized
+//     to N×rate, never full-size) with identity `indices` to preserve node
+//     order. Peak memory = finest + one smaller subset.
 //   - splatFiles is ordered coarsest→finest (depth 1 → index 0), matching the
-//     reference sample; node.data.3dgs.name = depth-1.
+//     reference sample; node.data.3dgs.name = the splatFiles index of the
+//     chunk holding that node's LOD-D data.
+//   - Node count grows LINEARLY with L (≈ cells × L), so the UE plugin can
+//     traverse high-LOD trees without freezing — unlike the old fixed binary
+//     tree whose 2^(L+2) leaves froze the plugin for L > 6.
 const serializeLcc2 = async (splats: Splat[], options: Lcc2ExportOptions, fs: FileSystem): Promise<void> => {
     const { name, serializeSettings, splatIdx } = options;
-    const { iterations = 10, events } = serializeSettings;
+    const { iterations = 0, events } = serializeSettings;
     const splatType = options.splatType ?? '.sog';
-    // Clamp lodLevels to [1,6]. Max 6 matches UE plugin compatibility.
-    let lodLevels = Math.max(1, Math.min(6, options.lodLevels ?? 6));
+    // Clamp lodLevels to [1,20]. Max 20 matches the UE plugin's EndLevel cap
+    // (LCCMacro.h). The adaptive hybrid tree keeps node count linear in L, so
+    // values up to 20 are safe — unlike the old binary tree which froze the
+    // plugin past 6.
+    let lodLevels = Math.max(1, Math.min(20, options.lodLevels ?? 6));
 
     const selectedSplats = splatIdx?.length ? splatIdx.map(i => splats[i]) : splats;
 
     await fs.mkdir(`${name}/data/3dgs`);
 
     configureSplatTransform();
-    splatTransformLogger.setRenderer(createProgressRenderer('Exporting LCC2', events));
+
+    // Custom progress renderer: suppresses progressStart/progressEnd (dialog
+    // lifecycle managed manually) and shows "正在导出 LOD{N}" instead of raw
+    // splat-transform step names like "k-means". Sub-step bar progress is
+    // suppressed to prevent resetting the cumulative percentage.
+    let currentExportLod = -1;
+    let lodExportProgress = 0;
+    splatTransformLogger.setRenderer({
+        handle: (event: LogEvent) => {
+            switch (event.kind) {
+                case 'scopeStart':
+                    if (event.depth > 0) {
+                        const label = currentExportLod >= 0 ? `正在导出 LOD${currentExportLod}` : event.name;
+                        events?.fire('progressUpdate', { text: `${label}  —  ${lodExportProgress}%` });
+                    }
+                    break;
+                case 'scopeEnd':
+                    break;
+                case 'barStart':
+                case 'barTick':
+                case 'barEnd':
+                    break;
+                case 'message':
+                    if (event.level === 'error') console.error(event.text);
+                    else if (event.level === 'warn') console.warn(event.text);
+                    break;
+            }
+        }
+    });
+
+    events?.fire('progressStart', 'Exporting LCC2');
+
+    // Cap maxSHBands to the source splats' actual SH bands. extractDataTable
+    // allocates Float32Array(totalCount) per output column; if the user requests
+    // SH=3 (59 cols) but the source is SH=0 (14 cols), the 45 f_rest columns
+    // are zero-filled — wasting N×45×4 bytes (e.g. 35.7M splats → 3.2 GB) and
+    // pushing peak memory past the ~4 GB renderer limit ("Array buffer
+    // allocation failed"). Mirrors serializePlyCompressed's outputSHBands logic.
+    const requestedSHBands = serializeSettings.maxSHBands ?? 3;
+    const sourceMaxSHBands = Math.max(...selectedSplats.map(s => calcSHBands(getVertexProperties(s.splatData))));
+    const maxSHBands = Math.min(requestedSHBands, sourceMaxSHBands);
+    if (maxSHBands < requestedSHBands) {
+        console.warn(
+            `[LCC2] Source SH=${sourceMaxSHBands} < requested SH=${requestedSHBands}; ` +
+            `capping to SH=${maxSHBands} (avoids zero-fill column OOM)`
+        );
+    }
+    const exportSettings: SerializeSettings = { ...serializeSettings, maxSHBands };
 
     // Build the splat-transform DataTable ONCE (PLY space). SingleSplat.read
     // pre-applies the PLY-style 180° Z flip + world transform.
-    const dataTable = extractDataTable(selectedSplats, serializeSettings);
+    const dataTable = extractDataTable(selectedSplats, exportSettings);
     const N = dataTable.numRows;
 
     // Convert PLY-space data to LCC2-native space (in-place). Done before any
     // clone so coarser-level subsets inherit the transform.
-    const maxSHBands = serializeSettings.maxSHBands ?? 3;
     const boundingBox = applyLcc2CoordinateTransform(dataTable, maxSHBands);
 
     const fileType = maxSHBands > 0 ? 'quality' : 'portable';
@@ -1867,10 +2075,20 @@ const serializeLcc2 = async (splats: Splat[], options: Lcc2ExportOptions, fs: Fi
         //   - safeTreeDepth: minimum for chunk safety (per-depth total ≤ SOG_CHUNK_TARGET)
         //   - User slider value is honored; only raised when needed for chunk safety.
         //   - Per-depth merging means small nodes don't cause file explosion.
+        //   - Max 20 = UE plugin's EndLevel cap (LCCMacro.h). The adaptive tree
+        //     keeps node count linear in L, so values up to 20 are safe.
         const SOG_CHUNK_TARGET = 3_000_000;
+        // Per-cell spatial split threshold (~500K splats). Cells below this
+        // size chain (LOD link) instead of splitting. This is deliberately
+        // much smaller than SOG_CHUNK_TARGET because the chunking loop
+        // already packs multiple spatial cells into one .sog file (up to
+        // SOG_CHUNK_TARGET). A smaller split threshold creates more spatial
+        // cells → finer LOD granularity → the UE plugin renders fewer splats
+        // per visible node (fewer draw calls per cell). The source XGRIDS
+        // format uses ~400K max per cell; targeting ~500K matches that.
+        const SPLIT_TARGET = 500_000;
         const safeTreeDepth = Math.max(1, Math.ceil(Math.log2(N / SOG_CHUNK_TARGET)) - 2);
-        const treeDepth = Math.min(10, Math.max(safeTreeDepth, lodLevels));
-        const leafBits = treeDepth + 2; // 3 octree + (treeDepth-1) binary
+        const treeDepth = Math.min(20, Math.max(safeTreeDepth, lodLevels));
         if (treeDepth > lodLevels) {
             console.warn(
                 `[LCC2] auto-raised lodLevels ${lodLevels}→${treeDepth} ` +
@@ -1885,8 +2103,13 @@ const serializeLcc2 = async (splats: Splat[], options: Lcc2ExportOptions, fs: Fi
 
         if (treeDepth <= 1) {
             // ---- Phase 1: single LOD ----
-            const lodFileName = `${name}_LOD0_0.sog`;
+            const lodFileName = '0_0.sog';
             const chunkPath = `${name}/data/3dgs/${lodFileName}`;
+
+            currentExportLod = 0;
+            lodExportProgress = 100;
+            events?.fire('progressUpdate', { text: '正在导出 LOD0  —  0%', progress: 0 });
+
             await writeSogInternal({
                 filename: chunkPath,
                 dataTable,
@@ -1894,6 +2117,8 @@ const serializeLcc2 = async (splats: Splat[], options: Lcc2ExportOptions, fs: Fi
                 iterations,
                 createDevice: createGpuDevice
             }, fs);
+
+            events?.fire('progressUpdate', { text: `LOD 0: ${N.toLocaleString()} splats  —  100%`, progress: 100 });
             splatFiles.push(`data/3dgs/${lodFileName}`);
             lodSplats.push(N);
             root = {
@@ -1914,118 +2139,120 @@ const serializeLcc2 = async (splats: Splat[], options: Lcc2ExportOptions, fs: Fi
                 }
             };
         } else {
-            // ---- Phase 2: multi-level LOD with per-depth chunking ----
+            // ---- Phase 2: multi-level LOD with adaptive hybrid tree ----
             //
-            // Each depth D (1..treeDepth) holds one LOD level. All nodes at
-            // depth D are concatenated into one contiguous DataTable, which is
-            // written as 1..N .sog files (chunks <= SOG_CHUNK_TARGET splats).
-            // Each node gets {name, start, count} into the level's files.
-            // This matches the reference structure: 雕像群 = ~6 files/level.
+            // The adaptive tree is built once on the finest splats
+            // (buildAdaptiveLcc2Tree). Each depth D (1..treeDepth) holds one
+            // LOD level; nodes at depth D are collected and their finestIndices
+            // are interval-sampled at step 2^(treeDepth-D) to produce that
+            // level's data. All depth-D samples are concatenated into 1..N
+            // .sog chunks (≤ SOG_CHUNK_TARGET splats each); each node's
+            // {name, start, count} points into its level's chunk(s).
             const xs = dataTable.getColumnByName('x')!.data as Float32Array;
             const ys = dataTable.getColumnByName('y')!.data as Float32Array;
             const zs = dataTable.getColumnByName('z')!.data as Float32Array;
 
-            console.warn(`[LCC2] building octree: N=${N.toLocaleString()}, leafBits=${leafBits} treeDepth=${treeDepth}`);
-            const { leafNode, leafCount, nodeAabbs } = buildLcc2SpatialTree(xs, ys, zs, N, leafBits, boundingBox);
-            console.warn(`[LCC2] octree done, ${1 << leafBits} leaves`);
+            events?.fire('progressUpdate', { text: 'Building spatial tree…  —  0%', progress: 0 });
+            console.warn(`[LCC2] building adaptive tree: N=${N.toLocaleString()}, treeDepth=${treeDepth}`);
+            const adaptiveRoot = buildAdaptiveLcc2Tree(xs, ys, zs, N, treeDepth, boundingBox, SPLIT_TARGET);
+            assignAdaptiveNodeIds(adaptiveRoot);
+            const depth1Count = adaptiveRoot.child?.length ?? 0;
+            // Count total nodes for logging.
+            let totalNodes = 0;
+            const countNodes = (n: AdaptiveNode) => {
+                totalNodes++;
+                if (n.child) for (const c of n.child) countNodes(c);
+            };
+            if (adaptiveRoot.child) for (const c of adaptiveRoot.child) countNodes(c);
+            console.warn(`[LCC2] adaptive tree done: ${depth1Count} root children, ${totalNodes} total nodes`);
 
-            // nodeRefs[D][n] = {name, start, count}. name=index into splatFiles.
-            const nodeRefs: Lcc2NodeRef[][] = [null as never];
+            // nodeRefs maps each AdaptiveNode to its {name, start, count} chunk ref.
+            const nodeRefs = new Map<AdaptiveNode, Lcc2NodeRef>();
             const lodSplatsByLevel = new Array(treeDepth).fill(0);
             // Track chunk index per LOD level; k=0=finest.
             const chunkIdxByLevel = new Array(treeDepth).fill(0);
             const srcCols = dataTable.columns;
             const numCols = srcCols.length;
 
+            // LOD 精细度动态采样率：LOD0 (finest) = 100%, LOD(L-1) (coarsest) = 10%,
+            // 中间线性递减。保证各级别精细度严格递减且不重复（用户要求：从 lod0
+            // 开始依次递减，最小一级永远 10%）。L=1 时单 LOD = 100%。
+            // 旧逻辑用 step=2^k 导致 100/50/25/12.5... 粗糙 LOD 数据过少。
+            const lodRate = (k: number): number => (treeDepth === 1 ? 1 : 1 - 0.9 * k / (treeDepth - 1));
+
+            // Pre-compute estimated total splats for weighted progress.
+            let totalEstimatedSplats = 0;
+            for (let D = 1; D <= treeDepth; ++D) {
+                const k = treeDepth - D;
+                totalEstimatedSplats += Math.ceil(N * lodRate(k));
+            }
+            let cumulativeSplats = 0;
+
+            events?.fire('progressUpdate', { text: `Writing ${treeDepth} LOD levels (${totalEstimatedSplats.toLocaleString()} splats total)…  —  1%`, progress: 1 });
+
             // Encode coarsest (depth 1) → finest (depth treeDepth).
             for (let D = 1; D <= treeDepth; ++D) {
                 const k = treeDepth - D;     // LOD level index (0=finest)
-                const step = Math.max(1, Math.round(1 + k * 0.5)); // LOD0=1(100%)→LOD5=4(25%)
-                const shift = leafBits - D - 2;
-                const numNodes = 1 << (D + 2); // depth 1=8, depth 2=16, ...
-                const refs: Lcc2NodeRef[] = new Array(numNodes);
+                const rate = lodRate(k);     // 动态采样率：100% → 10% 线性递减
+                const nodesAtD = collectNodesAtDepth(adaptiveRoot, D);
 
-                // ---- Pass 1: count samples per node ----
-                const counts = new Uint32Array(numNodes);
-                for (let i = 0; i < N; i += step) {
-                    counts[leafNode[i] >> shift]++;
-                }
-
-                // Force at least one sample for nodes that have splats but were
-                // missed by interval sampling (sparse regions at coarser LODs).
-                // Without this, nodes get data:null bounding boxes which crash
-                // the UE plugin's LCC2Tree::ComputeError with a null-pointer
-                // access at offset 0x128.
-                for (let n = 0; n < numNodes; ++n) {
-                    if (counts[n] > 0) continue;
-                    const ls = n << shift;
-                    const le = ls + (1 << shift);
-                    let sc = 0;
-                    for (let l = ls; l < le; ++l) sc += leafCount[l];
-                    if (sc === 0) continue;
-                    for (let i = 0; i < N; ++i) {
-                        if ((leafNode[i] >> shift) === n) {
-                            counts[n] = 1;
-                            break;
-                        }
-                    }
-                }
-
-                // ---- Pass 2: collect per-node indices and build per-depth total ----
-                // nodeIndices[n]: sorted finest indices belonging to this node
-                const nodeIndicesArr: Uint32Array[] = new Array(numNodes);
-                // nodeOffsets[n]: start position of node n in the depth-level concatenation
-                const nodeOffsets: number[] = new Array(numNodes + 1);
+                // ---- Pass 1: count LOD samples per node (no subset allocation yet) ----
+                const counts: number[] = new Array(nodesAtD.length);
                 let levelTotal = 0;
-                for (let n = 0; n < numNodes; ++n) {
-                    nodeOffsets[n] = levelTotal;
-                    const cnt = counts[n];
-                    if (cnt === 0) continue;
-                    const indices = new Uint32Array(cnt);
-                    let w = 0;
-                    for (let i = 0; i < N; i += step) {
-                        if ((leafNode[i] >> shift) === n) indices[w++] = i;
-                    }
-                    // Fallback full scan for forced nodes (missed by interval sampling)
-                    if (w < cnt) {
-                        for (let i = 0; i < N && w < cnt; ++i) {
-                            if ((leafNode[i] >> shift) === n) indices[w++] = i;
-                        }
-                    }
-                    nodeIndicesArr[n] = indices;
+                for (let i = 0; i < nodesAtD.length; ++i) {
+                    const nodeLen = nodesAtD[i].finestIndices.length;
+                    // rate=1 → 全量; rate=0.1 → 10%。至少 1 个点保证非空节点有数据。
+                    const cnt = Math.max(1, Math.ceil(nodeLen * rate));
+                    counts[i] = cnt;
                     levelTotal += cnt;
                 }
-                nodeOffsets[numNodes] = levelTotal;
-                console.warn(`[LCC2] LOD${k}/depth${D}: ${numNodes - counts.filter(c => c === 0).length}/${numNodes} non-empty nodes, ${levelTotal.toLocaleString()} splats`);
+                console.warn(`[LCC2] LOD${k}/depth${D}: ${nodesAtD.length} nodes, ${levelTotal.toLocaleString()} splats (rate=${(rate * 100).toFixed(1)}%)`);
 
                 if (levelTotal === 0) {
-                    for (let n = 0; n < numNodes; ++n) refs[n] = { name: -1, start: 0, count: 0 };
-                    nodeRefs[D] = refs;
                     continue;
                 }
 
-                // ---- Pass 3: write files in chunks <= SOG_CHUNK_TARGET ----
-                let fileStartNode = 0;
-                let fileSplatOffset = 0;
-                while (fileStartNode < numNodes) {
-                    // Find end node for this chunk.
+                // ---- Pass 2: write files in chunks <= SOG_CHUNK_TARGET ----
+                // Double-buffered pipeline: while chunk N's writeSogInternal is
+                // awaiting worker WebP encoding, the main thread concurrently
+                // prepares chunk N+1's chunkTable (pure CPU column subset). Two
+                // writeSogInternal calls never overlap (they share one cached
+                // GPU device + backbuffer via createGpuDevice), but the CPU
+                // gather/subset work is hidden behind the worker WebP time.
+                // Peak memory = finest DataTable + current chunk + prefetched
+                // next chunk (each ≤ SOG_CHUNK_TARGET splats).
+                // Display offset by -1: k=0 (finest, 100%) is the pristine source
+                // and not a decimated "LOD level", so it falls back to the raw
+                // step name (currentExportLod=-1). Coarser levels k≥1 map to
+                // LOD0..LOD(treeDepth-2), matching UE plugin's 0-based LOD indexing
+                // where LOD0 is the first decimated level.
+                currentExportLod = k - 1;
+                lodExportProgress = Math.round(100 * (cumulativeSplats + levelTotal) / totalEstimatedSplats);
+
+                // Build a chunk's chunkTable + identity indices (pure CPU, no I/O).
+                // Returns null when no more nodes remain.
+                const prepareChunk = (startNode: number) => {
                     let chunkSplatCount = 0;
-                    let endNode = fileStartNode;
-                    while (endNode < numNodes) {
+                    let endNode = startNode;
+                    while (endNode < nodesAtD.length) {
                         const nxt = chunkSplatCount + counts[endNode];
                         if (nxt > 0 && nxt > SOG_CHUNK_TARGET) break; // don't split a node mid-way
                         chunkSplatCount = nxt;
                         endNode++;
                     }
-                    if (chunkSplatCount === 0) break;
+                    if (chunkSplatCount === 0) return null;
 
-                    // Build chunk DataTable: concatenate indices of nodes [fileStartNode..endNode-1].
+                    // Uniformly sample `cnt` points from each node's finestIndices
+                    // (idx = floor(j * nodeLen / cnt)) and concatenate
+                    // [startNode..endNode-1]. rate=1 → 全量; rate=0.1 → 均匀取 10%.
                     const chunkIndices = new Uint32Array(chunkSplatCount);
                     let wi = 0;
-                    for (let n = fileStartNode; n < endNode; ++n) {
-                        if (counts[n] > 0) {
-                            chunkIndices.set(nodeIndicesArr[n], wi);
-                            wi += counts[n];
+                    for (let n = startNode; n < endNode; ++n) {
+                        const finest = nodesAtD[n].finestIndices;
+                        const cnt = counts[n];
+                        const nodeLen = finest.length;
+                        for (let j = 0; j < cnt; ++j) {
+                            chunkIndices[wi++] = finest[Math.floor(j * nodeLen / cnt)];
                         }
                     }
 
@@ -2039,77 +2266,86 @@ const serializeLcc2 = async (splats: Splat[], options: Lcc2ExportOptions, fs: Fi
                     }
                     const chunkTable = new DataTable(chunkCols, dataTable.transform);
 
-                    const chunkIdx = chunkIdxByLevel[k]++;
-                    const lodFileName = `${name}_LOD${k}_${chunkIdx}.sog`;
-                    const chunkPath = `${name}/data/3dgs/${lodFileName}`;
-                    events?.fire('progressUpdate', {
-                        text: `depth ${D}/${treeDepth}: ${chunkSplatCount.toLocaleString()} splats`,
-                        progress: 100 * D / treeDepth
-                    });
-                    console.warn(`[LCC2] LOD${k}/chunk${chunkIdx}: nodes[${fileStartNode}..${endNode - 1}] ${chunkSplatCount.toLocaleString()} splats → ${chunkPath}`);
-
                     const identity = new Uint32Array(chunkSplatCount);
                     for (let i = 0; i < chunkSplatCount; ++i) identity[i] = i;
-                    await writeSogInternal({
-                        filename: chunkPath,
-                        dataTable: chunkTable,
+
+                    const chunkIdx = chunkIdxByLevel[k]++;
+                    const firstNode = nodesAtD[startNode];
+                    const lodFileName = `${firstNode.id}.sog`;
+                    const chunkPath = `${name}/data/3dgs/${lodFileName}`;
+                    console.warn(`[LCC2] LOD${k}/chunk${chunkIdx}: nodes[${startNode}..${endNode - 1}] ${chunkSplatCount.toLocaleString()} splats → ${chunkPath}`);
+
+                    return { startNode, endNode, chunkTable, identity, lodFileName, chunkPath, chunkIdx };
+                };
+
+                // Record splatFiles entry + per-node refs after a chunk's write completes.
+                const finalizeChunk = (info: { startNode: number; endNode: number; lodFileName: string; chunkIdx: number }) => {
+                    const fileIdx = splatFiles.length;
+                    splatFiles.push(`data/3dgs/${info.lodFileName}`);
+                    console.warn(`[LCC2] LOD${k}/chunk${info.chunkIdx}: done`);
+                    let nodeOffset = 0;
+                    for (let n = info.startNode; n < info.endNode; ++n) {
+                        nodeRefs.set(nodesAtD[n], { name: fileIdx, start: nodeOffset, count: counts[n] });
+                        lodSplatsByLevel[k] += counts[n];
+                        nodeOffset += counts[n];
+                    }
+                    (globalThis as { gc?: () => void }).gc?.();
+                };
+
+                // Pipeline: prefetch chunk N+1's chunkTable while chunk N's
+                // writeSogInternal awaits worker WebP. writeSogInternal returns
+                // a Promise after its synchronous gather/k-means setup reaches
+                // the first worker await; the synchronous prepareChunk() for the
+                // next chunk then runs concurrently with N's worker WebP.
+                let cursor = 0;
+                let nextInfo = prepareChunk(cursor);
+                while (nextInfo) {
+                    cursor = nextInfo.endNode;
+
+                    // Start chunk N's write (returns Promise; runs gather/k-means
+                    // then awaits worker WebP).
+                    const writePromise = writeSogInternal({
+                        filename: nextInfo.chunkPath,
+                        dataTable: nextInfo.chunkTable,
                         bundle: true,
                         iterations,
                         createDevice: createGpuDevice,
-                        indices: identity
+                        indices: nextInfo.identity
                     }, fs);
+                    const currentInfo = nextInfo;
 
-                    const fileIdx = splatFiles.length;
-                    splatFiles.push(`data/3dgs/${lodFileName}`);
-                    console.warn(`[LCC2] LOD${k}/chunk${chunkIdx}: done`);
+                    // Prefetch chunk N+1's chunkTable on the main thread while
+                    // chunk N's worker WebP encodes. This is pure CPU column
+                    // copy — does not touch the shared GPU device.
+                    nextInfo = prepareChunk(cursor);
 
-                    // Assign refs for nodes in this chunk.
-                    let nodeOffset = 0;
-                    for (let n = fileStartNode; n < endNode; ++n) {
-                        const cnt = counts[n];
-                        if (cnt > 0) {
-                            refs[n] = { name: fileIdx, start: nodeOffset, count: cnt };
-                            lodSplatsByLevel[k] += cnt;
-                        } else {
-                            refs[n] = { name: -1, start: 0, count: 0 };
-                        }
-                        nodeOffset += cnt;
-                    }
-
-                    fileStartNode = endNode;
-                    fileSplatOffset += chunkSplatCount;
-                    (globalThis as { gc?: () => void }).gc?.();
+                    // Await chunk N complete before starting chunk N+1's write
+                    // (shared GPU device — no concurrent writeSogInternal).
+                    await writePromise;
+                    finalizeChunk(currentInfo);
                 }
 
-                nodeRefs[D] = refs;
+                cumulativeSplats += levelTotal;
+                const progressPercent = Math.round(100 * cumulativeSplats / totalEstimatedSplats);
+                events?.fire('progressUpdate', {
+                    text: `LOD ${k} (${D}/${treeDepth}): ${levelTotal.toLocaleString()} splats  —  ${progressPercent}%`,
+                    progress: progressPercent
+                });
             }
 
-            // Coarsest-first order matching reference convention.
-            for (let k = treeDepth - 1; k >= 0; --k) lodSplats.push(lodSplatsByLevel[k]);
+            // Finest-first order matching the source/reference convention
+            // (lodSplats[0] = LOD0 = finest = largest count). The UE plugin
+            // indexes lodSplats by LOD level; reversed order mislabels levels.
+            for (let k = 0; k < treeDepth; ++k) lodSplats.push(lodSplatsByLevel[k]);
 
-            // Assemble the nested tree. Root children = 8 octants at depth 1.
-            const child: Record<string, any> = {};
-            let childNum = 0;
-            for (let oct = 0; oct < 8; ++oct) {
-                const c = buildLcc2TreeNode(1, oct, treeDepth, leafBits, nodeAabbs, nodeRefs, leafCount);
-                if (c) {
-                    child[String(childNum++)] = c;
-                }
-            }
-            root = {
-                id: '0',
-                boundingBox,
-                childNum,
-                data: null,
-                splatFiles,
-                meshFiles: [] as string[],
-                bvhFiles: [] as string[],
-                child
-            };
+            // Assemble the nested tree JSON from the adaptive tree.
+            root = emitAdaptiveTreeJson(adaptiveRoot, nodeRefs, splatFiles);
         }
     } catch (err) {
         splatTransformLogger.unwindAll(true);
         throw err;
+    } finally {
+        events?.fire('progressEnd');
     }
 
     const totalSplats = lodSplats.reduce((a, b) => a + b, 0);
@@ -2166,6 +2402,538 @@ const serializeLcc2 = async (splats: Splat[], options: Lcc2ExportOptions, fs: Fi
     }
 };
 
+// Multi-LOD LCC2 export from a Splat with a LodEditLog. Unlike serializeLcc2
+// (which sub-samples a single DataTable), this streams each LOD level from the
+// original LCC file, replays deletions from the LodEditLog, and writes one
+// .sog chunk per spatial-tree-node-group per LOD. The adaptive tree is built
+// on the finest LOD (LOD 0); coarser LODs are binned into the same tree by
+// AABB containment (tree descent per splat).
+//
+// Memory: peak = finest LOD + one cached coarser LOD. Each LOD is released
+// before the next is loaded. GC is hinted between LODs.
+//
+// Requires splat.lodEditLog, splat.lccFilePath, splat.lccFileSystem, and
+// splat.lodCounts.length >= 2. Falls back to serializeLcc2 otherwise.
+const serializeLcc2FromLodLog = async (
+    splat: Splat,
+    options: Lcc2ExportOptions,
+    fs: FileSystem
+): Promise<void> => {
+    const { name, serializeSettings } = options;
+    const { iterations = 0, events } = serializeSettings;
+    const splatType = options.splatType ?? '.sog';
+
+    // Cap maxSHBands to the source file's actual SH bands. loadLodForExport
+    // calls extractDataTable with these settings; if the user requests SH=3
+    // (59 cols) but the source LCC2 is "portable" (SH=0, 14 cols), the 45
+    // f_rest columns are zero-filled — wasting N×45×4 bytes and pushing peak
+    // memory past the ~4 GB renderer limit. For LOD1 (17.8M splats) this is
+    // 4.2 GB → "Array buffer allocation failed". Capping to source SH drops
+    // LOD1 to 1.0 GB. The source's SH bands are the same across all LODs
+    // (same file), so a single upfront detection is valid.
+    const requestedSHBands = serializeSettings.maxSHBands ?? 3;
+    const sourceMaxSHBands = calcSHBands(getVertexProperties(splat.splatData));
+    const maxSHBands = Math.min(requestedSHBands, sourceMaxSHBands);
+    if (maxSHBands < requestedSHBands) {
+        console.warn(
+            `[LCC2] Source SH=${sourceMaxSHBands} < requested SH=${requestedSHBands}; ` +
+            `capping to SH=${maxSHBands} (avoids zero-fill column OOM in loadLodForExport)`
+        );
+    }
+    const exportSettings: SerializeSettings = { ...serializeSettings, maxSHBands };
+
+    const { lccFilePath, lccFileSystem, lodCounts, lodEditLog, currentLodIndex } = splat;
+    if (!lccFilePath || !lccFileSystem || !lodEditLog) {
+        throw new Error('[LCC2] serializeLcc2FromLodLog requires lccFilePath, lccFileSystem, and lodEditLog');
+    }
+    const numLods = lodCounts.length;
+    if (numLods < 2) {
+        throw new Error('[LCC2] serializeLcc2FromLodLog requires a multi-LOD source file (numLods >= 2)');
+    }
+
+    await fs.mkdir(`${name}/data/3dgs`);
+    configureSplatTransform();
+
+    // Show progress immediately — tree building + LOD loading happen before the
+    // first writeSogInternal call (which is when createProgressRenderer normally
+    // fires its first event). Without this the user sees nothing for ~minutes.
+    events?.fire('progressStart', 'Exporting LCC2 (Multi-LOD)');
+    events?.fire('progressUpdate', { text: 'Building spatial tree…  —  1%', progress: 1 });
+
+    // Custom progress renderer: unlike createProgressRenderer, this does NOT
+    // fire progressStart (dialog reset) or progressEnd (dialog hide) — we
+    // manage the dialog lifecycle manually to prevent flickering between LOD
+    // levels. Sub-step bar progress is also suppressed to avoid resetting the
+    // cumulative percentage. Instead, we show "正在导出 LOD{N}" with the
+    // current cumulative progress.
+    let currentExportLod = -1;
+    let lodExportProgress = 5;
+    splatTransformLogger.setRenderer({
+        handle: (event: LogEvent) => {
+            switch (event.kind) {
+                case 'scopeStart':
+                    if (event.depth > 0) {
+                        const label = currentExportLod >= 0 ? `正在导出 LOD${currentExportLod}` : event.name;
+                        events?.fire('progressUpdate', { text: `${label}  —  ${lodExportProgress}%` });
+                    }
+                    // depth===0: suppress (would fire progressStart, resetting dialog)
+                    break;
+                case 'scopeEnd':
+                    // Suppress — would fire progressEnd, hiding dialog between depths
+                    break;
+                case 'barStart':
+                case 'barTick':
+                case 'barEnd':
+                    // Suppress sub-step progress — would reset cumulative percentage
+                    break;
+                case 'message':
+                    if (event.level === 'error') console.error(event.text);
+                    else if (event.level === 'warn') console.warn(event.text);
+                    break;
+            }
+        }
+    });
+
+    // Load a LOD as a PLY-space DataTable (matching extractDataTable's output).
+    // For the current LOD, reuse the Splat's data directly (deletions/transforms
+    // already applied via EditHistory). For other LODs, stream-load from the
+    // source file, apply deletions from LodEditLog, then extract via a mock Splat
+    // that reuses the current Splat's entity/world-transform/color-grade.
+    // Does NOT apply applyLcc2CoordinateTransform — the caller does that.
+    const loadLodForExport = async (lodIndex: number, settings: SerializeSettings = exportSettings): Promise<DataTable> => {
+        if (lodIndex === currentLodIndex) {
+            return extractDataTable([splat], settings);
+        }
+
+        console.warn(`[LCC2] Loading LOD ${lodIndex} (${lodCounts[lodIndex].toLocaleString()} splats) from ${lccFilePath}`);
+        const rawDataTable = await loadLodDataTable(lccFilePath, lccFileSystem, lodIndex);
+
+        // Convert to GSplatData so extractDataTable's SingleSplat/SplatTransformCache
+        // can read properties via getProp.
+        const gsplatData = dataTableToGSplatData(rawDataTable);
+
+        // Add 'state' property (all 0) for GaussianFilter's deleted/selected checks.
+        if (!gsplatData.getProp('state')) {
+            gsplatData.getElement('vertex').properties.push({
+                type: 'uchar',
+                name: 'state',
+                storage: new Uint8Array(gsplatData.numSplats),
+                byteSize: 1
+            });
+        }
+
+        // Apply deletions from LodEditLog: mark deleted rows in the state array
+        // so GaussianFilter (inside extractDataTable) filters them out.
+        const state = gsplatData.getProp('state') as Uint8Array;
+        const xs = gsplatData.getProp('x') as Float32Array;
+        const ys = gsplatData.getProp('y') as Float32Array;
+        const zs = gsplatData.getProp('z') as Float32Array;
+        lodEditLog.applyDeletionsToState(state, xs, ys, zs, splat.worldTransform);
+
+        // Mock Splat: reuse the current Splat's entity (world transform), color
+        // grade properties, and provide a transformTexture whose getSource()
+        // returns null so SplatTransformCache treats all splats as untransformed
+        // (transformIndex = 0 → identity per-splat transform).
+        const mockSplat = {
+            splatData: gsplatData,
+            numSplats: gsplatData.numSplats,
+            transformTexture: { getSource: (): null => null },
+            transformPalette: null,
+            entity: splat.entity,
+            tintClr: splat.tintClr,
+            temperature: splat.temperature,
+            saturation: splat.saturation,
+            brightness: splat.brightness,
+            blackPoint: splat.blackPoint,
+            whitePoint: splat.whitePoint,
+            transparency: splat.transparency
+        } as unknown as Splat;
+
+        return extractDataTable([mockSplat], settings);
+    };
+
+    // ---- Build spatial tree from the finest LOD (LOD 0) ----
+    // Tree building only needs positions, not SH/color/opacity. Loading the
+    // full 59-column DataTable (10.5M × 59 × 4B = 2.5GB) freezes the UI for
+    // minutes. Use reduced maxSHBands=0 (14 columns) — the position transform
+    // is identical regardless of SH level, so the spatial tree is correct.
+    // Pass treeSettings explicitly so the file-load path also uses SH=0
+    // (previously the currentLodIndex!==0 branch called loadLodForExport with
+    // the full-SH exportSettings, wasting memory on columns the tree ignores).
+    const treeSettings: SerializeSettings = { ...serializeSettings, maxSHBands: 0 };
+    const treeLodForExport = (lodIndex: number): Promise<DataTable> => loadLodForExport(lodIndex, treeSettings);
+
+    console.warn(`[LCC2] Building spatial tree from finest LOD (${lodCounts[0].toLocaleString()} splats, SH=0)`);
+    const treeDataTable = await treeLodForExport(0);
+    // H4: treeLodForExport's file-load path holds rawDataTable (LOD 0) + the
+    // SH=0 extractDataTable result simultaneously. Hint GC to release
+    // rawDataTable/gsplatData before the export loop allocates coarser LODs.
+    (globalThis as { gc?: () => void }).gc?.();
+    const boundingBox = applyLcc2CoordinateTransform(treeDataTable, maxSHBands);
+    const treeN = treeDataTable.numRows;
+
+    if (treeN === 0) {
+        throw new Error('[LCC2] No splats to export after applying deletions to finest LOD');
+    }
+
+    const fileType = maxSHBands > 0 ? 'quality' : 'portable';
+    const guid = crypto.randomUUID().replace(/-/g, '');
+
+    const SOG_CHUNK_TARGET = 3_000_000;
+    const SPLIT_TARGET = 500_000;
+    const safeTreeDepth = Math.max(1, Math.ceil(Math.log2(treeN / SOG_CHUNK_TARGET)) - 2);
+    const userLodLevels = Math.max(1, Math.min(20, options.lodLevels ?? 6));
+    const treeDepth = Math.min(numLods, 20, Math.max(safeTreeDepth, userLodLevels));
+
+    if (treeDepth < userLodLevels) {
+        console.warn(`[LCC2] treeDepth capped at numLods=${numLods} (user requested ${userLodLevels})`);
+    }
+    if (treeDepth > userLodLevels) {
+        console.warn(`[LCC2] auto-raised lodLevels ${userLodLevels}→${treeDepth} (N=${treeN.toLocaleString()})`);
+    }
+
+    const shFactor = maxSHBands > 0 ? 1 : 0.25;
+    const estMin = Math.max(1, Math.round((treeN / 3.8e6) * 10 * shFactor));
+    console.warn(`[LCC2] N=${treeN.toLocaleString()} treeDepth=${treeDepth} numLods=${numLods} SH=${maxSHBands} est ~${estMin} min`);
+
+    // Pre-compute total estimated splats for weighted progress reporting.
+    // Each LOD's work (load + SOG encode) is roughly proportional to its
+    // splat count. Coarse LODs are tiny; the finest LOD dominates.
+    let totalEstimatedSplats = 0;
+    for (let D = 1; D <= treeDepth; ++D) {
+        const k = treeDepth - D;
+        const actualLod = Math.min(k, numLods - 1);
+        totalEstimatedSplats += lodCounts[actualLod];
+    }
+    let cumulativeSplats = 0;
+
+    const xs = treeDataTable.getColumnByName('x')!.data as Float32Array;
+    const ys = treeDataTable.getColumnByName('y')!.data as Float32Array;
+    const zs = treeDataTable.getColumnByName('z')!.data as Float32Array;
+
+    console.warn(`[LCC2] building adaptive tree: N=${treeN.toLocaleString()}, treeDepth=${treeDepth}`);
+    const adaptiveRoot = buildAdaptiveLcc2Tree(xs, ys, zs, treeN, treeDepth, boundingBox, SPLIT_TARGET);
+    assignAdaptiveNodeIds(adaptiveRoot);
+    const depth1Count = adaptiveRoot.child?.length ?? 0;
+    console.warn(`[LCC2] adaptive tree done: ${depth1Count} root children`);
+    events?.fire('progressUpdate', { text: `Writing ${treeDepth} LOD levels (${totalEstimatedSplats.toLocaleString()} splats total)…  —  5%`, progress: 5 });
+
+    const splatFiles: string[] = [];
+    const lodSplats: number[] = [];
+    const nodeRefs = new Map<AdaptiveNode, Lcc2NodeRef>();
+    const lodSplatsByLevel = new Array(treeDepth).fill(0);
+    const chunkIdxByLevel = new Array(treeDepth).fill(0);
+
+    // Cache the last loaded non-finest LOD to avoid reloading when consecutive
+    // depths map to the same LOD (happens when numLods < treeDepth).
+    let cachedLodIndex = -1;
+    let cachedLodDataTable: DataTable | null = null;
+
+    try {
+        // ---- Per-depth chunk writing ----
+        // Encode coarsest (depth 1) → finest (depth treeDepth).
+        for (let D = 1; D <= treeDepth; ++D) {
+            const k = treeDepth - D;          // LOD level index (0=finest)
+            const actualLod = Math.min(k, numLods - 1);
+
+            // Resolve the LOD DataTable for this depth.
+            let lodDataTable: DataTable;
+            if (actualLod === 0) {
+                // The finest LOD: use the tree-building DataTable directly.
+                // It already holds the finest-LOD data in LCC2 space, and
+                // its `finestIndices` are valid row indices into it (same
+                // extractDataTable path, same row order regardless of SH).
+                //
+                // The old code reloaded with full SH=3 settings when
+                // currentLodIndex===0, but for large datasets (e.g. 35.7M
+                // splats × 59 cols ≈ 8.4 GB) a single DataTable exceeds the
+                // browser's ~4 GB ArrayBuffer limit → "Array buffer
+                // allocation failed". The source file is typically
+                // "portable" (SH=0) anyway, so SH=3 columns would be zeros.
+                //
+                // If the tree was built with SH=0 but the source actually
+                // has SH data AND fits in memory, we could reload. For now,
+                // prefer correctness (no OOM) over hypothetical quality gain.
+                lodDataTable = treeDataTable;
+            } else if (actualLod === cachedLodIndex && cachedLodDataTable) {
+                lodDataTable = cachedLodDataTable;
+            } else {
+                // Release the previous cached LOD before loading a new one.
+                if (cachedLodDataTable) {
+                    cachedLodDataTable = null;
+                    (globalThis as { gc?: () => void }).gc?.();
+                }
+                cachedLodDataTable = await loadLodForExport(actualLod);
+                // H4: loadLodForExport's file-load path leaves rawDataTable +
+                // gsplatData (the full source-LOD DataTable) GC-eligible but
+                // not yet collected. Hint GC before the chunk-prep loop
+                // allocates per-chunk Float32Array copies, so peak memory is
+                // lodDataTable + treeDataTable instead of + rawDataTable.
+                (globalThis as { gc?: () => void }).gc?.();
+                cachedLodIndex = actualLod;
+                lodDataTable = cachedLodDataTable;
+            }
+
+            // Convert to LCC2 space (in-place). Coarser LODs loaded from file
+            // arrive in PLY space and need transform. The finest LOD is either
+            // already in LCC2 space (treeDataTable, when currentLodIndex !== 0)
+            // or freshly loaded + transformed above (when currentLodIndex === 0).
+            if (actualLod !== 0) {
+                applyLcc2CoordinateTransform(lodDataTable, maxSHBands);
+            }
+
+            const lodN = lodDataTable.numRows;
+            const lodXs = lodDataTable.getColumnByName('x')!.data as Float32Array;
+            const lodYs = lodDataTable.getColumnByName('y')!.data as Float32Array;
+            const lodZs = lodDataTable.getColumnByName('z')!.data as Float32Array;
+            const lodCols = lodDataTable.columns;
+            const numCols = lodCols.length;
+
+            const nodesAtD = collectNodesAtDepth(adaptiveRoot, D);
+
+            // ---- Bin LOD splats into depth-D nodes ----
+            // For the finest LOD (actualLod===0), the tree's `finestIndices` are
+            // already valid indices into `lodDataTable` (same row order as the
+            // tree-building DataTable — extractDataTable filters rows identically
+            // regardless of SH settings). Use them directly — O(1) per node.
+            // For coarser LODs, descend the tree per splat to find the containing
+            // depth-D node by AABB. O(D × max_children) per splat.
+            const nodeSubsets: (Uint32Array | null)[] = new Array(nodesAtD.length).fill(null);
+            const counts: number[] = new Array(nodesAtD.length).fill(0);
+            let levelTotal = 0;
+
+            if (actualLod === 0) {
+                // Finest LOD: finestIndices ARE the LOD-0 indices (step = 1).
+                for (let i = 0; i < nodesAtD.length; ++i) {
+                    const sub = nodesAtD[i].finestIndices;
+                    nodeSubsets[i] = sub;
+                    counts[i] = sub.length;
+                    levelTotal += sub.length;
+                }
+            } else {
+                // Coarser LOD: bin by AABB descent.
+                // Map node → index for O(1) lookup during descent.
+                const nodeIndex = new Map<AdaptiveNode, number>();
+                for (let i = 0; i < nodesAtD.length; ++i) nodeIndex.set(nodesAtD[i], i);
+
+                // Pass 1: count splats per node via tree descent.
+                for (let i = 0; i < lodN; ++i) {
+                    const node = findAdaptiveNodeAtDepth(adaptiveRoot, lodXs[i], lodYs[i], lodZs[i], D);
+                    if (node) {
+                        const idx = nodeIndex.get(node);
+                        if (idx !== undefined) counts[idx]++;
+                    }
+                }
+                // Allocate subset arrays.
+                for (let i = 0; i < nodesAtD.length; ++i) {
+                    if (counts[i] > 0) {
+                        nodeSubsets[i] = new Uint32Array(counts[i]);
+                        levelTotal += counts[i];
+                    }
+                }
+                // Pass 2: fill subsets.
+                const fill = new Uint32Array(nodesAtD.length);
+                for (let i = 0; i < lodN; ++i) {
+                    const node = findAdaptiveNodeAtDepth(adaptiveRoot, lodXs[i], lodYs[i], lodZs[i], D);
+                    if (node) {
+                        const idx = nodeIndex.get(node);
+                        if (idx !== undefined && nodeSubsets[idx]) {
+                            nodeSubsets[idx]![fill[idx]++] = i;
+                        }
+                    }
+                }
+            }
+            console.warn(`[LCC2] LOD${k}/depth${D}: ${nodesAtD.length} nodes, ${levelTotal.toLocaleString()} splats`);
+
+            if (levelTotal === 0) {
+                continue;
+            }
+
+            // Tell the progress renderer which LOD is being written. Pre-
+            // compute the expected final progress so "正在导出 LOD{N}" shows
+            // the destination percentage during SOG encoding.
+            // Display offset by -1: k=0 (finest, 100%) is the pristine source
+            // and not a decimated "LOD level", so it falls back to the raw
+            // step name (currentExportLod=-1). Coarser levels k≥1 map to
+            // LOD0..LOD(treeDepth-2), matching UE plugin's 0-based LOD indexing.
+            currentExportLod = k - 1;
+            lodExportProgress = 5 + Math.round(95 * (cumulativeSplats + levelTotal) / totalEstimatedSplats);
+
+            // ---- Write files in chunks <= SOG_CHUNK_TARGET ----
+            // Double-buffered pipeline: while chunk N's writeSogInternal awaits
+            // worker WebP encoding, the main thread concurrently prepares chunk
+            // N+1's chunkTable (pure CPU column subset). Two writeSogInternal
+            // calls never overlap (shared cached GPU device). See serializeLcc2
+            // for the same pattern. Peak memory = lodDataTable + current chunk
+            // + prefetched next chunk.
+            const prepareChunk = (startNode: number) => {
+                let chunkSplatCount = 0;
+                let endNode = startNode;
+                while (endNode < nodesAtD.length) {
+                    const nxt = chunkSplatCount + counts[endNode];
+                    if (nxt > 0 && nxt > SOG_CHUNK_TARGET) break;
+                    chunkSplatCount = nxt;
+                    endNode++;
+                }
+                if (chunkSplatCount === 0) return null;
+
+                const chunkIndices = new Uint32Array(chunkSplatCount);
+                let wi = 0;
+                for (let n = startNode; n < endNode; ++n) {
+                    const sub = nodeSubsets[n];
+                    if (sub) {
+                        chunkIndices.set(sub, wi);
+                        wi += counts[n];
+                    }
+                }
+
+                // Column-by-column from source for memory safety.
+                const chunkCols: Column[] = new Array(numCols);
+                for (let ci = 0; ci < numCols; ++ci) {
+                    const src = lodCols[ci].data as Float32Array;
+                    const dst = new Float32Array(chunkSplatCount);
+                    for (let i = 0; i < chunkSplatCount; ++i) dst[i] = src[chunkIndices[i]];
+                    chunkCols[ci] = new Column(lodCols[ci].name, dst);
+                }
+                const chunkTable = new DataTable(chunkCols, lodDataTable.transform);
+
+                const identity = new Uint32Array(chunkSplatCount);
+                for (let i = 0; i < chunkSplatCount; ++i) identity[i] = i;
+
+                const chunkIdx = chunkIdxByLevel[k]++;
+                const firstNode = nodesAtD[startNode];
+                const lodFileName = `${firstNode.id}.sog`;
+                const chunkPath = `${name}/data/3dgs/${lodFileName}`;
+                console.warn(`[LCC2] LOD${k}/chunk${chunkIdx}: nodes[${startNode}..${endNode - 1}] ${chunkSplatCount.toLocaleString()} splats → ${chunkPath}`);
+
+                return { startNode, endNode, chunkTable, identity, lodFileName, chunkPath, chunkIdx };
+            };
+
+            const finalizeChunk = (info: { startNode: number; endNode: number; lodFileName: string; chunkIdx: number }) => {
+                const fileIdx = splatFiles.length;
+                splatFiles.push(`data/3dgs/${info.lodFileName}`);
+                console.warn(`[LCC2] LOD${k}/chunk${info.chunkIdx}: done`);
+
+                let nodeOffset = 0;
+                for (let n = info.startNode; n < info.endNode; ++n) {
+                    if (counts[n] > 0) {
+                        nodeRefs.set(nodesAtD[n], { name: fileIdx, start: nodeOffset, count: counts[n] });
+                        lodSplatsByLevel[k] += counts[n];
+                    }
+                    nodeOffset += counts[n];
+                }
+                (globalThis as { gc?: () => void }).gc?.();
+            };
+
+            // Pipeline: prefetch chunk N+1's chunkTable while chunk N's
+            // writeSogInternal awaits worker WebP.
+            let cursor = 0;
+            let nextInfo = prepareChunk(cursor);
+            while (nextInfo) {
+                cursor = nextInfo.endNode;
+
+                const writePromise = writeSogInternal({
+                    filename: nextInfo.chunkPath,
+                    dataTable: nextInfo.chunkTable,
+                    bundle: true,
+                    iterations,
+                    createDevice: createGpuDevice,
+                    indices: nextInfo.identity
+                }, fs);
+                const currentInfo = nextInfo;
+
+                // Prefetch chunk N+1's chunkTable (pure CPU) while chunk N's
+                // worker WebP encodes.
+                nextInfo = prepareChunk(cursor);
+
+                // Await chunk N complete before starting chunk N+1's write
+                // (shared GPU device — no concurrent writeSogInternal).
+                await writePromise;
+                finalizeChunk(currentInfo);
+            }
+
+            cumulativeSplats += levelTotal;
+            const progressPercent = 5 + Math.round(95 * cumulativeSplats / totalEstimatedSplats);
+            events?.fire('progressUpdate', {
+                text: `LOD ${k} (${D}/${treeDepth}): ${levelTotal.toLocaleString()} splats  —  ${progressPercent}%`,
+                progress: progressPercent
+            });
+            lodExportProgress = progressPercent;
+        }
+
+        // Release cached LOD data.
+        if (cachedLodDataTable) {
+            cachedLodDataTable = null;
+            (globalThis as { gc?: () => void }).gc?.();
+        }
+
+        // Finest-first order matching the source/reference convention
+        // (lodSplats[0] = LOD0 = finest = largest count). The UE plugin
+        // indexes lodSplats by LOD level; reversed order mislabels levels.
+        for (let k = 0; k < treeDepth; ++k) lodSplats.push(lodSplatsByLevel[k]);
+
+        // Assemble the nested tree JSON from the adaptive tree.
+        const root = emitAdaptiveTreeJson(adaptiveRoot, nodeRefs, splatFiles);
+
+        const totalSplats = lodSplats.reduce((a, b) => a + b, 0);
+
+        const meta = {
+            version: '0.0.3',
+            name: name || 'ReSplat Lcc2 Splats',
+            description: 'ReSplat exported LCC2 splats (multi-LOD from LodEditLog)',
+            guid,
+            source: 'resplat',
+            dataType: 'Editor',
+            epsg: 0,
+            offset: [0, 0, 0],
+            shift: [0, 0, 0],
+            scale: [1, 1, 1],
+            fileType,
+            totalSplats,
+            lodSplats,
+            totalLevels: treeDepth,
+            splatType,
+            virtualLoD: null as null,
+            env: null as null,
+            splatExtraAttributes: null as null,
+            renderingHints: {
+                renderMethod: 'splatting',
+                renderMethodVariant: 'ewa',
+                sortingMethod: 'depth',
+                cameraModel: 'pinhole',
+                colorSpace: 'srgb_rec709_display'
+            },
+            root
+        };
+
+        // Write the metadata file
+        const jsonWriter = await fs.createWriter(`${name}/${name}.lcc2`);
+        await jsonWriter.write(new TextEncoder().encode(JSON.stringify(meta, null, 2)));
+        await jsonWriter.close();
+
+        // ZIP fallback (same as serializeLcc2).
+        if (fs instanceof MemoryFileSystem) {
+            const downloadFs = new BrowserFileSystem(`${name}.zip`);
+            const zipWriter = await downloadFs.createWriter(`${name}.zip`);
+            const zipFs = new ZipFileSystem(zipWriter);
+            try {
+                for (const [filename, data] of fs.results.entries()) {
+                    const writer = await zipFs.createWriter(filename);
+                    await writer.write(data);
+                    await writer.close();
+                }
+            } finally {
+                await zipFs.close();
+            }
+        }
+    } catch (err) {
+        splatTransformLogger.unwindAll(true);
+        throw err;
+    } finally {
+        events?.fire('progressEnd');
+    }
+};
+
 export {
     Writer,
     serializePly,
@@ -2175,6 +2943,7 @@ export {
     serializeSplat,
     serializeSog,
     serializeLcc2,
+    serializeLcc2FromLodLog,
     serializeViewer,
     AnimTrack,
     CameraPose,

@@ -14,6 +14,29 @@ const opReferencesSplat = (op: EditOp, splat: Splat): boolean => {
     return (op as any).splat === splat;
 };
 
+// Spatial operations are recorded to LodEditLog for cross-LOD replay.
+// Non-spatial ops (color, rename, group) only affect the current LOD.
+const SPATIAL_OP_NAMES = new Set([
+    'selectOp', 'deleteSelection', 'splatsTransform',
+    'selectAll', 'selectNone', 'selectInvert', 'replaceSelection'
+]);
+
+const isSpatialOp = (op: EditOp): boolean => {
+    if (op instanceof MultiOp) {
+        return op.ops.some(nested => isSpatialOp(nested));
+    }
+    return SPATIAL_OP_NAMES.has(op.name);
+};
+
+// Collect all splats referenced by an EditOp (recursing into MultiOp).
+const collectReferencedSplats = (op: EditOp, out: Set<Splat>): void => {
+    if (op instanceof MultiOp) {
+        op.ops.forEach(nested => collectReferencedSplats(nested, out));
+    } else if ((op as any).splat) {
+        out.add((op as any).splat as Splat);
+    }
+};
+
 class EditHistory {
     history: EditOp[] = [];
     cursor = 0;
@@ -79,6 +102,12 @@ class EditHistory {
         const editOp = this.history[this.cursor - 1];
         await editOp.undo();
         this.cursor--;
+        // Sync LodEditLog cursor for spatial ops (cross-LOD replay state).
+        if (isSpatialOp(editOp)) {
+            const splats = new Set<Splat>();
+            collectReferencedSplats(editOp, splats);
+            splats.forEach(s => s.lodEditLog?.onEditHistoryUndo());
+        }
         this.events.fire('edit.apply', editOp);
         this.fireEvents();
     }
@@ -91,6 +120,12 @@ class EditHistory {
             await editOp.do();
         }
         this.cursor++;
+        // Sync LodEditLog cursor for spatial ops (cross-LOD replay state).
+        if (isSpatialOp(editOp)) {
+            const splats = new Set<Splat>();
+            collectReferencedSplats(editOp, splats);
+            splats.forEach(s => s.lodEditLog?.onEditHistoryRedo());
+        }
         this.events.fire('edit.apply', editOp);
         this.fireEvents();
     }

@@ -442,6 +442,45 @@ class SplatsTransformOp {
     }
 }
 
+// Apply a local-space transform to all currently-selected splats. Used by
+// LodEditLog.replay() to reapply transform ops on a freshly-loaded LOD, where
+// there is no pre-built paletteMap (unlike SplatsTransformOp, which captures
+// the map during the live drag in splats-transform-handler.start()).
+//
+// For each selected splat, allocates a new transform-palette entry whose
+// transform is `transform * oldTransform`, and remaps the splat's palette
+// index to the new entry. Caller is responsible for any cleanup — typically
+// none needed since the palette lives with the splat and is freed on destroy.
+const applyTransformToSelected = async (splat: Splat, transform: Mat4): Promise<void> => {
+    const state = splat.splatData.getProp('state') as Uint8Array;
+    const indices = splat.transformTexture.lock() as Uint16Array;
+
+    const paletteMap = new Map<number, number>();
+    for (let i = 0; i < state.length; ++i) {
+        if (state[i] === State.selected) {
+            const oldIdx = indices[i];
+            let newIdx = paletteMap.get(oldIdx);
+            if (newIdx === undefined) {
+                newIdx = splat.transformPalette.alloc();
+                paletteMap.set(oldIdx, newIdx);
+            }
+            indices[i] = newIdx;
+        }
+    }
+
+    splat.transformTexture.unlock();
+
+    const { transformPalette } = splat;
+    const tmpMat = new Mat4();
+    paletteMap.forEach((newIdx, oldIdx) => {
+        transformPalette.getTransform(oldIdx, tmpMat);
+        tmpMat.mul2(transform, tmpMat);
+        transformPalette.setTransform(newIdx, tmpMat);
+    });
+
+    await splat.updatePositions();
+};
+
 class PlacePivotOp {
     name = 'setPivot';
     pivot: Pivot;
@@ -1300,6 +1339,7 @@ export {
     ResetOp,
     EntityTransformOp,
     SplatsTransformOp,
+    applyTransformToSelected,
     PlacePivotOp,
     SetLocalFrameOp,
     ColorAdjustment,

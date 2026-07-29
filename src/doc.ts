@@ -5,7 +5,7 @@ import { BoxShape } from './box-shape';
 import { EditHistory } from './edit-history';
 import { Element } from './element';
 import { Events } from './events';
-import { BrowserFileSystem, BlobReadSource, ZstdWriter, GZipWriter, isZstdSupported } from './io';
+import { BrowserFileSystem, BlobReadSource, MappedReadFileSystem, ZstdWriter, GZipWriter, isZstdSupported } from './io';
 import { recentFiles } from './recent-files';
 import { Scene } from './scene';
 import { SphereShape } from './sphere-shape';
@@ -21,6 +21,102 @@ const createShapeFromDoc = (doc: any): Element => {
         case 'sphere': return new SphereShape();
         case 'plane': return new BlockingPlane();
         default: return null;
+    }
+};
+
+// Show a native file picker to relocate a local LCC file after .respproj load.
+// Returns null if the user cancels. Uses showOpenFilePicker when available,
+// falls back to <input type="file"> (Electron path-based path also works).
+const pickLccFile = (ext: `.${string}`): Promise<File | null> => {
+    return new Promise((resolve) => {
+        if (window.showOpenFilePicker) {
+            window.showOpenFilePicker({
+                id: 'ReSplatLccRelocate',
+                multiple: false,
+                types: [{
+                    description: 'LCC multi-LOD file',
+                    accept: { 'application/x-lcc': [ext] }
+                }]
+            }).then(async (handles) => {
+                if (handles?.length === 1) {
+                    resolve(await handles[0].getFile());
+                } else {
+                    resolve(null);
+                }
+            }).catch((e: Error) => {
+                if (e.name !== 'AbortError') {
+                    console.error('[doc] pickLccFile failed:', e);
+                }
+                resolve(null);
+            });
+            return;
+        }
+        // Fallback: <input type="file">
+        const input = document.createElement('input');
+        input.type = 'file';
+        input.accept = ext;
+        let resolved = false;
+        const finish = (file: File | null) => {
+            if (resolved) return;
+            resolved = true;
+            resolve(file);
+        };
+        input.onchange = () => finish(input.files?.[0] ?? null);
+        input.addEventListener('cancel', () => finish(null), { once: true });
+        input.click();
+    });
+};
+
+// Rebuild a Splat's lccFileSystem after .respproj load. The original LCC file
+// may be a URL (online import) or a local file (must be relocated by the user
+// since File objects are not serializable). On failure, clears lodEditLog so
+// the splat degrades gracefully to single-LOD editing.
+const rebuildLccFileSystem = async (splat: Splat, events: Events): Promise<void> => {
+    const lccPath = splat.lccFilePath!;
+    const lowerPath = lccPath.toLowerCase();
+
+    // URL: derive base URL and use MappedReadFileSystem (no user prompt)
+    if (lowerPath.startsWith('http://') || lowerPath.startsWith('https://')) {
+        try {
+            const baseUrl = new URL('.', lccPath).href;
+            splat.lccFileSystem = new MappedReadFileSystem(baseUrl);
+            return;
+        } catch (e) {
+            console.warn(`[doc] Failed to construct URL file system for "${lccPath}": ${(e as Error).message}`);
+            splat.lodEditLog = null;
+            return;
+        }
+    }
+
+    // Local file: prompt user to relocate
+    const ext = lowerPath.endsWith('.lcc2') ? '.lcc2' : '.lcc';
+
+    try {
+        const result = await events.invoke('showPopup', {
+            type: 'okcancel',
+            header: localize('popup.lcc-relocate-header'),
+            message: localize('popup.lcc-relocate-message').replace('{filename}', lccPath),
+            icon: false
+        });
+        if (result.action !== 'ok') {
+            splat.lodEditLog = null;
+            console.warn(`[doc] User cancelled LCC relocation for "${lccPath}" — multi-LOD editing disabled`);
+            return;
+        }
+    } catch (e) {
+        console.warn('[doc] LCC relocation popup failed:', e);
+        splat.lodEditLog = null;
+        return;
+    }
+
+    const file = await pickLccFile(ext);
+    if (file) {
+        const mapped = new MappedReadFileSystem();
+        mapped.addFile(lccPath, file);
+        splat.lccFileSystem = mapped;
+    } else {
+        splat.lodEditLog = null;
+        console.warn(`[doc] No LCC file selected — multi-LOD editing disabled for "${lccPath}"`);
     }
 };
 
@@ -181,6 +277,14 @@ const registerDocEvents = (scene: Scene, events: Events, editHistory: EditHistor
                 // Restore entity transform from doc.json (no longer baked into PLY).
                 // editHistory replay will handle intermediate transform states.
                 splat.docDeserialize(splatSettings);
+
+                // LCC multi-LOD: rebuild the runtime lccFileSystem so cross-LOD
+                // editing (LOD switch, LCC2 export) can stream other LODs. The
+                // fileSystem is runtime-only; on failure lodEditLog is cleared
+                // and the splat degrades to single-LOD editing.
+                if (splat.lccFilePath) {
+                    await rebuildLccFileSystem(splat, events);
+                }
             }
 
             // FIXME: trigger scene bound calc in a better way

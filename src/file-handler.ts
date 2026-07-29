@@ -6,10 +6,10 @@ import { CreateDropHandler } from './drop-handler';
 import { ElementType } from './element';
 import { Events } from './events';
 import { BrowserFileSystem, MappedReadFileSystem, readSogMeta, readPlyMeta } from './io';
-import { createDirectoryFileSystem } from './io/write';
+import { createDirectoryFileSystem, DirectoryFileSystem } from './io/write';
 import { Scene } from './scene';
 import { Splat } from './splat';
-import { serializeLcc2, serializePly, serializePlyCompressed, serializeStandardPly, SerializeSettings, serializeSog, serializeSplat, serializeViewer, SogSettings, ViewerExportSettings } from './splat-serialize';
+import { serializeLcc2, serializeLcc2FromLodLog, serializePly, serializePlyCompressed, serializeStandardPly, SerializeSettings, serializeSog, serializeSplat, serializeViewer, SogSettings, ViewerExportSettings } from './splat-serialize';
 import { showDownloadPrompt } from './ui/download-prompt';
 import { localize } from './ui/localization';
 
@@ -454,7 +454,10 @@ const initFileHandler = (scene: Scene, events: Events, dropTarget: HTMLElement) 
             events.fire('timeline.frame', 0);
         } else if (isSog(filenames) || isLcc(filenames)) {
             const model = await importSplatModel(files, animationFrame);
-            if (model) result.push(model);
+            if (model) {
+                model.originalFilePath = files[0].url ?? files[0].filename;
+                result.push(model);
+            }
         } else {
             // check for unrecognized file types
             for (let i = 0; i < filenames.length; i++) {
@@ -834,7 +837,7 @@ const initFileHandler = (scene: Scene, events: Events, dropTarget: HTMLElement) 
                 ...serializeSettings,
                 minOpacity: 1 / 255,
                 removeInvalid: true,
-                iterations: options.sogIterations ?? 10,
+                iterations: options.sogIterations ?? 0,
                 events
             });
 
@@ -857,18 +860,49 @@ const initFileHandler = (scene: Scene, events: Events, dropTarget: HTMLElement) 
                     await serializeSog(splats, buildSogSettings(), fs);
                     break;
                 case 'lcc2': {
-                    // serializeLcc2 writes `${name}.lcc2` + `data/3dgs/${name}_lod*.sog`
-                    // itself, so strip any extension the popup may have appended to
-                    // get a clean base name. lodLevels>1 triggers Phase 2 multi-LOD
-                    // generation (round-robin axis binary tree, 1/2^k downsampling).
                     const baseName = removeExtension(filename);
-                    await serializeLcc2(splats, {
-                        name: baseName,
-                        splatIdx: null,
-                        serializeSettings: buildSogSettings(),
-                        lodLevels: options.lodLevels ?? 1,
-                        splatType: '.sog'
-                    }, fs);
+                    const totalSplats = splats.reduce((sum, s) => sum + s.numSplats, 0);
+                    const outputRoot = (fs as DirectoryFileSystem).getRootPath?.();
+
+                    // Route to backend for large datasets (>10M splats) when a
+                    // PLY file path and output directory are available (Electron).
+                    const plyPath = splats[0]?.originalFilePath;
+                    if (totalSplats > 10_000_000 && plyPath && outputRoot && BackendClient.isAvailable()) {
+                        console.warn(`[LCC2] Routing ${totalSplats.toLocaleString()} splats to backend (${plyPath})`);
+                        events.fire('progressUpdate', { text: 'Exporting via backend…', progress: -1 });
+                        await BackendClient.lcc2ExportPath(plyPath, outputRoot, {
+                            name: baseName,
+                            lodLevels: options.lodLevels ?? 1,
+                            shBands: serializeSettings.maxSHBands ?? 0,
+                            iterations: options.sogIterations ?? 0
+                        });
+                        events.fire('progressUpdate', { text: 'Export complete', progress: 100 });
+                        break;
+                    }
+
+                    // Multi-LOD path: if the (single) selected splat has a LodEditLog
+                    // and a valid LCC source file, stream each LOD from the original
+                    // file and replay deletions/transforms. This produces a true
+                    // multi-LOD LCC2 where edits are propagated to every level.
+                    const multiLodSplat = splats.length === 1 && splats[0].lodEditLog && splats[0].lccFileSystem && splats[0].lccFilePath && splats[0].lodCounts.length >= 2 ? splats[0] : null;
+
+                    if (multiLodSplat) {
+                        await serializeLcc2FromLodLog(multiLodSplat, {
+                            name: baseName,
+                            splatIdx: null,
+                            serializeSettings: buildSogSettings(),
+                            lodLevels: options.lodLevels ?? 1,
+                            splatType: '.sog'
+                        }, fs);
+                    } else {
+                        await serializeLcc2(splats, {
+                            name: baseName,
+                            splatIdx: null,
+                            serializeSettings: buildSogSettings(),
+                            lodLevels: options.lodLevels ?? 1,
+                            splatType: '.sog'
+                        }, fs);
+                    }
                     break;
                 }
                 case 'htmlViewer':

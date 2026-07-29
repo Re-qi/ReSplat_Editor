@@ -175,6 +175,19 @@ class SplatsTransformHandler implements TransformHandler {
         const newt = pivot.transform.clone();
         const pop = new PlacePivotOp({ pivot, newt, oldt });
 
+        // Record world-space transform to LodEditLog for cross-LOD replay.
+        // We capture `localToWorld * this.transform` so that replay on another
+        // LOD can recover the local-space transform via
+        // `inv(worldTransform) * worldMat`. Valid as long as the splat's entity
+        // transform is unchanged between recording and replay — the common case
+        // for LOD switches, since swapGSplatData only swaps splat data.
+        if (splat.lodEditLog) {
+            const worldMat = new Mat4().copy(transform);
+            worldMat.mul2(splat.entity.getLocalTransform(), worldMat);
+            splat.lodEditLog.onEditHistoryAdd();
+            splat.lodEditLog.recordTransform(splat, Array.from(worldMat.data));
+        }
+
         // record the editop on the shared command queue BEFORE awaiting any async work.
         // events.fire synchronously enqueues the add, so any subsequent undo/redo
         // (e.g. user pressing Ctrl+Z while updatePositions is still resolving) is

@@ -396,6 +396,8 @@ const registerEditorEvents = (events: Events, editHistory: EditHistory, scene: S
 
     events.on('select.all', () => {
         selectedSplats().forEach((splat) => {
+            splat.lodEditLog?.onEditHistoryAdd();
+            splat.lodEditLog?.recordSelectAll(splat);
             events.fire('edit.add', new SelectAllOp(splat));
         });
     });
@@ -403,21 +405,34 @@ const registerEditorEvents = (events: Events, editHistory: EditHistory, scene: S
     events.on('select.none', () => {
         const splats = scene.getElementsByType(ElementType.splat) as Splat[];
         splats.forEach((splat) => {
+            splat.lodEditLog?.onEditHistoryAdd();
+            splat.lodEditLog?.recordSelectNone(splat);
             events.fire('edit.add', new SelectNoneOp(splat));
         });
     });
 
     events.on('select.invert', () => {
         selectedSplats().forEach((splat) => {
+            splat.lodEditLog?.onEditHistoryAdd();
+            splat.lodEditLog?.recordSelectInvert(splat);
             events.fire('edit.add', new SelectInvertOp(splat));
         });
     });
 
     events.on('select.mask', (op: 'add'|'remove'|'set', mask: Uint8Array | Uint32Array) => {
         selectedSplats().forEach((splat) => {
-            events.fire('edit.add', new SelectOp(splat, op, mask));
+            fireSelectWithLog(splat, op, mask);
         });
     });
+
+    // Wrapper that records the selection to the splat's LodEditLog (if present)
+    // BEFORE constructing SelectOp, because SelectOp consumes sel in its
+    // constructor. For non-LCC splats lodEditLog is null and this is a no-op.
+    const fireSelectWithLog = (splat: Splat, op: 'add'|'remove'|'set', sel: Uint8Array | Uint32Array) => {
+        splat.lodEditLog?.onEditHistoryAdd();
+        splat.lodEditLog?.recordSelect(splat, op, sel);
+        events.fire('edit.add', new SelectOp(splat, op, sel));
+    };
 
     const intersectCenters = (splat: Splat, op: 'add'|'remove'|'set', options: any) => {
         // run the GPU intersect inside one queued task so the gpu readback is
@@ -452,7 +467,7 @@ const registerEditorEvents = (events: Events, editHistory: EditHistory, scene: S
             // SelectOp consumes `data` synchronously in its constructor
             // (IndexRanges.fromPredicate iterates immediately), so we can
             // return the buffer to the pool as soon as the op is constructed.
-            events.fire('edit.add', new SelectOp(splat, op, data));
+            fireSelectWithLog(splat, op, data);
             scene.dataProcessor.releaseMask(data);
         });
     };
@@ -576,7 +591,7 @@ const registerEditorEvents = (events: Events, editHistory: EditHistory, scene: S
                     }
                 }
 
-                events.fire('edit.add', new SelectOp(splat, op, mask));
+                fireSelectWithLog(splat, op, mask);
             } else {
                 scene.camera.pickPrep(splat, op);
                 const pick = await scene.camera.pickRect(
@@ -625,7 +640,7 @@ const registerEditorEvents = (events: Events, editHistory: EditHistory, scene: S
                 }
 
                 const sortedIds = new Uint32Array(filteredIds).sort();
-                events.fire('edit.add', new SelectOp(splat, op, sortedIds));
+                fireSelectWithLog(splat, op, sortedIds);
             }
         }
     });
@@ -662,7 +677,7 @@ const registerEditorEvents = (events: Events, editHistory: EditHistory, scene: S
                             floodData[i] = floodData[i] && boundData[i];
                         }
                         scene.dataProcessor.releaseMask(boundData);
-                        events.fire('edit.add', new SelectOp(splat, op, floodData));
+                        fireSelectWithLog(splat, op, floodData);
                         scene.dataProcessor.releaseMask(floodData);
                     });
                 } else {
@@ -761,7 +776,7 @@ const registerEditorEvents = (events: Events, editHistory: EditHistory, scene: S
                 }
 
                 const sortedIds = new Uint32Array(selected).sort();
-                events.fire('edit.add', new SelectOp(splat, op, sortedIds));
+                fireSelectWithLog(splat, op, sortedIds);
             }
         }
     });
@@ -821,7 +836,7 @@ const registerEditorEvents = (events: Events, editHistory: EditHistory, scene: S
                     }
                 }
 
-                events.fire('edit.add', new SelectOp(splat, op, mask));
+                fireSelectWithLog(splat, op, mask);
             } else {
                 scene.camera.pickPrep(splat, op);
 
@@ -843,18 +858,18 @@ const registerEditorEvents = (events: Events, editHistory: EditHistory, scene: S
                         splat.worldTransform.transformPoint(worldPos, worldPos);
                         const cameraPos = scene.camera.position;
                         if (isPointBlocked(worldPos, cameraPos)) {
-                            events.fire('edit.add', new SelectOp(splat, op, new Uint32Array([])));
+                            fireSelectWithLog(splat, op, new Uint32Array([]));
                             return;
                         }
                         if (boundInvRot && boundPos && shapeSel) {
                             if (!isInsideBoundShape(worldPos, shapeSel as BoxShape | SphereShape, boundInvRot, boundPos)) {
-                                events.fire('edit.add', new SelectOp(splat, op, new Uint32Array([])));
+                                fireSelectWithLog(splat, op, new Uint32Array([]));
                                 return;
                             }
                         }
                     }
                 }
-                events.fire('edit.add', new SelectOp(splat, op, new Uint32Array([pickId])));
+                fireSelectWithLog(splat, op, new Uint32Array([pickId]));
             }
         }
     });
@@ -951,6 +966,8 @@ const registerEditorEvents = (events: Events, editHistory: EditHistory, scene: S
         }
 
         selectedSplats().forEach((splat) => {
+            splat.lodEditLog?.onEditHistoryAdd();
+            splat.lodEditLog?.recordDelete(splat);
             editHistory.add(new DeleteSelectionOp(splat));
         });
     });

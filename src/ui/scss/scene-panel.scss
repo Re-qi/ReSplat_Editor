@@ -118,3 +118,28 @@
     overflow: auto;
     width: 322px;
 }
+
+.lod-switcher {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 12px;
+    border-bottom: 1px solid #2a2a2a;
+    width: 322px;
+    box-sizing: border-box;
+}
+
+.lod-switcher[hidden] {
+    display: none;
+}
+
+.lod-switcher-label {
+    font-size: 11px;
+    color: #b0b0b0;
+    flex-shrink: 0;
+}
+
+.lod-switcher-select {
+    flex: 1;
+    min-width: 0;
+}

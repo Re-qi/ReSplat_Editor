@@ -1,5 +1,6 @@
 node_modules
 dist
+dist-release
 release
 temp
 .DS_Store
@@ -11,3 +12,11 @@ temp
 .env.local
 *.log
 Thumbs.db
+.trae
+.agents
+.claude
+bench
+native/build
+desktop.ini
+skills-lock.json
+server/lcc2-export.mjs

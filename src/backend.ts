@@ -233,6 +233,45 @@ class BackendClient {
     }
 
     /**
+     * Export a PLY file as LCC2 using the backend pipeline.
+     * Writes {name}.lcc2 + data/3dgs/*.sog into outputDir/{name}/.
+     *
+     * @param filePath - Absolute path to the source PLY file on disk
+     * @param outputDir - Parent directory (the backend creates {name}/ inside it)
+     * @param options - Export settings
+     * @returns Export metadata when complete
+     */
+    static async lcc2ExportPath(
+        filePath: string,
+        outputDir: string,
+        options: { name: string; lodLevels?: number; shBands?: number; iterations?: number }
+    ): Promise<{
+        outputPath: string;
+        fileCount: number;
+        totalSplats: number;
+        totalLevels: number;
+        lodSplats: number[];
+        totalSeconds: number;
+    }> {
+        const res = await fetch(`${this.BASE_URL}/api/lcc2-export-path`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ filePath, outputDir, ...options })
+        });
+
+        if (!res.ok) {
+            let errorMsg = `LCC2 export failed: ${res.statusText}`;
+            try {
+                const err = await res.json();
+                errorMsg = err.error || errorMsg;
+            } catch { /* use default */ }
+            throw new Error(errorMsg);
+        }
+
+        return res.json();
+    }
+
+    /**
      * Merge multiple PLY files via backend C++ native engine.
      * Returns a compressed-ply URL that can be loaded as a new Splat.
      *
