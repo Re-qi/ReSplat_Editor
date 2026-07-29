@@ -1,12 +1,16 @@
-import { Container, Label, NumericInput } from '@playcanvas/pcui';
+import { Button, Container, Label, NumericInput } from '@playcanvas/pcui';
 import { Entity, Mat4, Quat, TranslateGizmo, Vec3 } from 'playcanvas';
 
 import { EntityTransformOp } from '../edit-ops';
 import { Events } from '../events';
 import { Scene } from '../scene';
 import { Splat } from '../splat';
+import { pickSplatSurfacePoint } from '../splat-pick';
 import { Transform } from '../transform';
 import { localize } from '../ui/localization';
+
+// pointer movement below this many pixels still counts as a click
+const CLICK_TOLERANCE = 4;
 
 const mat = new Mat4();
 const mat1 = new Mat4();
@@ -15,6 +19,7 @@ const mat3 = new Mat4();
 const p = new Vec3();
 const p0 = new Vec3();
 const p1 = new Vec3();
+const v = new Vec3();
 const r = new Quat();
 const s = new Vec3();
 
@@ -38,34 +43,42 @@ class MeasureTool {
 
         const ns = svg.namespaceURI;
 
-        // create defs node
+        // defs for reuse
         const defs = document.createElementNS(ns, 'defs');
+        const dotPrototype = document.createElementNS(ns, 'circle');
+        dotPrototype.setAttribute('r', '5');
+        dotPrototype.setAttribute('fill', 'white');
+        dotPrototype.setAttribute('stroke', '#333');
+        dotPrototype.setAttribute('stroke-width', '1.5');
+        dotPrototype.id = 'measure-dot-prototype';
+        defs.appendChild(dotPrototype);
 
-        // create line element
         const line = document.createElementNS(ns, 'line') as SVGLineElement;
         line.id = 'measure-line';
         defs.appendChild(line);
 
+        svg.appendChild(defs);
+
         const lineBottom = document.createElementNS(ns, 'use') as SVGUseElement;
         lineBottom.id = 'measure-line-bottom';
         lineBottom.setAttribute('href', '#measure-line');
+        svg.appendChild(lineBottom);
 
         const lineTop = document.createElementNS(ns, 'use') as SVGUseElement;
         lineTop.id = 'measure-line-top';
         lineTop.setAttribute('href', '#measure-line');
-
-        // create line ends
-        const lineStart = document.createElementNS(ns, 'circle') as SVGCircleElement;
-        lineStart.id = 'measure-line-start';
-
-        const lineEnd = document.createElementNS(ns, 'circle') as SVGCircleElement;
-        lineEnd.id = 'measure-line-end';
-
-        svg.appendChild(defs);
-        svg.appendChild(lineBottom);
         svg.appendChild(lineTop);
-        svg.appendChild(lineStart);
-        svg.appendChild(lineEnd);
+
+        // dot circles (up to 2)
+        const dots: SVGUseElement[] = [];
+        for (let i = 0; i < 2; i++) {
+            const use = document.createElementNS(ns, 'use') as SVGUseElement;
+            use.setAttribute('href', '#measure-dot-prototype');
+            use.id = `measure-dot${i}`;
+            use.setAttribute('visibility', 'hidden');
+            svg.appendChild(use);
+            dots.push(use);
+        }
 
         // ui
         const lengthLabel = new Label({
@@ -81,8 +94,14 @@ class MeasureTool {
         });
         let suppressUI = 0;
 
+        const hintLabel = new Label({ class: 'select-toolbar-label' });
+        hintLabel.text = localize('measure.hint');
+
+        const clearButton = new Button({ class: 'select-toolbar-button', enabled: false });
+        clearButton.text = localize('measure.clear');
+
         const selectToolbar = new Container({
-            class: 'select-toolbar',
+            class: ['select-toolbar', 'select-toolbar-tool'],
             hidden: true
         });
 
@@ -90,8 +109,10 @@ class MeasureTool {
             e.stopPropagation();
         });
 
+        selectToolbar.append(hintLabel);
         selectToolbar.append(lengthLabel);
         selectToolbar.append(lengthInput);
+        selectToolbar.append(clearButton);
         canvasContainer.append(selectToolbar);
 
         const gizmo = new TranslateGizmo(scene.camera.camera, scene.gizmoLayer);
@@ -101,6 +122,7 @@ class MeasureTool {
         gizmo.mouseButtons[2] = false;
 
         const entity = new Entity('measureGizmoPivot');
+        scene.app.root.addChild(entity);
         const transformHandler = new MeasureTransformHandler();
 
         let active = false;
@@ -111,11 +133,11 @@ class MeasureTool {
             splat.worldTransform.transformPoint(splat.measurePoints[index], result);
         };
 
-        const getPoint2d = (index: number, result: Vec3) => {
+        const getPoint2d = (index: number, result: Vec3, width: number, height: number) => {
             getPoint(index, result);
             scene.camera.worldToScreen(result, result);
-            result.x *= canvasContainer.dom.clientWidth;
-            result.y *= canvasContainer.dom.clientHeight;
+            result.x *= width;
+            result.y *= height;
         };
 
         const updateVisuals = () => {
@@ -141,7 +163,18 @@ class MeasureTool {
             } else {
                 lengthInput.enabled = false;
             }
+
+            clearButton.enabled = !!splat && splat.measurePoints.length > 0;
         };
+
+        clearButton.on('click', () => {
+            if (splat) {
+                splat.measurePoints.length = 0;
+                splat.measureSelection = -1;
+                updateVisuals();
+                scene.forceRender = true;
+            }
+        });
 
         gizmo.on('render:update', () => {
             scene.forceRender = true;
@@ -286,28 +319,41 @@ class MeasureTool {
         };
 
         let clicked = false;
+        let clickX = 0;
+        let clickY = 0;
 
         const pointerdown = (e: PointerEvent) => {
             if (!clicked && isPrimary(e)) {
                 clicked = true;
+                clickX = e.offsetX;
+                clickY = e.offsetY;
             }
         };
 
-        const pointermove = (_e: PointerEvent) => {
-            clicked = false;
+        const pointermove = (e: PointerEvent) => {
+            if (clicked && Math.hypot(e.offsetX - clickX, e.offsetY - clickY) > CLICK_TOLERANCE) {
+                clicked = false;
+            }
         };
 
-        const pointerup = async (e: PointerEvent) => {
+        const pointerup = (e: PointerEvent) => {
             if (splat && clicked && isPrimary(e)) {
                 clicked = false;
 
                 let closestIdx = -1;
 
                 // check for intersection with existing point
+                const cameraPos = scene.camera.mainCamera.getPosition();
+                const cameraFwd = scene.camera.mainCamera.forward;
                 for (let i = 0; i < splat.measurePoints.length; i++) {
-                    getPoint2d(i, p);
+                    getPoint(i, p);
+                    if (p.sub(cameraPos).dot(cameraFwd) <= 0) {
+                        continue;
+                    }
 
-                    if (Math.abs(p.x - e.offsetX) < 8 && Math.abs(p.y - e.offsetY) < 8) {
+                    getPoint2d(i, p, canvasContainer.dom.clientWidth, canvasContainer.dom.clientHeight);
+
+                    if (Math.abs(p.x - clickX) < 8 && Math.abs(p.y - clickY) < 8) {
                         closestIdx = i;
                         break;
                     }
@@ -319,15 +365,10 @@ class MeasureTool {
                     return;
                 }
 
-                if (splat.measurePoints.length < 2) {
-                    const result = await scene.camera.intersect(e.offsetX / canvasContainer.dom.clientWidth, e.offsetY / canvasContainer.dom.clientHeight);
-                    if (result) {
-                        mat.invert(splat.worldTransform);
-                        mat.transformPoint(result.position, p);
-                        splat.measureSelection = splat.measurePoints.length;
-                        splat.measurePoints.push(p.clone());
-                        updateVisuals();
-                    }
+                if (splat.measurePoints.length < 2 && pickSplatSurfacePoint(scene, splat, clickX, clickY, v)) {
+                    splat.measureSelection = splat.measurePoints.length;
+                    splat.measurePoints.push(v.clone());
+                    updateVisuals();
                 }
 
                 e.preventDefault();
@@ -335,44 +376,47 @@ class MeasureTool {
             }
         };
 
-        events.on('postrender', () => {
-            if (active && splat) {
-                line.setAttribute('visibility', splat.measurePoints.length > 1 ? 'visible' : 'hidden');
+        const updateSvg = () => {
+            const count = splat ? splat.measurePoints.length : 0;
 
-                for (let i = 0; i < 2; i++) {
-                    if (i < splat.measurePoints.length) {
-                        getPoint2d(i, p);
+            // SVG lives inside #tools-container which has the same style.zoom as
+            // <canvas>; its coord system therefore matches canvas.clientWidth.
+            const svgW = scene.canvas.clientWidth;
+            const svgH = scene.canvas.clientHeight;
 
-                        const x = p.x.toString();
-                        const y = p.y.toString();
-
-                        if (i === 0) {
-                            line.setAttribute('x1', x);
-                            line.setAttribute('y1', y);
-                            lineStart.setAttribute('cx', x);
-                            lineStart.setAttribute('cy', y);
-
-                            lineStart.setAttribute('visibility', 'visible');
-                        } else if (i === 1) {
-                            line.setAttribute('x2', x);
-                            line.setAttribute('y2', y);
-                            lineEnd.setAttribute('cx', x);
-                            lineEnd.setAttribute('cy', y);
-                            lineEnd.setAttribute('visibility', 'visible');
-                        }
-                    } else {
-                        if (i === 0) {
-                            lineStart.setAttribute('visibility', 'hidden');
-                        } else {
-                            lineEnd.setAttribute('visibility', 'hidden');
-                        }
-                    }
+            for (let i = 0; i < 2; i++) {
+                const dotEl = dots[i];
+                if (i < count) {
+                    getPoint2d(i, v, svgW, svgH);
+                    dotEl.setAttribute('x', v.x.toString());
+                    dotEl.setAttribute('y', v.y.toString());
+                    dotEl.setAttribute('visibility', 'visible');
+                    dotEl.setAttribute('stroke', i === (splat ? splat.measureSelection : -1) ? '#ff9900' : '#333');
+                } else {
+                    dotEl.setAttribute('visibility', 'hidden');
                 }
+            }
+
+            if (count > 1) {
+                getPoint2d(0, p0, svgW, svgH);
+                getPoint2d(1, p1, svgW, svgH);
+                line.setAttribute('x1', p0.x.toString());
+                line.setAttribute('y1', p0.y.toString());
+                line.setAttribute('x2', p1.x.toString());
+                line.setAttribute('y2', p1.y.toString());
+                line.setAttribute('visibility', 'visible');
             } else {
                 line.setAttribute('visibility', 'hidden');
-                lineStart.setAttribute('visibility', 'hidden');
-                lineEnd.setAttribute('visibility', 'hidden');
             }
+        };
+
+        events.on('postrender', () => {
+            if (!active || !splat) {
+                svg.classList.add('hidden');
+                return;
+            }
+            svg.classList.remove('hidden');
+            updateSvg();
         });
 
         const updateGizmoSize = () => {

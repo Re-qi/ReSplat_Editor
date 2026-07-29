@@ -308,6 +308,8 @@
     "tooltip.left-toolbar.scale": "缩放",
     "tooltip.left-toolbar.measure": "测量",
     "tooltip.left-toolbar.orient": "找平",
+    "measure.hint": "点击 splat 表面放置测点，再点击放置第二个点",
+    "measure.clear": "清除",
     "measure.length": "长度",
     "tooltip.left-toolbar.local-space": "局部坐标系",
     "tooltip.left-toolbar.bound-center": "使用边界中心",

@@ -80,9 +80,14 @@
     &#orient-tool-svg {
         pointer-events: none;
 
-        >line {
+        >line[id$='-bottom'] {
+            stroke: black;
+            stroke-width: 6;
+        }
+
+        >line[id$='-top'] {
             stroke: white;
-            stroke-width: 1.5;
+            stroke-width: 2;
         }
 
         >polygon {
@@ -92,8 +97,8 @@
 
         >use[href='#orient-dot-prototype'] {
             fill: white;
-            stroke: #333;
-            stroke-width: 1.5;
+            stroke: black;
+            stroke-width: 2;
         }
     }
 }

@@ -65,24 +65,26 @@ class OrientTool {
         defs.appendChild(dot);
         svg.appendChild(defs);
 
-        // line segment
-        const line = document.createElementNS(ns, 'line');
-        line.setAttribute('stroke', 'white');
-        line.setAttribute('stroke-width', '1.5');
-        line.id = 'orient-line0';
-        svg.appendChild(line);
+        // dual-layer line segments (up to 3, each with bottom/top)
+        const lineBottoms: SVGLineElement[] = [];
+        const lineTops: SVGLineElement[] = [];
+        for (let i = 0; i < 3; i++) {
+            const btm = document.createElementNS(ns, 'line') as SVGLineElement;
+            btm.id = `orient-line${i}-bottom`;
+            btm.setAttribute('stroke', 'black');
+            btm.setAttribute('stroke-width', '6');
+            btm.setAttribute('visibility', 'hidden');
+            svg.appendChild(btm);
+            lineBottoms.push(btm);
 
-        const line1 = document.createElementNS(ns, 'line');
-        line1.setAttribute('stroke', 'white');
-        line1.setAttribute('stroke-width', '1.5');
-        line1.id = 'orient-line1';
-        svg.appendChild(line1);
-
-        const line2 = document.createElementNS(ns, 'line');
-        line2.setAttribute('stroke', 'white');
-        line2.setAttribute('stroke-width', '1.5');
-        line2.id = 'orient-line2';
-        svg.appendChild(line2);
+            const top = document.createElementNS(ns, 'line') as SVGLineElement;
+            top.id = `orient-line${i}-top`;
+            top.setAttribute('stroke', 'white');
+            top.setAttribute('stroke-width', '2');
+            top.setAttribute('visibility', 'hidden');
+            svg.appendChild(top);
+            lineTops.push(top);
+        }
 
         // filled triangle
         const polygon = document.createElementNS(ns, 'polygon');
@@ -459,48 +461,46 @@ class OrientTool {
                     dotEl.setAttribute('x', v.x.toString());
                     dotEl.setAttribute('y', v.y.toString());
                     dotEl.setAttribute('visibility', 'visible');
-                    if (i === (splat ? splat.orientSelection : -1)) {
-                        dotEl.setAttribute('stroke', '#ff9900');
-                    } else {
-                        dotEl.setAttribute('stroke', '#333');
-                    }
+                    dotEl.setAttribute('stroke', i === (splat ? splat.orientSelection : -1) ? '#ff9900' : 'black');
                 } else {
                     dotEl.setAttribute('visibility', 'hidden');
                 }
             }
 
+            // helper: set x1,y1,x2,y2,visibility on both bottom and top layers
+            const setLine = (idx: number, x1: string, y1: string, x2: string, y2: string, visible: boolean) => {
+                const vis = visible ? 'visible' : 'hidden';
+                lineBottoms[idx].setAttribute('x1', x1);
+                lineBottoms[idx].setAttribute('y1', y1);
+                lineBottoms[idx].setAttribute('x2', x2);
+                lineBottoms[idx].setAttribute('y2', y2);
+                lineBottoms[idx].setAttribute('visibility', vis);
+                lineTops[idx].setAttribute('x1', x1);
+                lineTops[idx].setAttribute('y1', y1);
+                lineTops[idx].setAttribute('x2', x2);
+                lineTops[idx].setAttribute('y2', y2);
+                lineTops[idx].setAttribute('visibility', vis);
+            };
+
             if (count > 1) {
                 getPoint2d(0, p0, svgW, svgH);
                 getPoint2d(1, p1, svgW, svgH);
-                line.setAttribute('x1', p0.x.toString());
-                line.setAttribute('y1', p0.y.toString());
-                line.setAttribute('x2', p1.x.toString());
-                line.setAttribute('y2', p1.y.toString());
-                line.setAttribute('visibility', 'visible');
+                setLine(0, p0.x.toString(), p0.y.toString(), p1.x.toString(), p1.y.toString(), true);
             } else {
-                line.setAttribute('visibility', 'hidden');
+                setLine(0, '', '', '', '', false);
             }
 
             if (count === 3) {
                 getPoint2d(1, p1, svgW, svgH);
                 getPoint2d(2, p2, svgW, svgH);
-                line1.setAttribute('x1', p1.x.toString());
-                line1.setAttribute('y1', p1.y.toString());
-                line1.setAttribute('x2', p2.x.toString());
-                line1.setAttribute('y2', p2.y.toString());
-                line1.setAttribute('visibility', 'visible');
-
-                line2.setAttribute('x1', p2.x.toString());
-                line2.setAttribute('y1', p2.y.toString());
-                line2.setAttribute('x2', p0.x.toString());
-                line2.setAttribute('y2', p0.y.toString());
-                line2.setAttribute('visibility', 'visible');
+                setLine(1, p1.x.toString(), p1.y.toString(), p2.x.toString(), p2.y.toString(), true);
+                setLine(2, p2.x.toString(), p2.y.toString(), p0.x.toString(), p0.y.toString(), true);
 
                 polygon.setAttribute('points', `${p0.x},${p0.y} ${p1.x},${p1.y} ${p2.x},${p2.y}`);
                 polygon.setAttribute('visibility', 'visible');
             } else {
-                line1.setAttribute('visibility', 'hidden');
-                line2.setAttribute('visibility', 'hidden');
+                setLine(1, '', '', '', '', false);
+                setLine(2, '', '', '', '', false);
                 polygon.setAttribute('visibility', 'hidden');
             }
         };
