@@ -21,7 +21,7 @@
 
 ## 简介
 
-ReSplat 是一款基于 [SuperSplat](https://github.com/playcanvas/supersplat) 重构的 **3D 高斯点云编辑器**，完全运行在浏览器中，本地部署运行性能更强。
+ReSplat 是一款基于 [SuperSplat](https://github.com/playcanvas/supersplat) 重构的 **3D 高斯点云编辑器**，可以运行在浏览器中。
 
 本项目在 SuperSplat 的基础上**重新设计了操作逻辑**，吸取了 **Blender** 与 **Unreal Engine** 的交互优点，使高斯点云的编辑体验更加直观高效。
 
