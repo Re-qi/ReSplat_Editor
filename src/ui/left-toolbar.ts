@@ -343,8 +343,7 @@ class LeftToolbar extends Container {
             const expand = (b: Box, m: number): Box => ({
                 top: b.top - m, bottom: b.bottom + m, left: b.left - m, right: b.right + m
             });
-            const overlaps = (a: Box, b: Box) =>
-                !(a.bottom <= b.top || a.top >= b.bottom || a.right <= b.left || a.left >= b.right);
+            const overlaps = (a: Box, b: Box) => !(a.bottom <= b.top || a.top >= b.bottom || a.right <= b.left || a.left >= b.right);
 
             const tbBox = expand({ top: center - h / 2, bottom: center + h / 2, left: rect.left, right: rect.right }, pad);
 
