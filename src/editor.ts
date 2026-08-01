@@ -1067,33 +1067,38 @@ const registerEditorEvents = (events: Events, editHistory: EditHistory, scene: S
         const internalProps = ['state', 'transform'];
         const props = refProps.filter(p => !internalProps.includes(p.name));
 
-        // Copy raw property arrays directly — no transform baking needed since
-        // the new Splat will inherit the same entity transform as the source.
+        const propNames = props.map(p => p.name);
+
+        // Use SingleSplat to bake palette transforms into the extracted data.
+        // Without this, palette transforms applied via point-cloud group
+        // (move/rotate/scale) are lost — separating or duplicating would
+        // revert gaussians to their pre-transform state.
+        const singleSplat = new SingleSplat(propNames, { keepWorldTransform: false, skipPlyRotation: true });
+
         const extractedProps: typeof props = [];
 
         for (const prop of props) {
-            const srcStorage = prop.storage;
-            const Ctor = srcStorage.constructor as any;
-            const extractedStorage = new Ctor(selectedCount);
-
-            if (hasGaussianSelection && stateData) {
-                let writeIdx = 0;
-                for (let i = 0; i < numSplats; i++) {
-                    if (stateData[i] === State.selected) {
-                        extractedStorage[writeIdx++] = srcStorage[i];
-                    }
-                }
-            } else {
-                // No selection — copy all
-                (extractedStorage as any).set(srcStorage);
-            }
-
+            const firstStorage = splat.splatData.getProp(prop.name);
+            const Ctor = firstStorage.constructor as any;
             extractedProps.push({
                 type: prop.type,
                 name: prop.name,
-                storage: extractedStorage,
+                storage: new Ctor(selectedCount),
                 byteSize: prop.byteSize
             });
+        }
+
+        let writeOffset = 0;
+        for (let i = 0; i < numSplats; i++) {
+            if (hasGaussianSelection && stateData && stateData[i] !== State.selected) continue;
+
+            singleSplat.read(splat, i);
+
+            for (let pi = 0; pi < extractedProps.length; pi++) {
+                (extractedProps[pi].storage as any)[writeOffset] = singleSplat.data[propNames[pi]] ?? 0;
+            }
+
+            writeOffset++;
         }
 
         const extractedGSplatData = new GSplatData([{
@@ -1102,13 +1107,13 @@ const registerEditorEvents = (events: Events, editHistory: EditHistory, scene: S
             properties: extractedProps
         }]);
 
-        // Create Asset and Splat with the same entity transform as source
+        // Use identity transform — all transforms (entity + palette) are
+        // already baked into the gaussian data by SingleSplat.read().
         const filename = `${removeExtension(splat.filename)}_${func}.ply`;
         const asset = new Asset(filename, 'gsplat', { url: `local-asset-${Date.now()}`, filename: filename });
         scene.app.assets.add(asset);
         asset.resource = new GSplatResource(scene.app.graphicsDevice, extractedGSplatData);
-        const copy = new Splat(asset, splat.entity.getLocalRotation());
-        copy.entity.setLocalPosition(splat.entity.getLocalPosition().clone());
+        const copy = new Splat(asset, new Quat());
 
         if (func === 'separate') {
             editHistory.add(new MultiOp([

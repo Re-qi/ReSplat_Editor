@@ -425,11 +425,31 @@ class ColorPanel extends Container {
         tooltips.register(lutIntensityRevert, '恢复默认值', 'bottom');
         lutIntensityRow.append(lutIntensityRevert);
 
-        // 撤回：恢复 LUT 预设到默认（null）
-        const lutRevert = createRevertBtn(() => {
-            revertParam((s: any) => {
-                s.lut = null;
-            });
+        // 撤回：恢复 LUT 预设到默认
+        const lutRevert = createRevertBtn(async () => {
+            if (!selected) return;
+            try {
+                const lut = await GaussianLUT.fromUrl(
+                    `${BackendClient.BASE_URL}/static/luts/${defaultLutFile}`,
+                    '默认',
+                    defaultLutFile
+                );
+                start();
+                if (op) {
+                    op.newState.lut = lut;
+                    if (op.newState.lutIntensity === 0) {
+                        op.newState.lutIntensity = 1;
+                        suppress = true;
+                        lutIntensitySlider.value = 1;
+                        suppress = false;
+                    }
+                    op.do();
+                }
+                end();
+            } catch (e) {
+                console.error('[color-panel] LUT default load failed:', e);
+                updateUIFromState(selected);
+            }
         });
         tooltips.register(lutRevert, '恢复默认值', 'bottom');
 
