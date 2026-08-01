@@ -60,6 +60,7 @@ const application = {
                 { src: 'static/icons', dest: 'static' },
                 { src: 'static/lib', dest: 'static' },
                 { src: 'static/locales', dest: 'static' },
+                { src: 'static/luts', dest: 'static' },
                 { src: 'static/env/VertebraeHDRI_v1_512.png', dest: 'static/env' },
                 // splat-transform WebP WASM — needed at runtime for SOG encoding.
                 // The JS is bundled into index.js, but the .wasm binary must be

@@ -1,7 +1,9 @@
 import {
     ADDRESS_CLAMP_TO_EDGE,
+    FILTER_LINEAR,
     FILTER_NEAREST,
     PIXELFORMAT_R8,
+    PIXELFORMAT_RGBA8,
     PIXELFORMAT_R16U,
     Asset,
     BoundingBox,
@@ -17,8 +19,10 @@ import {
 
 import { BlockingPlane } from './blocking-plane';
 import { BoxShape } from './box-shape';
+import { HSL_CENTERS_F32, HSL_HALF_WIDTHS_F32 } from './color-grade';
 import { Element, ElementType } from './element';
 import { LodEditLog } from './lod-edit-log';
+import { GaussianLUT } from './lut';
 import { Serializer } from './serializer';
 import { vertexShader, fragmentShader, gsplatCenter } from './shaders/splat-shader';
 import { SphereShape } from './sphere-shape';
@@ -74,6 +78,19 @@ class Splat extends Element {
     _blackPoint = 0;
     _whitePoint = 1;
     _transparency = 1;
+    // HSL mixer: 8 color ranges × 3 adjustments (hue/sat/light), normalized
+    // hue shifts in [-0.5, 0.5] (i.e. ±180°), sat/light shifts in [-1, 1]
+    _hslHueShifts = new Float32Array(8);
+    _hslSatShifts = new Float32Array(8);
+    _hslLightShifts = new Float32Array(8);
+    _hslDefineActive = false;
+
+    // LUT color grading: per-splat 16^3 3D LUT + intensity (0..1, 0 = off)
+    _lut: GaussianLUT | null = null;
+    _lutIntensity = 1;
+    _lutTexture: Texture | null = null;
+    _lutDefineActive = false;
+    _lutVersion = 0;  // bumped on lut change so serialize() detects it for re-render
 
     originalFilePath: string | null = null;
 
@@ -215,6 +232,10 @@ class Splat extends Element {
 
     destroy() {
         super.destroy();
+        if (this._lutTexture) {
+            this._lutTexture.destroy();
+            this._lutTexture = null;
+        }
         this.entity.destroy();
         this.asset.registry.remove(this.asset);
         this.asset.unload();
@@ -364,6 +385,10 @@ class Splat extends Element {
         serializer.pack(this.visible);
         serializer.pack(this.tintClr.r, this.tintClr.g, this.tintClr.b);
         serializer.pack(this.temperature, this.saturation, this.brightness, this.blackPoint, this.whitePoint, this.transparency);
+        serializer.packa(Array.from(this._hslHueShifts));
+        serializer.packa(Array.from(this._hslSatShifts));
+        serializer.packa(Array.from(this._hslLightShifts));
+        serializer.pack(this._lutVersion, this._lutIntensity);
     }
 
     onPreRender() {
@@ -409,6 +434,42 @@ class Splat extends Element {
 
         material.setParameter('saturation', this.saturation);
         material.setParameter('transformPalette', this.transformPalette.texture);
+
+        // HSL mixer parameters
+        const hasHsl = this.hasHslShift();
+        if (hasHsl !== this._hslDefineActive) {
+            material.setDefine('HSL_MIXER', hasHsl ? '1' : '0');
+            material.update();              // 消费 _definesDirty → clearVariants → 着色器重编译
+            this._hslDefineActive = hasHsl;
+        }
+        if (hasHsl) {
+            // NOTE: PlayCanvas registers array uniforms under 'name[0]' (getActiveUniform
+            // returns the [0]-suffixed name), so setParameter must use the [0] suffix to
+            // match the shader input's scopeId. See standard-material.js ambientSH[0].
+            material.setParameter('hslCenters[0]', HSL_CENTERS_F32);
+            material.setParameter('hslHalfWidths[0]', HSL_HALF_WIDTHS_F32);
+            material.setParameter('hslHueShifts[0]', this._hslHueShifts);
+            material.setParameter('hslSatShifts[0]', this._hslSatShifts);
+            material.setParameter('hslLightShifts[0]', this._hslLightShifts);
+        }
+
+        // LUT color grading parameters
+        const hasLut = !!this._lut && this._lutIntensity > 0;
+        if (hasLut !== this._lutDefineActive) {
+            console.warn(`[LUT] define transition: ${this._lutDefineActive} → ${hasLut} (lut=${!!this._lut}, intensity=${this._lutIntensity})`);
+            material.setDefine('LUT_ENABLED', hasLut ? '1' : '0');
+            material.update();
+            this._lutDefineActive = hasLut;
+        }
+        if (hasLut) {
+            const lutTex = this.loadLutTexture();
+            if (lutTex) {
+                material.setParameter('lutTexture', lutTex);
+                material.setParameter('lutIntensity', this._lutIntensity);
+            } else {
+                console.warn('[LUT] hasLut=true but loadLutTexture returned null');
+            }
+        }
 
         // Set display mode
         const displayMode = events.invoke('view.displayMode') || 'color';
@@ -603,6 +664,108 @@ class Splat extends Element {
         return this._transparency;
     }
 
+    set hslHueShifts(value: Float32Array) {
+        this._hslHueShifts.set(value);
+        this.markSaveDirty();
+        this.scene?.events.fire('splat.hslHueShifts', this);
+    }
+
+    get hslHueShifts() {
+        return this._hslHueShifts;
+    }
+
+    set hslSatShifts(value: Float32Array) {
+        this._hslSatShifts.set(value);
+        this.markSaveDirty();
+        this.scene?.events.fire('splat.hslSatShifts', this);
+    }
+
+    get hslSatShifts() {
+        return this._hslSatShifts;
+    }
+
+    set hslLightShifts(value: Float32Array) {
+        this._hslLightShifts.set(value);
+        this.markSaveDirty();
+        this.scene?.events.fire('splat.hslLightShifts', this);
+    }
+
+    get hslLightShifts() {
+        return this._hslLightShifts;
+    }
+
+    set lut(value: GaussianLUT | null) {
+        if (value === this._lut) return;
+        this._lut = value;
+        this._lutVersion++;
+        // invalidate cached GPU texture so it rebuilds from new data
+        if (this._lutTexture) {
+            this._lutTexture.destroy();
+            this._lutTexture = null;
+        }
+        this.markSaveDirty();
+        this.scene?.events.fire('splat.lut', this);
+    }
+
+    get lut() {
+        return this._lut;
+    }
+
+    set lutIntensity(value: number) {
+        if (value !== this._lutIntensity) {
+            this._lutIntensity = value;
+            this.markSaveDirty();
+            this.scene?.events.fire('splat.lutIntensity', this);
+        }
+    }
+
+    get lutIntensity() {
+        return this._lutIntensity;
+    }
+
+    // Build (or reuse) a 256x16 RGBA8 GPU texture from the LUT's pixel data.
+    // LINEAR filtering + half-texel inset in the shader prevents cross-slice bleed.
+    private loadLutTexture(): Texture | null {
+        if (!this._lut) return null;
+        if (this._lutTexture) return this._lutTexture;
+        const { device } = this.entity.gsplat.instance.resource as GSplatResource;
+        const tex = new Texture(device, {
+            name: 'lutTexture',
+            width: 256,
+            height: 16,
+            format: PIXELFORMAT_RGBA8,
+            mipmaps: false,
+            minFilter: FILTER_LINEAR,
+            magFilter: FILTER_LINEAR,
+            addressU: ADDRESS_CLAMP_TO_EDGE,
+            addressV: ADDRESS_CLAMP_TO_EDGE
+        });
+        // upload pixels via a canvas source
+        const canvas = document.createElement('canvas');
+        canvas.width = 256;
+        canvas.height = 16;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) {
+            tex.destroy();
+            return null;
+        }
+        const imgData = ctx.createImageData(256, 16);
+        imgData.data.set(this._lut.data);
+        ctx.putImageData(imgData, 0, 0);
+        tex.setSource(canvas);
+        this._lutTexture = tex;
+        return tex;
+    }
+
+    hasHslShift() {
+        for (let i = 0; i < 8; i++) {
+            if (this._hslHueShifts[i] !== 0 || this._hslSatShifts[i] !== 0 || this._hslLightShifts[i] !== 0) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     // get pivot position/rotation/scale (caller should have awaited operation that changed data)
     getPivot(mode: 'center' | 'boundCenter', selection: boolean, result: Transform) {
         const { entity } = this;
@@ -647,6 +810,9 @@ class Splat extends Element {
             blackPoint: this.blackPoint,
             whitePoint: this.whitePoint,
             transparency: this.transparency,
+            hslHueShifts: Array.from(this._hslHueShifts),
+            hslSatShifts: Array.from(this._hslSatShifts),
+            hslLightShifts: Array.from(this._hslLightShifts),
             originalFilePath: this.originalFilePath ?? null,
             lccFilePath: this.lccFilePath,
             lodCounts: this.lodCounts.length > 0 ? this.lodCounts : null,
@@ -670,6 +836,9 @@ class Splat extends Element {
         this.blackPoint = blackPoint;
         this.whitePoint = whitePoint;
         this.transparency = transparency;
+        this._hslHueShifts = new Float32Array(doc.hslHueShifts ?? [0, 0, 0, 0, 0, 0, 0, 0]);
+        this._hslSatShifts = new Float32Array(doc.hslSatShifts ?? [0, 0, 0, 0, 0, 0, 0, 0]);
+        this._hslLightShifts = new Float32Array(doc.hslLightShifts ?? [0, 0, 0, 0, 0, 0, 0, 0]);
         this.originalFilePath = doc.originalFilePath ?? null;
         // LCC multi-LOD metadata (null for non-LCC splats)
         this.lccFilePath = doc.lccFilePath ?? null;

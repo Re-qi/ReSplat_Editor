@@ -32,6 +32,134 @@ vec3 applySaturation(vec3 color) {
     return grey + (color - grey) * saturation;
 }
 
+#if HSL_MIXER
+uniform vec4 hslCenters[2];       // 8 hue centers (normalized 0-1), packed as 2 vec4
+uniform vec4 hslHalfWidths[2];    // 8 half widths (normalized 0-1)
+uniform vec4 hslHueShifts[2];     // 8 hue shifts (normalized, -0.5..0.5)
+uniform vec4 hslSatShifts[2];     // 8 saturation shifts (-1..1)
+uniform vec4 hslLightShifts[2];   // 8 lightness shifts (-1..1)
+
+// RGB to HSL conversion. Returns vec3(h, s, l) with h in [0,1]
+vec3 rgb2hsl(vec3 c) {
+    float maxc = max(c.r, max(c.g, c.b));
+    float minc = min(c.r, min(c.g, c.b));
+    float l = (maxc + minc) * 0.5;
+    float d = maxc - minc;
+    float h = 0.0;
+    float s = 0.0;
+    if (d > 1e-6) {
+        s = (l < 0.5) ? d / (maxc + minc) : d / (2.0 - maxc - minc);
+        if (maxc == c.r) {
+            h = (c.g - c.b) / d + (c.g < c.b ? 6.0 : 0.0);
+        } else if (maxc == c.g) {
+            h = (c.b - c.r) / d + 2.0;
+        } else {
+            h = (c.r - c.g) / d + 4.0;
+        }
+        h *= 0.16666667;  // /6
+    }
+    return vec3(h, s, l);
+}
+
+// HSL to RGB conversion. h in [0,1]
+vec3 hsl2rgb(vec3 hsl) {
+    float h = hsl.x;
+    float s = hsl.y;
+    float l = hsl.z;
+    if (s < 1e-6) return vec3(l);
+    float q = (l < 0.5) ? l * (1.0 + s) : l + s - l * s;
+    float p = 2.0 * l - q;
+    float r = q;
+    float g = q;
+    float b = q;
+    float[3] hk = float[3](h + 0.33333333, h, h - 0.33333333);
+    float[3] rgb = float[3](r, g, b);
+    for (int i = 0; i < 3; i++) {
+        float t = hk[i];
+        if (t < 0.0) t += 1.0;
+        if (t > 1.0) t -= 1.0;
+        if (t < 0.16666667) rgb[i] = p + (q - p) * 6.0 * t;
+        else if (t < 0.5) rgb[i] = q;
+        else if (t < 0.66666667) rgb[i] = p + (q - p) * (0.66666667 - t) * 6.0;
+        else rgb[i] = p;
+    }
+    return vec3(rgb[0], rgb[1], rgb[2]);
+}
+
+// Color range weight with smooth falloff and hue wrap-around
+float rangeWeight(float hue, float center, float halfWidth) {
+    float d = abs(hue - center);
+    d = min(d, 1.0 - d);
+    return smoothstep(halfWidth, 0.0, d);
+}
+
+// Apply HSL mixer: 8 color ranges with weighted hue/sat/light adjustments
+vec3 applyHslMixer(vec3 rgb) {
+    vec3 hsl = rgb2hsl(rgb);
+    float totalWeight = 0.0;
+    float sumHue = 0.0;
+    float sumSat = 0.0;
+    float sumLight = 0.0;
+
+    // Unpack 8 values from 2 vec4s
+    float[8] centers = float[8](hslCenters[0].x, hslCenters[0].y, hslCenters[0].z, hslCenters[0].w,
+                                 hslCenters[1].x, hslCenters[1].y, hslCenters[1].z, hslCenters[1].w);
+    float[8] halfWidths = float[8](hslHalfWidths[0].x, hslHalfWidths[0].y, hslHalfWidths[0].z, hslHalfWidths[0].w,
+                                    hslHalfWidths[1].x, hslHalfWidths[1].y, hslHalfWidths[1].z, hslHalfWidths[1].w);
+    float[8] hueShifts = float[8](hslHueShifts[0].x, hslHueShifts[0].y, hslHueShifts[0].z, hslHueShifts[0].w,
+                                   hslHueShifts[1].x, hslHueShifts[1].y, hslHueShifts[1].z, hslHueShifts[1].w);
+    float[8] satShifts = float[8](hslSatShifts[0].x, hslSatShifts[0].y, hslSatShifts[0].z, hslSatShifts[0].w,
+                                   hslSatShifts[1].x, hslSatShifts[1].y, hslSatShifts[1].z, hslSatShifts[1].w);
+    float[8] lightShifts = float[8](hslLightShifts[0].x, hslLightShifts[0].y, hslLightShifts[0].z, hslLightShifts[0].w,
+                                     hslLightShifts[1].x, hslLightShifts[1].y, hslLightShifts[1].z, hslLightShifts[1].w);
+
+    for (int i = 0; i < 8; i++) {
+        float w = rangeWeight(hsl.x, centers[i], halfWidths[i]);
+        totalWeight += w;
+        sumHue += w * hueShifts[i];
+        sumSat += w * satShifts[i];
+        sumLight += w * lightShifts[i];
+    }
+
+    if (totalWeight > 1e-4) {
+        float invW = 1.0 / totalWeight;
+        hsl.x = fract(hsl.x + sumHue * invW + 1.0);
+        hsl.y = clamp(hsl.y + sumSat * invW, 0.0, 1.0);
+        hsl.z = clamp(hsl.z + sumLight * invW, 0.0, 1.0);
+        return hsl2rgb(hsl);
+    }
+    return rgb;
+}
+#endif
+
+#if LUT_ENABLED
+uniform sampler2D lutTexture;
+uniform float lutIntensity;
+
+// 16^3 3D LUT packed as a 256x16 texture: 16 B-slices laid out horizontally,
+// each slice is 16x16 texels (R along X, G along Y). Bilinear within each
+// slice (R,G) and linear across B-slices, matching ColorGrade.applyDC.
+vec3 applyLUT(vec3 rgb) {
+    float bIdx = clamp(rgb.b, 0.0, 1.0) * 15.0;
+    float b0 = floor(bIdx);
+    float b1 = min(b0 + 1.0, 15.0);
+    float bFrac = fract(bIdx);
+
+    float tileW = 1.0 / 16.0;        // 16 tiles across 256px
+    float texelX = 1.0 / 256.0;      // x texel size
+    float texelY = 1.0 / 16.0;       // y texel size
+
+    // map r,g in [0,1] to within-tile UV spanning [half_texel, tileW - half_texel]
+    // (and full height minus half texel) so bilinear never bleeds across B-slices.
+    float rU = (tileW - texelX) * clamp(rgb.r, 0.0, 1.0) + texelX * 0.5;
+    float gU = (1.0 - texelY) * clamp(rgb.g, 0.0, 1.0) + texelY * 0.5;
+
+    vec3 c0 = texture2D(lutTexture, vec2(b0 * tileW + rU, gU)).rgb;
+    vec3 c1 = texture2D(lutTexture, vec2(b1 * tileW + rU, gU)).rgb;
+    return mix(c0, c1, bFrac);
+}
+#endif
+
 void main(void) {
     // read gaussian details
     SplatSource source;
@@ -134,8 +262,18 @@ void main(void) {
         // apply tint/brightness
         color = color * clrScale + vec4(clrOffset, 0.0);
 
+        // apply HSL mixer (color range adjustments)
+        #if HSL_MIXER
+        color.xyz = applyHslMixer(color.xyz);
+        #endif
+
         // apply saturation
         color.xyz = applySaturation(color.xyz);
+
+        // apply LUT color grading (16^3 3D LUT, intensity-mixed)
+        #if LUT_ENABLED
+        color.xyz = mix(color.xyz, applyLUT(clamp(color.xyz, 0.0, 1.0)), lutIntensity);
+        #endif
 
         // don't allow out-of-range alpha
         color.a = clamp(color.a, 0.0, 1.0);

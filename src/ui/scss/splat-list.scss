@@ -3,13 +3,14 @@
 .splat-list {
     min-height: 80px;
     padding: 0px;
-    width: 322px;
+    width: 100%;
 
     .splat-item {
         display: flex;
         flex-direction: row;
         padding: 2px;
-        width: 316px;
+        width: 100%;
+        box-sizing: border-box;
 
         &:hover.visible {
             cursor: pointer;

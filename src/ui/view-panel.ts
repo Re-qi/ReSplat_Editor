@@ -4,12 +4,23 @@ import { Color } from 'playcanvas';
 import { Events } from '../events';
 import { ShortcutManager } from '../shortcut-manager';
 import { localize, formatTooltipWithShortcut } from './localization';
+import cornerUpLeftSvg from './svg/corner-up-left.svg';
 import iterationCwSvg from './svg/iteration-cw.svg';
 import { Tooltips } from './tooltips';
 
 const createSvg = (svgString: string) => {
     const decodedStr = decodeURIComponent(svgString.substring('data:image/svg+xml,'.length));
     return new DOMParser().parseFromString(decodedStr, 'image/svg+xml').documentElement;
+};
+
+// 创建行级撤回按钮（恢复单个参数到初始值），图标 16x16
+const createRevertBtn = (onRevert: () => void) => {
+    const btn = new Container({
+        class: 'row-revert-btn'
+    });
+    btn.dom.appendChild(createSvg(cornerUpLeftSvg));
+    btn.on('click', onRevert);
+    return btn;
 };
 
 class ViewPanel extends Container {
@@ -25,9 +36,11 @@ class ViewPanel extends Container {
         super(args);
 
         // stop pointer events bubbling
-        ['pointerdown', 'pointerup', 'pointermove', 'wheel', 'dblclick'].forEach((eventName) => {
+        ['pointerdown', 'pointerup', 'pointermove', 'dblclick'].forEach((eventName) => {
             this.dom.addEventListener(eventName, (event: Event) => event.stopPropagation());
         });
+        // wheel: stopPropagation but allow default scrolling (passive: true)
+        this.dom.addEventListener('wheel', (event: Event) => event.stopPropagation(), { passive: true });
 
         // header
 
@@ -138,8 +151,18 @@ class ViewPanel extends Container {
         clrPickers.append(unselectedClrPicker);
         clrPickers.append(lockedClrPicker);
 
+        // 撤回：恢复4个颜色到初始值
+        const clrRevert = createRevertBtn(() => {
+            events.fire('setBgClr', new Color(30 / 255, 30 / 255, 30 / 255));
+            events.fire('setSelectedClr', new Color(1, 1, 0, 120 / 255));
+            events.fire('setUnselectedClr', new Color(0, 0, 1, 0.3137));
+            events.fire('setLockedClr', new Color(0, 0, 0, 0.3137));
+        });
+        tooltips.register(clrRevert, '恢复默认值', 'bottom');
+
         clrRow.append(clrLabel);
         clrRow.append(clrPickers);
+        clrRow.append(clrRevert);
 
         // tonemapping
 
@@ -168,6 +191,13 @@ class ViewPanel extends Container {
         tonemappingRow.append(tonemappingLabel);
         tonemappingRow.append(tonemappingSelection);
 
+        // 撤回：恢复色调映射到 linear
+        const tonemappingRevert = createRevertBtn(() => {
+            events.fire('camera.setTonemapping', 'linear');
+        });
+        tooltips.register(tonemappingRevert, '恢复默认值', 'bottom');
+        tonemappingRow.append(tonemappingRevert);
+
         // camera fov
 
         const fovRow = new Container({
@@ -190,6 +220,13 @@ class ViewPanel extends Container {
         fovRow.append(fovLabel);
         fovRow.append(fovSlider);
 
+        // 撤回：恢复视场角到 75
+        const fovRevert = createRevertBtn(() => {
+            events.fire('camera.setFov', 75);
+        });
+        tooltips.register(fovRevert, '恢复默认值', 'bottom');
+        fovRow.append(fovRevert);
+
         // sh bands
         const shBandsRow = new Container({
             class: 'view-panel-row'
@@ -210,6 +247,13 @@ class ViewPanel extends Container {
 
         shBandsRow.append(shBandsLabel);
         shBandsRow.append(shBandsSlider);
+
+        // 撤回：恢复 SH 阶数到 3
+        const shBandsRevert = createRevertBtn(() => {
+            events.fire('view.setBands', 3);
+        });
+        tooltips.register(shBandsRevert, '恢复默认值', 'bottom');
+        shBandsRow.append(shBandsRevert);
 
         // camera fly speed
 
@@ -233,6 +277,13 @@ class ViewPanel extends Container {
         cameraFlySpeedRow.append(cameraFlySpeedLabel);
         cameraFlySpeedRow.append(cameraFlySpeedSlider);
 
+        // 撤回：恢复飞行速度到 1
+        const cameraFlySpeedRevert = createRevertBtn(() => {
+            events.fire('camera.setFlySpeed', 1);
+        });
+        tooltips.register(cameraFlySpeedRevert, '恢复默认值', 'bottom');
+        cameraFlySpeedRow.append(cameraFlySpeedRevert);
+
         // centers size
 
         const centersSizeRow = new Container({
@@ -254,6 +305,13 @@ class ViewPanel extends Container {
 
         centersSizeRow.append(centersSizeLabel);
         centersSizeRow.append(centersSizeSlider);
+
+        // 撤回：恢复点中心大小到 2
+        const centersSizeRevert = createRevertBtn(() => {
+            events.fire('camera.setSplatSize', 2);
+        });
+        tooltips.register(centersSizeRevert, '恢复默认值', 'bottom');
+        centersSizeRow.append(centersSizeRevert);
 
         // centers gaussian color
         const centersColorRow = new Container({
@@ -587,6 +645,15 @@ class ViewPanel extends Container {
         tooltips.register(selectedClrPicker, localize('panel.view-options.selected-color'), 'bottom');
         tooltips.register(unselectedClrPicker, localize('panel.view-options.unselected-color'), 'bottom');
         tooltips.register(lockedClrPicker, localize('panel.view-options.locked-color'), 'bottom');
+
+        // Detect vertical scrollbar presence
+        const checkScrollbar = () => {
+            const hasVerticalScrollbar = this.dom.scrollHeight > this.dom.clientHeight;
+            this.dom.classList.toggle('has-scrollbar', hasVerticalScrollbar);
+        };
+        const observer = new ResizeObserver(checkScrollbar);
+        observer.observe(this.dom);
+        checkScrollbar();
     }
 }
 

@@ -187,12 +187,333 @@ class LeftToolbar extends Container {
         this.append(coordSpace);
         this.append(origin);
 
+        // Compact mode: when the left toolbar overlaps the top menu bar (#menu-bar)
+        // or the bottom status bar (#status-bar), collapse picker/polygon/lasso into a popup.
+        // Brush button gets flood-like interaction: short-click fires active tool, long-press/drag opens popup.
+        const compactPopup = document.createElement('div');
+        compactPopup.className = 'left-toolbar-popup left-toolbar-compact-popup';
+        compactPopup.style.display = 'none';
+        this.dom.appendChild(compactPopup);
+
+        compactPopup.addEventListener('mousedown', e => e.stopPropagation());
+        compactPopup.addEventListener('mouseup', e => e.stopPropagation());
+
+        const compactToggle = document.createElement('div');
+        compactToggle.className = 'left-toolbar-compact-toggle';
+        compactToggle.style.cssText = 'position: absolute; right: 1px; bottom: 1px; width: 10px; height: 10px; cursor: pointer; z-index: 2;';
+        compactToggle.style.display = 'none';
+        brush.dom.style.position = 'relative';
+        brush.dom.appendChild(compactToggle);
+
+        // Compact tool definitions
+        const compactTools = ['brushSelection', 'rectSelection', 'polygonSelection', 'lassoSelection'];
+        let currentCompactIndex = 0;
+
+        const compactSvgMap: Record<string, string> = {
+            brushSelection: brushSvg,
+            rectSelection: pickerSvg,
+            polygonSelection: polygonSvg,
+            lassoSelection: lassoSvg
+        };
+
+        const compactTooltipMap: Record<string, string> = {
+            brushSelection: 'tooltip.left-toolbar.brush',
+            rectSelection: 'tooltip.left-toolbar.rect',
+            polygonSelection: 'tooltip.left-toolbar.polygon',
+            lassoSelection: 'tooltip.left-toolbar.lasso'
+        };
+
+        let currentCompactSvgEl: HTMLElement | null = null;
+        let isCompact = false;
+        // Cached height of the toolbar in non-compact mode. Only refreshed while
+        // non-compact (compact mode shrinks the toolbar, so measuring then would
+        // give the wrong value). Used to detect overlap stably without oscillation.
+        let nonCompactHeight: number | null = null;
+
+        const updateBrushSvg = (toolName: string) => {
+            if (!isCompact) return;
+            const svgData = compactSvgMap[toolName];
+            if (!svgData) return;
+            if (currentCompactSvgEl) currentCompactSvgEl.remove();
+            // Remove any remaining SVGs (e.g. original brush icon from non-compact init)
+            brush.dom.querySelectorAll('svg').forEach(s => s.remove());
+            currentCompactSvgEl = createSvg(svgData) as HTMLElement;
+            brush.dom.appendChild(currentCompactSvgEl);
+        };
+
+        const hideCompactPopup = () => {
+            compactPopup.style.display = 'none';
+        };
+
+        const showCompactPopup = () => {
+            if (!isCompact) return;
+            const brushRect = brush.dom.getBoundingClientRect();
+            const toolbarRect = this.dom.getBoundingClientRect();
+            compactPopup.style.left = `${brushRect.right - toolbarRect.left + 10}px`;
+            compactPopup.style.top = `${brushRect.top - toolbarRect.top - 6}px`;
+            compactPopup.style.display = '';
+        };
+
+        const enableCompact = () => {
+            if (isCompact) return;
+            isCompact = true;
+            this.remove(picker);
+            this.remove(polygon);
+            this.remove(lasso);
+            compactPopup.appendChild(picker.dom);
+            compactPopup.appendChild(polygon.dom);
+            compactPopup.appendChild(lasso.dom);
+            compactToggle.style.display = '';
+            // Show the SVG for the currently active compact tool on brush
+            updateBrushSvg(compactTools[currentCompactIndex]);
+            // Update tooltip
+            tooltips.unregister(brush);
+            tooltips.register(brush, tooltip(compactTooltipMap[compactTools[currentCompactIndex]], `tool.${compactTools[currentCompactIndex]}`));
+        };
+
+        const disableCompact = () => {
+            if (!isCompact) return;
+            isCompact = false;
+            hideCompactPopup();
+            // Restore original brush SVG
+            if (currentCompactSvgEl) {
+                currentCompactSvgEl.remove();
+                currentCompactSvgEl = null;
+            }
+            brush.dom.appendChild(createSvg(brushSvg));
+            // Restore buttons to toolbar
+            let prev = brush;
+            for (const btn of [picker, polygon, lasso]) {
+                if (btn.dom.parentElement === compactPopup) {
+                    compactPopup.removeChild(btn.dom);
+                }
+                this.appendAfter(btn, prev);
+                prev = btn;
+            }
+            compactToggle.style.display = 'none';
+            // Restore brush tooltip
+            tooltips.unregister(brush);
+            tooltips.register(brush, tooltip('tooltip.left-toolbar.brush', 'tool.brushSelection'));
+        };
+
+        const checkCompactMode = () => {
+            // Cache the non-compact height while we can measure it (non-compact state).
+            if (!isCompact) {
+                const measured = this.dom.getBoundingClientRect().height;
+                // Only cache a real measurement — the constructor runs before the
+                // toolbar is appended to the DOM, so an early call yields height 0.
+                if (measured > 0) nonCompactHeight = measured;
+            }
+
+            // #menu is an empty absolutely-positioned wrapper (height 0); the visible
+            // top bar is #menu-bar (top: 24px, height: 50px). Use it as the anchor and
+            // as the source of the live "top-bar height" buffer.
+            const menuEl = document.getElementById('menu-bar');
+            const statusEl = document.getElementById('status-bar');
+
+            // The toolbar is vertically centered via CSS (top: 50% + translateY(-50%)),
+            // so its vertical center is stable across compact/non-compact transitions.
+            // We test whether the *non-compact* toolbar would collide with the top menu
+            // bar or the bottom status bar — using the cached non-compact height avoids
+            // the oscillation that would occur if we measured the (already-shrunk)
+            // compact toolbar. `pad` shifts the collision threshold: each decrease of
+            // menuHeight/4 delays the fold by one menu-bar height (4 × pad in the
+            // page-height threshold). Negative pad shrinks both boxes, so the fold
+            // fires only once the toolbar overlaps an anchor by 2×|pad|. Currently
+            // pad = -3×menuHeight/8 → fold ¾ of a menu-bar height into overlap, 1.5
+            // menu-bar heights later than literal overlap.
+            const menuHeight = menuEl ? menuEl.getBoundingClientRect().height : 0;
+            const pad = -3 * menuHeight / 8;
+
+            // Vertically center the toolbar at the midpoint of the range
+            // [2× menu-bar height, page height] instead of the raw page center, so
+            // it sits below the top bar area. The toolbar is position:absolute with
+            // no positioned ancestor, so its containing block is the viewport and
+            // `top` is measured from the viewport top; the CSS translateY(-50%)
+            // keeps it centered on this `top` value. menuHeight is live, so this is
+            // re-applied on every resize/RO tick.
+            const pageHeight = window.innerHeight;
+            this.dom.style.top = `${(pageHeight + 2 * menuHeight) / 2}px`;
+
+            const rect = this.dom.getBoundingClientRect();
+            const center = (rect.top + rect.bottom) / 2;
+            const h = nonCompactHeight ?? rect.height;
+
+            type Box = { top: number; bottom: number; left: number; right: number };
+            const expand = (b: Box, m: number): Box => ({
+                top: b.top - m, bottom: b.bottom + m, left: b.left - m, right: b.right + m
+            });
+            const overlaps = (a: Box, b: Box) =>
+                !(a.bottom <= b.top || a.top >= b.bottom || a.right <= b.left || a.left >= b.right);
+
+            const tbBox = expand({ top: center - h / 2, bottom: center + h / 2, left: rect.left, right: rect.right }, pad);
+
+            let isOverlapping = false;
+            if (menuEl && overlaps(tbBox, expand(menuEl.getBoundingClientRect(), pad))) isOverlapping = true;
+            if (statusEl && overlaps(tbBox, expand(statusEl.getBoundingClientRect(), pad))) isOverlapping = true;
+
+            if (isOverlapping) {
+                enableCompact();
+            } else {
+                disableCompact();
+            }
+        };
+
+        // Popup button actions for drag-to-select
+        const compactBtnActions = [
+            { element: picker.dom, toolEvent: 'tool.rectSelection' },
+            { element: polygon.dom, toolEvent: 'tool.polygonSelection' },
+            { element: lasso.dom, toolEvent: 'tool.lassoSelection' }
+        ];
+
+        const findCompactBtnAtPoint = (x: number, y: number) => {
+            const el = document.elementFromPoint(x, y);
+            if (!el) return null;
+            for (const btn of compactBtnActions) {
+                if (btn.element === el || btn.element.contains(el)) return btn;
+            }
+            return null;
+        };
+
+        let brushLongPressTimer: ReturnType<typeof setTimeout> | null = null;
+        let brushIsLongPress = false;
+        let brushIsLongPressDrag = false;
+        let brushDragStartX = 0;
+
+        const cleanupBrushLongPress = () => {
+            brushIsLongPressDrag = false;
+            brushIsLongPress = false;
+            hideCompactPopup();
+            document.removeEventListener('mouseup', onBrushDocMouseUpCapture, true);
+            document.removeEventListener('mousemove', onBrushDocMouseMoveCapture, true);
+            for (const btn of compactBtnActions) {
+                btn.element.classList.remove('longpress-hover');
+            }
+        };
+
+        const onBrushDocMouseMoveCapture = (e: MouseEvent) => {
+            const hovered = findCompactBtnAtPoint(e.clientX, e.clientY);
+            for (const btn of compactBtnActions) {
+                btn.element.classList.toggle('longpress-hover', btn === hovered);
+            }
+        };
+
+        const onBrushDocMouseUpCapture = (e: MouseEvent) => {
+            if (e.button !== 0) return;
+            const btn = findCompactBtnAtPoint(e.clientX, e.clientY);
+            if (btn) {
+                events.fire(btn.toolEvent);
+            }
+            cleanupBrushLongPress();
+        };
+
+        const startBrushLongPressDrag = () => {
+            brushIsLongPress = true;
+            brushIsLongPressDrag = true;
+            if (brushLongPressTimer) {
+                clearTimeout(brushLongPressTimer);
+                brushLongPressTimer = null;
+            }
+            showCompactPopup();
+            document.addEventListener('mouseup', onBrushDocMouseUpCapture, true);
+            document.addEventListener('mousemove', onBrushDocMouseMoveCapture, true);
+        };
+
+        const BRUSH_SWIPE_THRESHOLD = 20;
+
+        // Brush button: flood-like interaction (short-click / long-press / drag)
+        brush.dom.addEventListener('mousedown', (e) => {
+            if (e.button !== 0) return;
+            if (compactToggle.contains(e.target as Node)) return;
+
+            if (!isCompact) return; // non-compact: handled by regular click below
+
+            brushIsLongPress = false;
+            brushIsLongPressDrag = false;
+            brushDragStartX = e.clientX;
+
+            brushLongPressTimer = setTimeout(() => {
+                startBrushLongPressDrag();
+            }, 200);
+        });
+
+        brush.dom.addEventListener('mousemove', (e) => {
+            if (!isCompact) return;
+            if (brushIsLongPressDrag || !brushLongPressTimer) return;
+            if (e.clientX - brushDragStartX >= BRUSH_SWIPE_THRESHOLD) {
+                startBrushLongPressDrag();
+                const hovered = findCompactBtnAtPoint(e.clientX, e.clientY);
+                for (const btn of compactBtnActions) {
+                    btn.element.classList.toggle('longpress-hover', btn === hovered);
+                }
+            }
+        });
+
+        brush.dom.addEventListener('mouseup', (e) => {
+            if (e.button !== 0) return;
+            if (compactToggle.contains(e.target as Node)) return;
+
+            if (!isCompact) {
+                events.fire('tool.brushSelection');
+                return;
+            }
+
+            if (brushLongPressTimer) {
+                clearTimeout(brushLongPressTimer);
+                brushLongPressTimer = null;
+            }
+
+            if (brushIsLongPressDrag) return;
+            if (!brushIsLongPress) {
+                if (compactPopup.style.display !== 'none') {
+                    hideCompactPopup();
+                } else {
+                    events.fire(`tool.${compactTools[currentCompactIndex]}`);
+                }
+            }
+        });
+
+        brush.dom.addEventListener('mouseleave', () => {
+            if (brushLongPressTimer) {
+                clearTimeout(brushLongPressTimer);
+                brushLongPressTimer = null;
+            }
+        });
+
+        // Regular click for non-compact mode
+        brush.dom.addEventListener('click', (e) => {
+            if (isCompact) return; // handled by mousedown/mouseup above
+            events.fire('tool.brushSelection');
+        });
+
+        window.addEventListener('resize', checkCompactMode);
+
+        compactToggle.addEventListener('mousedown', (e) => {
+            e.stopPropagation();
+            if (compactPopup.style.display !== 'none') {
+                hideCompactPopup();
+            } else {
+                showCompactPopup();
+            }
+        });
+
+        document.addEventListener('mousedown', (e) => {
+            if (compactPopup.style.display !== 'none' &&
+                !compactPopup.contains(e.target as Node) &&
+                !brush.dom.contains(e.target as Node)) {
+                hideCompactPopup();
+            }
+        });
+
+        // Close compact popup when a button inside is clicked
+        compactPopup.addEventListener('click', () => {
+            hideCompactPopup();
+        }, true);
+
         undo.dom.addEventListener('click', () => events.fire('edit.undo'));
         redo.dom.addEventListener('click', () => events.fire('edit.redo'));
         polygon.dom.addEventListener('click', () => events.fire('tool.polygonSelection'));
         lasso.dom.addEventListener('click', () => events.fire('tool.lassoSelection'));
-        brush.dom.addEventListener('click', () => events.fire('tool.brushSelection'));
-
         // 用于动态切换 flood 按钮上的 SVG
         let currentFloodSvgElement: HTMLElement | null = null;
         const floodSvgMap: Record<string, string> = {
@@ -440,8 +761,17 @@ class LeftToolbar extends Container {
             if (floodTools.includes(toolName)) {
                 currentFloodIndex = floodTools.indexOf(toolName);
             }
+            // 如果是compact工具组，更新当前索引和brush SVG
+            if (compactTools.includes(toolName)) {
+                currentCompactIndex = compactTools.indexOf(toolName);
+                updateBrushSvg(toolName);
+                if (isCompact) {
+                    tooltips.unregister(brush);
+                    tooltips.register(brush, tooltip(compactTooltipMap[toolName], `tool.${toolName}`));
+                }
+            }
             picker.class[toolName === 'rectSelection' ? 'add' : 'remove']('active');
-            brush.class[toolName === 'brushSelection' ? 'add' : 'remove']('active');
+            brush.class[(isCompact ? compactTools.includes(toolName) : toolName === 'brushSelection') ? 'add' : 'remove']('active');
             flood.class[['floodSelection', 'eyedropperSelection', 'opacitySelection', 'sizeSelection'].includes(toolName) ? 'add' : 'remove']('active');
             polygon.class[toolName === 'polygonSelection' ? 'add' : 'remove']('active');
             lasso.class[toolName === 'lassoSelection' ? 'add' : 'remove']('active');
@@ -485,6 +815,21 @@ class LeftToolbar extends Container {
             return text;
         };
 
+        // Trigger compact mode check now that tooltip is available.
+        // Defer until the toolbar is in the DOM: the constructor runs before
+        // editor.ts appends it, so an immediate call measures zero height and
+        // finds no #menu element. A ResizeObserver on the parent also catches
+        // canvas-container height changes from panel toggles (timeline / data
+        // panel), not just window resizes. The toolbar is position:absolute, so
+        // compact mode never changes the parent's size — no feedback loop.
+        requestAnimationFrame(() => {
+            checkCompactMode();
+            const parent = this.dom.parentElement;
+            if (parent && typeof ResizeObserver !== 'undefined') {
+                new ResizeObserver(() => checkCompactMode()).observe(parent);
+            }
+        });
+
         // register tooltips
         tooltips.register(undo, tooltip('tooltip.left-toolbar.undo', 'edit.undo'));
         tooltips.register(redo, tooltip('tooltip.left-toolbar.redo', 'edit.redo'));
@@ -515,6 +860,15 @@ class LeftToolbar extends Container {
                 currentFloodIndex = (currentFloodIndex + 1) % floodTools.length;
             }
             events.fire(`tool.${floodTools[currentFloodIndex]}`);
+        });
+
+        // 键盘快捷键: compact brush 工具组循环切换（仅在compact模式下有效）
+        events.on('tool.cycleCompactTool', () => {
+            if (!isCompact) return;
+            if (brush.class.contains('active')) {
+                currentCompactIndex = (currentCompactIndex + 1) % compactTools.length;
+            }
+            events.fire(`tool.${compactTools[currentCompactIndex]}`);
         });
     }
 }

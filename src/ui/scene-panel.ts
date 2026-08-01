@@ -29,10 +29,12 @@ class ScenePanel extends Container {
 
         super(args);
 
-        // stop pointer events bubbling
-        ['pointerdown', 'pointerup', 'pointermove', 'wheel', 'dblclick'].forEach((eventName) => {
+        // stop pointer events bubpling
+        ['pointerdown', 'pointerup', 'pointermove', 'dblclick'].forEach((eventName) => {
             this.dom.addEventListener(eventName, (event: Event) => event.stopPropagation());
         });
+        // wheel: stopPropagation but allow default scrolling (passive: true)
+        this.dom.addEventListener('wheel', (event: Event) => event.stopPropagation(), { passive: true });
 
 
         const sceneHeader = new Container({
@@ -149,7 +151,7 @@ class ScenePanel extends Container {
         this.append(pointCloudGroup);
         this.append(new WrapperList(events));
         this.append(transformHeader);
-        this.append(new Transform(events));
+        this.append(new Transform(events, tooltips));
         this.append(colorSection);
         this.append(viewSection);
 

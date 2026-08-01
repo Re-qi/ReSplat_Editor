@@ -231,6 +231,16 @@ app.use(express.static(DIST_DIR, {
     }
 }));
 
+// In packaged Electron, extraResources copies static/ to resourcesPath/static/
+// (outside asar). Serve it as a fallback for /static/* requests so LUT files
+// and other assets remain accessible even if asar reading has issues, and
+// so users can drop new LUT PNGs into resourcesPath/static/luts/ post-install.
+if (process.resourcesPath) {
+    app.use('/static', express.static(path.join(process.resourcesPath, 'static'), {
+        fallthrough: true
+    }));
+}
+
 // temp directory for path-based conversion output
 // Use os.tmpdir() instead of __dirname to avoid ENOTDIR when packaged in asar
 const TEMP_DIR = path.join(os.tmpdir(), 'resplat-temp');
@@ -259,6 +269,36 @@ const upload = multer({
 // ---------------------------------------------------------------------------
 app.get('/api/health', (_req, res) => {
     res.json({ ok: true, version: '1.0.4' });
+});
+
+// ---------------------------------------------------------------------------
+// API: LUT files list
+// ---------------------------------------------------------------------------
+// LUT files may live in two places depending on dev/packaged mode:
+//   1. process.resourcesPath/static/luts  — Electron packaged (extraResources,
+//      copied outside asar for direct filesystem access)
+//   2. DIST_DIR/static/luts               — dev mode or inside asar
+app.get('/api/luts', (_req, res) => {
+    const candidates = [];
+    if (process.resourcesPath) {
+        candidates.push(path.join(process.resourcesPath, 'static', 'luts'));
+    }
+    candidates.push(path.join(DIST_DIR, 'static', 'luts'));
+
+    for (const lutsDir of candidates) {
+        try {
+            if (!fs.existsSync(lutsDir)) continue;
+            const files = fs.readdirSync(lutsDir);
+            const pngFiles = files.filter(f => /\.png$/i.test(f));
+            if (pngFiles.length > 0) {
+                res.json(pngFiles);
+                return;
+            }
+        } catch (e) {
+            // try next candidate
+        }
+    }
+    res.json([]);
 });
 
 // ---------------------------------------------------------------------------

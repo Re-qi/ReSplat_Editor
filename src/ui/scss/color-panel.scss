@@ -5,40 +5,212 @@
     transform: translate(0, -50%);
     right: 102px;
     width: 320px;
+    max-height: calc(100% - 48px);
+    overflow-y: auto;
     flex-direction: column;
 
     &:not(.pcui-hidden) {
         display: flex;
     }
 
-    & > .color-panel-row {
+    &.has-scrollbar {
+        width: 330px;
+        padding-right: 10px;
+        box-sizing: border-box;
+    }
+
+    .color-panel-row {
         display: flex;
         flex-direction: row;
         padding: 2px;
         height: 28px;
 
-        & > .color-panel-row-label {
-            flex-grow: 1;
+        .color-panel-row-label {
+            flex-shrink: 0;
+            width: 52px;
+            margin-right: 6px;
         }
 
-        & > .color-panel-row-picker {
-            margin: 0px 0px;
+        .color-panel-row-picker {
+            margin: 0px 0px 0px auto;
             padding: 0px;
             height: 24px;
         }
 
-        & > .color-panel-row-slider {
-            width: 220px;
+        .color-panel-row-slider {
+            flex-grow: 1;
+            min-width: 180px;
             margin: 0px;
 
-            & > .pcui-slider-container {
-                & > .pcui-slider-bar {
-                    & > .pcui-slider-handle {
+            .pcui-slider-container {
+                .pcui-slider-bar {
+                    .pcui-slider-handle {
                         background-color: $clr-default;
                         border-radius: 3px;
                     }
                 }
             }
+        }
+
+        .color-panel-row-select {
+            flex-grow: 1;
+            min-width: 0;
+            margin: 0px 4px 0px auto;
+        }
+
+        // LUT intensity row: label "LUT 强度" is longer than other labels, so
+        // allow the slider to shrink below 180px to avoid truncating the label.
+        &.lut-intensity-row {
+            .color-panel-row-slider {
+                min-width: 0;
+            }
+        }
+
+        // 行级撤回按钮：16x16 图标，固定在最右侧
+        // 同时覆盖顶层 .color-panel-row 和混色器 .color-panel-mixer-section 内的行
+        .row-revert-btn {
+            flex-shrink: 0;
+            flex-grow: 0;
+            width: 16px;
+            height: 16px;
+            margin: 4px 0 4px 4px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            border-radius: 3px;
+            cursor: pointer;
+            color: $clr-disabled;
+            opacity: 0.6;
+
+            svg {
+                width: 16px;
+                height: 16px;
+                color: currentColor;
+                fill: currentColor;
+            }
+
+            &:hover {
+                color: $clr-hilight;
+                opacity: 1;
+                background-color: rgba(255, 102, 0, 0.15);
+            }
+        }
+    }
+
+    .color-panel-mixer-toggle {
+        display: flex;
+        flex-direction: row;
+        margin-top: 0px;
+        margin-bottom: -5px;
+        padding: 4px 2px;
+        border-top: 1px solid rgba(255, 255, 255, 0.1);
+        gap: 4px;
+
+        .color-panel-mixer-toggle-btn {
+            flex: 1;
+            text-align: center;
+            padding: 4px 8px;
+            font-size: 11px;
+            color: rgba(255, 255, 255, 0.6);
+            background: rgba(255, 255, 255, 0.05);
+            border-radius: 3px;
+            cursor: pointer;
+            user-select: none;
+            transition: all 0.15s ease;
+
+            &:hover {
+                background: rgba(255, 255, 255, 0.1);
+                color: rgba(255, 255, 255, 0.9);
+            }
+
+            &.active {
+                background: $clr-hilight;
+                color: #fff;
+                font-weight: 500;
+            }
+        }
+    }
+
+    .color-panel-mixer-section {
+        display: flex;
+        flex-direction: column;
+        margin-top: 0px;
+
+        &.pcui-hidden {
+            display: none;
+        }
+
+        .color-panel-mixer-title {
+            padding: 4px 2px 2px;
+            border-top: 1px solid rgba(255, 255, 255, 0.1);
+            font-size: 11px;
+            color: rgba(255, 255, 255, 0.7);
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            text-align: center;
+
+            &.pcui-hidden {
+                display: none;
+            }
+        }
+
+        .color-panel-row {
+            display: flex;
+            flex-direction: row;
+            padding: 2px;
+            height: 28px;
+
+            .color-panel-row-label {
+                flex-shrink: 0;
+                width: 52px;
+                margin-right: 6px;
+            }
+
+            .color-panel-row-slider {
+                flex-grow: 1;
+                min-width: 180px;
+                margin: 0px;
+
+                .pcui-slider-container {
+                    .pcui-slider-bar {
+                        .pcui-slider-handle {
+                            background-color: $clr-default;
+                            border-radius: 3px;
+                        }
+                    }
+                }
+            }
+
+            // HSL 混色器滑条渐变背景（24 条规则：3 段 × 8 色）
+            // 色相段：相邻色相过渡（三色渐变）
+            &[data-mixer-type="hue"][data-color-range="red"]      .pcui-slider-bar { background: linear-gradient(to right, #cc44cc, #ff4444, #ff8800); }
+            &[data-mixer-type="hue"][data-color-range="orange"]   .pcui-slider-bar { background: linear-gradient(to right, #ff4444, #ff8800, #ffcc00); }
+            &[data-mixer-type="hue"][data-color-range="yellow"]   .pcui-slider-bar { background: linear-gradient(to right, #ff8800, #ffcc00, #88cc44); }
+            &[data-mixer-type="hue"][data-color-range="green"]    .pcui-slider-bar { background: linear-gradient(to right, #ffcc00, #88cc44, #44bb88); }
+            &[data-mixer-type="hue"][data-color-range="aqua"]     .pcui-slider-bar { background: linear-gradient(to right, #88cc44, #44bb88, #44aacc); }
+            &[data-mixer-type="hue"][data-color-range="blue"]     .pcui-slider-bar { background: linear-gradient(to right, #44bb88, #44aacc, #4466cc); }
+            &[data-mixer-type="hue"][data-color-range="purple"]   .pcui-slider-bar { background: linear-gradient(to right, #44aacc, #4466cc, #aa44cc); }
+            &[data-mixer-type="hue"][data-color-range="magenta"]  .pcui-slider-bar { background: linear-gradient(to right, #4466cc, #aa44cc, #cc44cc); }
+
+            // 饱和度段：灰褐→鲜艳（双色渐变）
+            &[data-mixer-type="saturation"][data-color-range="red"]      .pcui-slider-bar { background: linear-gradient(to right, #887766, #ff4444); }
+            &[data-mixer-type="saturation"][data-color-range="orange"]   .pcui-slider-bar { background: linear-gradient(to right, #887766, #ff8800); }
+            &[data-mixer-type="saturation"][data-color-range="yellow"]   .pcui-slider-bar { background: linear-gradient(to right, #887766, #ffcc00); }
+            &[data-mixer-type="saturation"][data-color-range="green"]    .pcui-slider-bar { background: linear-gradient(to right, #887766, #88cc44); }
+            &[data-mixer-type="saturation"][data-color-range="aqua"]     .pcui-slider-bar { background: linear-gradient(to right, #887766, #44bb88); }
+            &[data-mixer-type="saturation"][data-color-range="blue"]     .pcui-slider-bar { background: linear-gradient(to right, #887766, #44aacc); }
+            &[data-mixer-type="saturation"][data-color-range="purple"]   .pcui-slider-bar { background: linear-gradient(to right, #887766, #4466cc); }
+            &[data-mixer-type="saturation"][data-color-range="magenta"]  .pcui-slider-bar { background: linear-gradient(to right, #887766, #aa44cc); }
+
+            // 明亮度段：暗→中→亮（三色渐变）
+            &[data-mixer-type="lightness"][data-color-range="red"]       .pcui-slider-bar { background: linear-gradient(to right, #441111, #ff4444, #ffaaaa); }
+            &[data-mixer-type="lightness"][data-color-range="orange"]    .pcui-slider-bar { background: linear-gradient(to right, #442200, #ff8800, #ffcc88); }
+            &[data-mixer-type="lightness"][data-color-range="yellow"]    .pcui-slider-bar { background: linear-gradient(to right, #443300, #ffcc00, #ffee88); }
+            &[data-mixer-type="lightness"][data-color-range="green"]     .pcui-slider-bar { background: linear-gradient(to right, #113311, #88cc44, #ccffaa); }
+            &[data-mixer-type="lightness"][data-color-range="aqua"]      .pcui-slider-bar { background: linear-gradient(to right, #003322, #44bb88, #aaddcc); }
+            &[data-mixer-type="lightness"][data-color-range="blue"]      .pcui-slider-bar { background: linear-gradient(to right, #001144, #4466cc, #aabbff); }
+            &[data-mixer-type="lightness"][data-color-range="purple"]    .pcui-slider-bar { background: linear-gradient(to right, #220044, #aa44cc, #ddaaee); }
+            &[data-mixer-type="lightness"][data-color-range="magenta"]   .pcui-slider-bar { background: linear-gradient(to right, #440033, #cc44cc, #eeaaee); }
         }
     }
 }

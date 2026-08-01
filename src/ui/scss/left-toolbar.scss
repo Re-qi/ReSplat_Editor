@@ -101,6 +101,25 @@
             border-color: transparent transparent $clr-active transparent;
         }
     }
+
+    /* Compact mode - brush button with toggle indicator */
+    .left-toolbar-compact-toggle {
+        &::after {
+            content: '';
+            position: absolute;
+            right: 0;
+            bottom: 0;
+            width: 0;
+            height: 0;
+            border-style: solid;
+            border-width: 0 0 5px 5px;
+            border-color: transparent transparent $clr-default transparent;
+        }
+    }
+
+    &.active .left-toolbar-compact-toggle::after {
+        border-color: transparent transparent $clr-active transparent;
+    }
 }
 
 .left-toolbar-popup {

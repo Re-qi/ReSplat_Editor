@@ -1,9 +1,13 @@
 import { Button, Container, ContainerArgs, Label, VectorInput } from '@playcanvas/pcui';
 import { Quat, Vec3 } from 'playcanvas';
 
+import { Element } from '../element';
 import { Events } from '../events';
 import { localize } from './localization';
 import { Pivot } from '../pivot';
+import { Tooltips } from './tooltips';
+import { Transform as TRSTransform } from '../transform';
+import cornerUpLeftSvg from './svg/corner-up-left.svg';
 import lockOpenSvg from './svg/lock-keyhole-open.svg';
 import lockSvg from './svg/lock-keyhole.svg';
 
@@ -12,10 +16,20 @@ const createSvg = (svgString: string) => {
     return new DOMParser().parseFromString(decodedStr, 'image/svg+xml').documentElement;
 };
 
+// 创建行级撤回按钮（恢复单个属性到初始值），图标 16x16
+const createRevertBtn = (onRevert: () => void) => {
+    const btn = new Container({
+        class: 'row-revert-btn'
+    });
+    btn.dom.appendChild(createSvg(cornerUpLeftSvg));
+    btn.on('click', onRevert);
+    return btn;
+};
+
 const v = new Vec3();
 
 class Transform extends Container {
-    constructor(events: Events, args: ContainerArgs = {}) {
+    constructor(events: Events, tooltips: Tooltips, args: ContainerArgs = {}) {
         args = {
             ...args,
             id: 'transform'
@@ -45,6 +59,19 @@ class Transform extends Container {
         position.append(positionLabel);
         position.append(positionVector);
 
+        // 撤回：恢复位置到选中时的初始值
+        const positionRevert = createRevertBtn(() => {
+            if (!positionVector.enabled) return;
+            const pivot = events.invoke('pivot') as Pivot;
+            if (pivot && initialTransform) {
+                pivot.start();
+                pivot.moveTRS(initialTransform.position, pivot.transform.rotation, pivot.transform.scale);
+                pivot.end();
+            }
+        });
+        tooltips.register(positionRevert, '恢复默认位置', 'bottom');
+        position.append(positionRevert);
+
         // rotation
         const rotation = new Container({
             class: 'transform-row'
@@ -66,6 +93,19 @@ class Transform extends Container {
 
         rotation.append(rotationLabel);
         rotation.append(rotationVector);
+
+        // 撤回：恢复旋转到选中时的初始值
+        const rotationRevert = createRevertBtn(() => {
+            if (!rotationVector.enabled) return;
+            const pivot = events.invoke('pivot') as Pivot;
+            if (pivot && initialTransform) {
+                pivot.start();
+                pivot.moveTRS(pivot.transform.position, initialTransform.rotation, pivot.transform.scale);
+                pivot.end();
+            }
+        });
+        tooltips.register(rotationRevert, '恢复默认旋转', 'bottom');
+        rotation.append(rotationRevert);
 
         // scale
         const scale = new Container({
@@ -97,6 +137,19 @@ class Transform extends Container {
         scale.append(scaleLabel);
         scale.append(scaleLock);
         scale.append(scaleVector);
+
+        // 撤回：恢复缩放到选中时的初始值
+        const scaleRevert = createRevertBtn(() => {
+            if (!scaleVector.enabled) return;
+            const pivot = events.invoke('pivot') as Pivot;
+            if (pivot && initialTransform) {
+                pivot.start();
+                pivot.moveTRS(pivot.transform.position, pivot.transform.rotation, initialTransform.scale);
+                pivot.end();
+            }
+        });
+        tooltips.register(scaleRevert, '恢复默认缩放', 'bottom');
+        scale.append(scaleRevert);
 
         this.append(position);
         this.append(rotation);
@@ -227,13 +280,41 @@ class Transform extends Container {
         bindEvents(rotationVector, onChangeGeneral);
         bindEvents(scaleVector, onChangeScale);
 
+        // 记录选中物体的初始 transform（用于撤回按钮恢复）
+        let initialTransform: TRSTransform | null = null;
+
+        const captureInitialTransform = (selection: any) => {
+            if (selection && (selection as any).entity) {
+                const entity = (selection as any).entity;
+                initialTransform = new TRSTransform(
+                    entity.getLocalPosition(),
+                    entity.getLocalRotation(),
+                    entity.getLocalScale()
+                );
+            } else if (selection && (selection as any).getPivot) {
+                // 形状（BoxShape/SphereShape）等无 entity 的元素：使用 pivot 当前值
+                const pivot = events.invoke('pivot') as Pivot;
+                if (pivot) {
+                    initialTransform = new TRSTransform(
+                        pivot.transform.position,
+                        pivot.transform.rotation,
+                        pivot.transform.scale
+                    );
+                }
+            } else {
+                initialTransform = null;
+            }
+        };
+
         // toggle ui availability based on selection
         events.on('selection.changed', (selection) => {
             positionVector.enabled = rotationVector.enabled = scaleVector.enabled = !!selection;
+            captureInitialTransform(selection);
         });
 
         events.on('selection.shapeChanged', (selection) => {
             positionVector.enabled = rotationVector.enabled = scaleVector.enabled = !!selection;
+            captureInitialTransform(selection);
         });
 
         events.on('pivot.placed', (pivot: Pivot) => {

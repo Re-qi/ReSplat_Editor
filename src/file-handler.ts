@@ -274,6 +274,74 @@ const loadImagesTxt = async (file: ImportFile, events: Events) => {
     });
 };
 
+// Electron-only: when an LCC/LCC2 container is dropped without its sibling
+// data files, resolve them from the dropped file's directory via the Electron
+// fs bridge (walkDir/readFile IPC). In the browser there is no path access, so
+// this is a no-op and the load will fail later with a missing-file error.
+//
+// LCC siblings are flat .bin (index/data/shcoef); LCC2 siblings are .sog/.spz
+// chunks nested under data/3dgs/. We walk the whole tree and add each sibling
+// under its path relative to the meta's directory (forward slashes) so the
+// loader can resolve it the same way as a folder drop.
+const resolveLccSiblings = async (files: ImportFile[], events: Events): Promise<ImportFile[]> => {
+    const electronAPI = (window as any).electronAPI;
+    if (!electronAPI?.isElectron) return files;
+
+    const lccFile = files.find((f) => {
+        const n = f.filename.toLowerCase();
+        return n.endsWith('.lcc') || n.endsWith('.lcc2');
+    });
+    if (!lccFile?.filePath) return files;
+
+    // Siblings already provided (folder drop / multi-select) — nothing to do.
+    const hasSibling = files.some((f) => {
+        const n = f.filename.toLowerCase();
+        return n.endsWith('.bin') || n.endsWith('.sog') || n.endsWith('.spz');
+    });
+    if (hasSibling) return files;
+
+    // Derive the dropped file's directory (handle both / and \ separators).
+    const fp = lccFile.filePath;
+    const lastSep = Math.max(fp.lastIndexOf('/'), fp.lastIndexOf('\\'));
+    const dirPath = lastSep >= 0 ? fp.substring(0, lastSep) : '';
+    if (!dirPath) return files;
+
+    // Actual IPC work follows — keep the user informed.
+    events.fire('startSpinner');
+    events.fire('spinnerText', localize('popup.lcc-resolving-siblings'));
+    try {
+        let entries: Array<{ path: string, rel: string }> = [];
+        try {
+            entries = await electronAPI.walkDir(dirPath);
+        } catch (err) {
+            console.warn(`[import] resolveLccSiblings: walkDir failed for ${dirPath}`, err);
+            return files;
+        }
+
+        const result: ImportFile[] = [...files];
+        for (const e of entries) {
+            const lower = e.rel.toLowerCase();
+            // LCC sibling data files only (.bin / .sog / .spz); skip the
+            // container meta itself and any unrelated files.
+            if (!lower.endsWith('.bin') && !lower.endsWith('.sog') && !lower.endsWith('.spz')) continue;
+            if (lower.endsWith('.lcc') || lower.endsWith('.lcc2')) continue;
+            try {
+                const data: Uint8Array = await electronAPI.readFile(e.path);
+                // key by relative path so nested LCC2 chunks (data/3dgs/*.sog)
+                // resolve the same way as a folder drop
+                result.push({ filename: e.rel, contents: new Blob([data as BlobPart]) });
+            } catch (err) {
+                console.warn(`[import] resolveLccSiblings: readFile failed for ${e.rel}`, err);
+            }
+        }
+
+        console.log(`[import] resolveLccSiblings: added ${result.length - files.length} sibling(s) from ${dirPath}`);
+        return result;
+    } finally {
+        events.fire('stopSpinner');
+    }
+};
+
 // initialize file handler events
 const initFileHandler = (scene: Scene, events: Events, dropTarget: HTMLElement) => {
 
@@ -453,7 +521,10 @@ const initFileHandler = (scene: Scene, events: Events, dropTarget: HTMLElement) 
             events.fire('plysequence.setFrames', files.map(f => f.contents));
             events.fire('timeline.frame', 0);
         } else if (isSog(filenames) || isLcc(filenames)) {
-            const model = await importSplatModel(files, animationFrame);
+            // Electron: auto-resolve sibling data files when a single .lcc/.lcc2
+            // is dropped without them (browser can't — no path access).
+            const resolvedFiles = isLcc(filenames) ? await resolveLccSiblings(files, events) : files;
+            const model = await importSplatModel(resolvedFiles, animationFrame);
             if (model) {
                 model.originalFilePath = files[0].url ?? files[0].filename;
                 result.push(model);

@@ -14,7 +14,9 @@
     }
 
     &.has-scrollbar {
-        padding-right: 10px;
+        width: 330px;
+        padding-right: 0px;
+        box-sizing: border-box;
 
         &::-webkit-scrollbar-track {
             border-top-right-radius: 8px;
@@ -26,15 +28,29 @@
         }
     }
 
+    // 统一所有直接子元素的 box-sizing，仅底部间距避免与容器边缘留白
+    & > * {
+        margin: 0 0 2px 0;
+        box-sizing: border-box;
+    }
+
     // Embedded color and view panels - override absolute positioning
     #color-panel,
     #view-panel {
         position: static !important;
         transform: none !important;
         flex-direction: column;
+        overflow-y: visible !important;
+        max-height: none !important;
+        margin: 0 !important;
+        width: 100% !important;
 
         &:not(.pcui-hidden) {
             display: flex;
+        }
+
+        &.has-scrollbar {
+            padding-right: 0 !important;
         }
 
         // Style the internal panel-header for embedded panels
@@ -43,6 +59,7 @@
             flex-direction: row;
             align-items: center;
             padding: 2px;
+            height: 24px;
             background-color: $bcg-dark;
 
             & > .panel-header-icon {
@@ -86,9 +103,8 @@
     }
 }
 
-#scene-panel > .panel-header:nth-child(1),
-#scene-panel > .panel-header:nth-child(3) {
-    width: 316px;
+#scene-panel > .panel-header:nth-child(6) {
+    height: 24px;
 }
 
 #scene-panel > .panel-header:nth-child(4) {
@@ -116,7 +132,6 @@
 .splat-list-container {
     max-height: 200px;
     overflow: auto;
-    width: 322px;
 }
 
 .lod-switcher {
@@ -125,7 +140,6 @@
     gap: 8px;
     padding: 6px 12px;
     border-bottom: 1px solid #2a2a2a;
-    width: 322px;
     box-sizing: border-box;
 }
 

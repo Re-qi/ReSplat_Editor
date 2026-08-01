@@ -2,14 +2,14 @@
 
 .point-cloud-group-section {
     // Inherits from #scene-panel context
-    width: 316px;
 
     > .panel-header {
         display: flex;
         flex-direction: row;
         align-items: center;
         padding: 2px;
-        width: 316px;
+        width: 100%;
+        box-sizing: border-box;
         background-color: $bcg-dark;
 
         > .panel-header-icon {
@@ -45,7 +45,7 @@
 .point-cloud-group-list {
     max-height: 150px;
     overflow: hidden auto;
-    width: 322px;
+    width: 100%;
 }
 
 .point-cloud-group-item {
@@ -54,7 +54,8 @@
     align-items: center;
     padding: 2px;
     height: 24px;
-    width: 316px;
+    width: 100%;
+    box-sizing: border-box;
     background-color: $bcg-primary;
     cursor: pointer;
 

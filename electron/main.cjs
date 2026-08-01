@@ -250,6 +250,35 @@ ipcMain.handle('fs:readDir', async (_event, dirPath) => {
     return fs.readdirSync(dirPath).map(name => path.join(dirPath, name));
 });
 
+// Recursively walk a directory tree. Returns [{ path, rel }] for every regular
+// file, where `path` is absolute and `rel` is the path relative to `dirPath`
+// using forward slashes (so it matches web FileSystemEntry fullPath conventions).
+// Used to auto-resolve LCC2 chunk siblings (.sog/.spz) that live in subdirectories
+// next to a dropped .lcc2 meta file.
+ipcMain.handle('fs:walk', async (_event, dirPath) => {
+    const fs = require('fs');
+    const path = require('path');
+    const result = [];
+    if (!fs.existsSync(dirPath)) return result;
+    const walk = (dir, relBase) => {
+        let entries;
+        try { entries = fs.readdirSync(dir); } catch (_e) { return; }
+        for (const name of entries) {
+            const full = path.join(dir, name);
+            const rel = relBase ? `${relBase}/${name}` : name;
+            let stat;
+            try { stat = fs.statSync(full); } catch (_e) { continue; }
+            if (stat.isDirectory()) {
+                walk(full, rel);
+            } else if (stat.isFile()) {
+                result.push({ path: full, rel });
+            }
+        }
+    };
+    walk(dirPath, '');
+    return result;
+});
+
 // Create a directory. `opts.recursive` mirrors fs.promises.mkdir semantics.
 // Accepts an absolute path (e.g. from openFolderDialog).
 ipcMain.handle('fs:mkdir', async (_event, p, opts) => {

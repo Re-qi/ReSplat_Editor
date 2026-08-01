@@ -3,10 +3,11 @@
 #transform {
     display: flex;
     flex-direction: column;
+    box-sizing: border-box;
 
     background-color: $bcg-primary;
 
-    padding: 6px;
+    padding: 2px;
 }
 
 .transform-row {
@@ -24,6 +25,7 @@
     flex-shrink: 0;
     flex-grow: 0;
     margin: 0px;
+    margin-left: 5px;
 }
 
 // 位置和旋转行标签保持70px宽度
@@ -32,8 +34,13 @@
     width: 70px;
 }
 
+// 缩放行标签右侧间距
+#transform > div:nth-child(3) > .transform-label {
+    margin-right: 6px;
+}
+
 .transform-lock-btn {
-    width: 28px;
+    width: 22px;
     height: 22px;
     flex-shrink: 0;
     flex-grow: 0;
@@ -62,6 +69,35 @@
 
 .transform-expand {
     flex-grow: 1;
+}
+
+// 行级撤回按钮：16x16 图标，固定在最右侧
+#transform .transform-row > .row-revert-btn {
+    flex-shrink: 0;
+    flex-grow: 0;
+    width: 16px;
+    height: 16px;
+    margin: 4px 0 4px 4px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 3px;
+    cursor: pointer;
+    color: $clr-disabled;
+    opacity: 0.6;
+
+    svg {
+        width: 16px;
+        height: 16px;
+        color: currentColor;
+        fill: currentColor;
+    }
+
+    &:hover {
+        color: $clr-hilight;
+        opacity: 1;
+        background-color: rgba(255, 102, 0, 0.15);
+    }
 }
 
 $height: 22px;

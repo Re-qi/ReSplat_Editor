@@ -4,6 +4,7 @@ import { AnimTrack } from './anim-track';
 import { Element, ElementType } from './element';
 import { Events } from './events';
 import { IndexRanges, sortedPredicate } from './index-ranges';
+import { GaussianLUT } from './lut';
 import { Pivot } from './pivot';
 import { Scene } from './scene';
 import { Splat } from './splat';
@@ -603,7 +604,30 @@ type ColorAdjustment = {
     brightness?: number,
     blackPoint?: number,
     whitePoint?: number,
-    transparency?: number
+    transparency?: number,
+    hslHueShifts?: number[],
+    hslSatShifts?: number[],
+    hslLightShifts?: number[],
+    lut?: GaussianLUT | null,
+    lutIntensity?: number
+};
+
+// Base64 encode/decode a LUT's RGBA bytes for .respproj serialization.
+// Synchronous so deserialize stays synchronous.
+const encodeLut = (lut: GaussianLUT | null | undefined) => {
+    if (!lut) return null;
+    let bin = '';
+    const d = lut.data;
+    for (let i = 0; i < d.length; i++) bin += String.fromCharCode(d[i]);
+    return { data: btoa(bin), name: lut.name, presetId: lut.presetId };
+};
+
+const decodeLut = (s: any): GaussianLUT | undefined => {
+    if (!s) return undefined;
+    const bin = atob(s.data);
+    const data = new Uint8ClampedArray(bin.length);
+    for (let i = 0; i < bin.length; i++) data[i] = bin.charCodeAt(i);
+    return new GaussianLUT(data, s.name ?? '', s.presetId ?? null);
 };
 
 class SetSplatColorAdjustmentOp {
@@ -622,7 +646,7 @@ class SetSplatColorAdjustmentOp {
 
     do() {
         const { splat } = this;
-        const { tintClr, temperature, saturation, brightness, blackPoint, whitePoint, transparency } = this.newState;
+        const { tintClr, temperature, saturation, brightness, blackPoint, whitePoint, transparency, hslHueShifts, hslSatShifts, hslLightShifts, lut, lutIntensity } = this.newState;
         if (tintClr) splat.tintClr = tintClr;
         if (temperature !== null) splat.temperature = temperature;
         if (saturation !== null) splat.saturation = saturation;
@@ -630,11 +654,16 @@ class SetSplatColorAdjustmentOp {
         if (blackPoint !== null) splat.blackPoint = blackPoint;
         if (whitePoint !== null) splat.whitePoint = whitePoint;
         if (transparency !== null) splat.transparency = transparency;
+        if (hslHueShifts) splat.hslHueShifts = new Float32Array(hslHueShifts);
+        if (hslSatShifts) splat.hslSatShifts = new Float32Array(hslSatShifts);
+        if (hslLightShifts) splat.hslLightShifts = new Float32Array(hslLightShifts);
+        if (lut !== undefined) splat.lut = lut;
+        if (lutIntensity !== null && lutIntensity !== undefined) splat.lutIntensity = lutIntensity;
     }
 
     undo() {
         const { splat } = this;
-        const { tintClr, temperature, saturation, brightness, blackPoint, whitePoint, transparency } = this.oldState;
+        const { tintClr, temperature, saturation, brightness, blackPoint, whitePoint, transparency, hslHueShifts, hslSatShifts, hslLightShifts, lut, lutIntensity } = this.oldState;
         if (tintClr) splat.tintClr = tintClr;
         if (temperature !== null) splat.temperature = temperature;
         if (saturation !== null) splat.saturation = saturation;
@@ -642,6 +671,11 @@ class SetSplatColorAdjustmentOp {
         if (blackPoint !== null) splat.blackPoint = blackPoint;
         if (whitePoint !== null) splat.whitePoint = whitePoint;
         if (transparency !== null) splat.transparency = transparency;
+        if (hslHueShifts) splat.hslHueShifts = new Float32Array(hslHueShifts);
+        if (hslSatShifts) splat.hslSatShifts = new Float32Array(hslSatShifts);
+        if (hslLightShifts) splat.hslLightShifts = new Float32Array(hslLightShifts);
+        if (lut !== undefined) splat.lut = lut;
+        if (lutIntensity !== null && lutIntensity !== undefined) splat.lutIntensity = lutIntensity;
     }
 
     serialize() {
@@ -653,7 +687,12 @@ class SetSplatColorAdjustmentOp {
             brightness: s.brightness ?? null,
             blackPoint: s.blackPoint ?? null,
             whitePoint: s.whitePoint ?? null,
-            transparency: s.transparency ?? null
+            transparency: s.transparency ?? null,
+            hslHueShifts: s.hslHueShifts ?? null,
+            hslSatShifts: s.hslSatShifts ?? null,
+            hslLightShifts: s.hslLightShifts ?? null,
+            lut: encodeLut(s.lut),
+            lutIntensity: s.lutIntensity ?? null
         });
         return {
             type: this.name,
@@ -673,7 +712,12 @@ class SetSplatColorAdjustmentOp {
             brightness: s.brightness ?? undefined,
             blackPoint: s.blackPoint ?? undefined,
             whitePoint: s.whitePoint ?? undefined,
-            transparency: s.transparency ?? undefined
+            transparency: s.transparency ?? undefined,
+            hslHueShifts: s.hslHueShifts ?? undefined,
+            hslSatShifts: s.hslSatShifts ?? undefined,
+            hslLightShifts: s.hslLightShifts ?? undefined,
+            lut: decodeLut(s.lut),
+            lutIntensity: s.lutIntensity ?? undefined
         });
         return new SetSplatColorAdjustmentOp({
             splat: scene.getSplatByIndex(data.splatIndex),
@@ -1183,6 +1227,24 @@ class MergeOp {
                         });
                     }
                 }
+            }
+
+            // Auto-create a group named after the source file containing all its gaussians
+            if (nonDeletedCount > 0) {
+                const filename = splat.filename;
+                const dotIndex = filename.lastIndexOf('.');
+                const autoGroupName = dotIndex > 0 ? filename.substring(0, dotIndex) : filename;
+                const allRemappedIndices: number[] = [];
+                for (let i = 0; i < state.length; i++) {
+                    const newIdx = indexMapping.get(i);
+                    if (newIdx !== undefined) {
+                        allRemappedIndices.push(newIdx);
+                    }
+                }
+                this.mergedGroupsData.push({
+                    name: autoGroupName,
+                    indices: new Uint32Array(allRemappedIndices).sort()
+                });
             }
 
             offset += nonDeletedCount;

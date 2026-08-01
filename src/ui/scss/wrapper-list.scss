@@ -2,14 +2,14 @@
 
 .wrapper-list-section {
     // Inherits from #scene-panel context
-    width: 316px;
 
     > .panel-header {
         display: flex;
         flex-direction: row;
         align-items: center;
         padding: 2px;
-        width: 316px;
+        width: 100%;
+        box-sizing: border-box;
         height: 24px;
         background-color: $bcg-dark;
 
@@ -46,7 +46,7 @@
 .wrapper-list-list {
     max-height: 150px;
     overflow: hidden auto;
-    width: 322px;
+    width: 100%;
 }
 
 .wrapper-list-item {
@@ -55,7 +55,8 @@
     align-items: center;
     padding: 2px 2px;
     height: 24px;
-    width: 316px;
+    width: 100%;
+    box-sizing: border-box;
     background-color: $bcg-primary;
     cursor: pointer;
 

@@ -100,6 +100,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
     /** List files in a directory (returns full paths) */
     readDir: (dirPath) => ipcRenderer.invoke('fs:readDir', dirPath),
 
+    /** Recursively walk a directory tree; returns [{ path, rel }] (rel uses forward slashes) */
+    walkDir: (dirPath) => ipcRenderer.invoke('fs:walk', dirPath),
+
     /** Create a directory (recursive when opts.recursive is true) */
     mkdir: (filePath, opts) => ipcRenderer.invoke('fs:mkdir', filePath, opts),
 

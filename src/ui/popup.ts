@@ -17,6 +17,8 @@ interface ShowOptions {
         text: string;
         link?: string;  // optional link rendered inline after the text
     };
+    okText?: string;        // override OK button label
+    cancelText?: string;    // override Cancel button label
 }
 
 type ShowResult = {
@@ -170,6 +172,10 @@ class Popup extends Container {
             cancelButton.hidden = type !== 'okcancel';
             yesButton.hidden = type !== 'yesno';
             noButton.hidden = type !== 'yesno';
+            // allow callers to override the OK/Cancel button labels (e.g. for
+            // binary choice dialogs where both buttons are valid options)
+            okButton.text = options.okText ?? localize('popup.ok');
+            cancelButton.text = options.cancelText ?? localize('popup.cancel');
             this.hidden = false;
 
             linkRow.hidden = link === undefined;

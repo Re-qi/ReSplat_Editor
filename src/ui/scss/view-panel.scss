@@ -5,10 +5,18 @@
     transform: translate(0, -50%);
     right: 102px;
     width: 320px;
+    max-height: calc(100% - 48px);
+    overflow-y: auto;
     flex-direction: column;
 
     &:not(.pcui-hidden) {
         display: flex;
+    }
+
+    &.has-scrollbar {
+        width: 330px;
+        padding-right: 10px;
+        box-sizing: border-box;
     }
 
     & > .panel-header:nth-child(1) {
@@ -71,6 +79,35 @@
         & > .view-panel-row-select {
             width: 187px;
             margin: 0;
+        }
+
+        // 行级撤回按钮：16x16 图标，固定在最右侧
+        & > .row-revert-btn {
+            flex-shrink: 0;
+            flex-grow: 0;
+            width: 16px;
+            height: 16px;
+            margin: 4px 0 4px 4px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            border-radius: 3px;
+            cursor: pointer;
+            color: $clr-disabled;
+            opacity: 0.6;
+
+            svg {
+                width: 16px;
+                height: 16px;
+                color: currentColor;
+                fill: currentColor;
+            }
+
+            &:hover {
+                color: $clr-hilight;
+                opacity: 1;
+                background-color: rgba(255, 102, 0, 0.15);
+            }
         }
     }
 }
