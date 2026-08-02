@@ -16,6 +16,20 @@ import cornerUpLeftSvg from './svg/corner-up-left.svg';
 import fileDownSvg from './svg/file-down.svg';
 import importSvg from './svg/import.svg';
 
+// -- LUT backend/static fallback -------------------------------------------------
+// When the Node.js backend is available, LUT files are served from
+// http://localhost:3266/static/luts/ and listed via /api/luts.
+// In static deployments (GitHub Pages), there is no backend, so we
+// fall back to relative paths (`./static/luts/…`) and a pre-generated
+// manifest.json file that lists all available LUT PNGs.
+let backendAvailable: boolean | null = null;
+const initBackendCheck = async () => {
+    backendAvailable = await BackendClient.isAvailable();
+};
+initBackendCheck();
+
+const lutBaseUrl = (): string => backendAvailable ? BackendClient.BASE_URL : '';
+
 const createSvg = (svgString: string) => {
     const decodedStr = decodeURIComponent(svgString.substring('data:image/svg+xml,'.length));
     return new DOMParser().parseFromString(decodedStr, 'image/svg+xml').documentElement;
@@ -362,22 +376,32 @@ class ColorPanel extends Container {
         // Dynamic LUT file list from static/luts/
         const defaultLutFile = '默认.png';
         const loadLutFileList = async () => {
-            try {
-                const resp = await fetch(`${BackendClient.BASE_URL}/api/luts`);
-                const files: string[] = await resp.json();
+            const sortFiles = (files: string[]) => {
                 const pngFiles = files.filter(f => /\.png$/i.test(f));
-                // Sort: 默认.png first, then the rest alphabetically
                 pngFiles.sort((a, b) => {
                     if (a === defaultLutFile) return -1;
                     if (b === defaultLutFile) return 1;
                     return a.localeCompare(b);
                 });
-                // Build options: all .png filenames
-                const lutFileOptions: Array<{ v: string, t: string }> = pngFiles.map(f => ({
+                return pngFiles.map(f => ({
                     v: f,
                     t: f.replace(/\.png$/i, '')
                 }));
-                lutSelect.options = lutFileOptions;
+            };
+
+            // Try backend API first (local dev / Electron)
+            try {
+                const resp = await fetch(`${BackendClient.BASE_URL}/api/luts`);
+                const files: string[] = await resp.json();
+                lutSelect.options = sortFiles(files);
+                return;
+            } catch { /* fallback to static manifest */ }
+
+            // Static fallback: load pre-generated manifest.json
+            try {
+                const resp = await fetch(`${lutBaseUrl()}/static/luts/manifest.json`);
+                const files: string[] = await resp.json();
+                lutSelect.options = sortFiles(files);
             } catch (e) {
                 console.error('[color-panel] Failed to load LUT file list:', e);
             }
@@ -430,7 +454,7 @@ class ColorPanel extends Container {
             if (!selected) return;
             try {
                 const lut = await GaussianLUT.fromUrl(
-                    `${BackendClient.BASE_URL}/static/luts/${defaultLutFile}`,
+                    `${lutBaseUrl()}/static/luts/${defaultLutFile}`,
                     '默认',
                     defaultLutFile
                 );
@@ -959,7 +983,7 @@ class ColorPanel extends Container {
             // LUT from static/luts/<filename>
             const name = value.replace(/\.png$/i, '');
             try {
-                const lut = await GaussianLUT.fromUrl(`${BackendClient.BASE_URL}/static/luts/${value}`, name, value);
+                const lut = await GaussianLUT.fromUrl(`${lutBaseUrl()}/static/luts/${value}`, name, value);
                 start();
                 if (op) {
                     op.newState.lut = lut;
@@ -1006,7 +1030,7 @@ class ColorPanel extends Container {
         // Download 默认.png as a LUT template, saved as Base_lut.png to user-chosen path
         lutDownloadBtn.on('click', async () => {
             try {
-                const resp = await fetch(`${BackendClient.BASE_URL}/static/luts/${defaultLutFile}`);
+                const resp = await fetch(`${lutBaseUrl()}/static/luts/${defaultLutFile}`);
                 const blob = await resp.blob();
                 const arrayBuffer = await blob.arrayBuffer();
                 const uint8 = new Uint8Array(arrayBuffer);
