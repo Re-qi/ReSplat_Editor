@@ -5,7 +5,7 @@
 [![Github Release](https://img.shields.io/github/v/release/Re-qi/ReSplat_Editor)](https://github.com/Re-qi/ReSplat_Editor/releases)
 [![License](https://img.shields.io/github/license/Re-qi/ReSplat_Editor)](https://github.com/Re-qi/ReSplat_Editor/blob/main/LICENSE)
 
-| [在线使用](https://re-qi.github.io/ReSplat_Editor/) | [用户文档](https://my.feishu.cn/wiki/Zi4QwJ3Alin6oLkazSGcRywKnBf?from=from_copylink) | [问题反馈](https://github.com/Re-qi/ReSplat_Editor/issues) |
+| [在线使用](https://re-qi.github.io/ReSplat_Editor/) | [官方文档](https://my.feishu.cn/wiki/Zi4QwJ3Alin6oLkazSGcRywKnBf?from=from_copylink) | [问题反馈](https://github.com/Re-qi/ReSplat_Editor/issues) |
 | :------------------------------------------------: | :------------------------------------------------------------------------------------------: | :--------------------------------------------------------: |
 
 ## 目录
@@ -85,6 +85,12 @@ ReSplat 重构了原版的选择球与选择盒，并新增了阻挡平面，三
 - 适用于因空三（空中三角测量）受到 **GPS 屏蔽器**影响而导致坐标精度丢失的高斯文件
 - 修复低浮点精度的高斯点在渲染时出现的**闪烁问题**
 - 自动检测并修正精度异常的坐标数据
+
+### 更丰富的调色参数
+
+像 Photoshop 和 Lightroom 一样对 3DGS 场景进行专业调色——色调、饱和度、亮度等参数直观可调，让点云色彩处理如照片后期般得心应手。
+
+![调色](./static/images/调色.png)
 
 ### 多语言支持
 
