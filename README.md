@@ -5,7 +5,7 @@
 [![Github Release](https://img.shields.io/github/v/release/Re-qi/ReSplat_Editor)](https://github.com/Re-qi/ReSplat_Editor/releases)
 [![License](https://img.shields.io/github/license/Re-qi/ReSplat_Editor)](https://github.com/Re-qi/ReSplat_Editor/blob/main/LICENSE)
 
-| [在线使用](https://re-qi.github.io/ReSplat_Editor/) | [用户文档](https://developer.playcanvas.com/user-manual/gaussian-splatting/editing/ReSplat/) | [问题反馈](https://github.com/Re-qi/ReSplat_Editor/issues) |
+| [在线使用](https://re-qi.github.io/ReSplat_Editor/) | [用户文档](https://my.feishu.cn/wiki/Zi4QwJ3Alin6oLkazSGcRywKnBf?from=from_copylink) | [问题反馈](https://github.com/Re-qi/ReSplat_Editor/issues) |
 | :------------------------------------------------: | :------------------------------------------------------------------------------------------: | :--------------------------------------------------------: |
 
 ## 目录
