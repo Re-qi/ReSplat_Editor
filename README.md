@@ -92,7 +92,14 @@ ReSplat 重构了原版的选择球与选择盒，并新增了阻挡平面，三
 
 - **LUT 调色**：引入 LUT 调色，可以在网上下载或者专业软件中制作 LUT 使用在 ReSplat 里
 
-![调色](./static/images/调色.png)
+<table>
+  <tr>
+    <td><img src="./static/images/调色1.png" alt="调色1"></td>
+    <td><img src="./static/images/调色2.png" alt="调色2"></td>
+    <td><img src="./static/images/调色3.png" alt="调色3"></td>
+    <td><img src="./static/images/调色4.png" alt="调色4"></td>
+  </tr>
+</table>
 
 ### 多语言支持
 
