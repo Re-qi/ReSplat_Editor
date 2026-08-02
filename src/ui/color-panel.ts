@@ -28,7 +28,7 @@ const initBackendCheck = async () => {
 };
 initBackendCheck();
 
-const lutBaseUrl = (): string => backendAvailable ? BackendClient.BASE_URL : '';
+const lutBaseUrl = (): string => (backendAvailable ? BackendClient.BASE_URL : '');
 
 const createSvg = (svgString: string) => {
     const decodedStr = decodeURIComponent(svgString.substring('data:image/svg+xml,'.length));
