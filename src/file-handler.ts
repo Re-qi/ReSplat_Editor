@@ -938,16 +938,19 @@ const initFileHandler = (scene: Scene, events: Events, dropTarget: HTMLElement) 
                     // Route to backend for large datasets (>10M splats) when a
                     // PLY file path and output directory are available (Electron).
                     const plyPath = splats[0]?.originalFilePath;
-                    if (totalSplats > 10_000_000 && plyPath && outputRoot && BackendClient.isAvailable()) {
+                    if (totalSplats > 10_000_000 && plyPath && outputRoot && await BackendClient.isAvailable()) {
                         console.warn(`[LCC2] Routing ${totalSplats.toLocaleString()} splats to backend (${plyPath})`);
-                        events.fire('progressUpdate', { text: 'Exporting via backend…', progress: -1 });
+                        events.fire('progressStart', 'Exporting LCC2');
+                        events.fire('progressUpdate', { text: 'Exporting via backend…', progress: 0 });
                         await BackendClient.lcc2ExportPath(plyPath, outputRoot, {
                             name: baseName,
                             lodLevels: options.lodLevels ?? 1,
                             shBands: serializeSettings.maxSHBands ?? 0,
                             iterations: options.sogIterations ?? 0
+                        }, ({ progress, text }) => {
+                            events.fire('progressUpdate', { text, progress });
                         });
-                        events.fire('progressUpdate', { text: 'Export complete', progress: 100 });
+                        events.fire('progressEnd');
                         break;
                     }
 

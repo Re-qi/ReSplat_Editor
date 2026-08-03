@@ -236,15 +236,21 @@ class BackendClient {
      * Export a PLY file as LCC2 using the backend pipeline.
      * Writes {name}.lcc2 + data/3dgs/*.sog into outputDir/{name}/.
      *
+     * The backend runs the export in a worker thread and returns a jobId
+     * immediately; this method polls /api/lcc2-export-status until the job
+     * finishes, invoking `onProgress` as progress updates arrive.
+     *
      * @param filePath - Absolute path to the source PLY file on disk
      * @param outputDir - Parent directory (the backend creates {name}/ inside it)
      * @param options - Export settings
+     * @param onProgress - Optional progress callback ({ progress, text })
      * @returns Export metadata when complete
      */
     static async lcc2ExportPath(
         filePath: string,
         outputDir: string,
-        options: { name: string; lodLevels?: number; shBands?: number; iterations?: number }
+        options: { name: string; lodLevels?: number; shBands?: number; iterations?: number },
+        onProgress?: (progress: { progress: number; text?: string }) => void
     ): Promise<{
         outputPath: string;
         fileCount: number;
@@ -268,7 +274,31 @@ class BackendClient {
             throw new Error(errorMsg);
         }
 
-        return res.json();
+        const { jobId } = await res.json();
+
+        // Poll the job until it finishes. Exports can run for tens of minutes,
+        // so no timeout — the backend cleans the job up 10 min after completion.
+        for (;;) {
+            await new Promise((resolve) => {
+                setTimeout(resolve, 500);
+            });
+            const statusRes = await fetch(`${this.BASE_URL}/api/lcc2-export-status?jobId=${encodeURIComponent(jobId)}`);
+            let status;
+            try {
+                status = await statusRes.json();
+            } catch {
+                throw new Error('LCC2 export failed: lost connection to backend');
+            }
+            if (status.status === 'error') {
+                throw new Error(status.error || 'LCC2 export failed');
+            }
+            if (status.progress !== undefined || status.text !== undefined) {
+                onProgress?.({ progress: status.progress ?? 0, text: status.text });
+            }
+            if (status.status === 'done') {
+                return status.result;
+            }
+        }
     }
 
     /**

@@ -14,6 +14,7 @@ const cors = require('cors');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
+const { Worker } = require('worker_threads');
 
 // C++ native addon — PLY parse + compressed-ply write acceleration
 let native;
@@ -1018,7 +1019,14 @@ function cleanup(filePath) {
 // ---------------------------------------------------------------------------
 // API: LCC2 Export (path) — full backend export pipeline
 // Reads a PLY file, builds adaptive tree, encodes SOG chunks, generates .lcc2
+//
+// Runs in a worker_thread so the Electron main process event loop (which also
+// drives the window message pump) stays responsive. The POST returns a jobId
+// immediately; progress is polled via GET /api/lcc2-export-status?jobId=…
 // ---------------------------------------------------------------------------
+const lcc2Jobs = new Map(); // jobId → { status, progress, text, result, error, worker }
+let nextLcc2JobId = 1;
+
 app.post('/api/lcc2-export-path', express.json(), async (req, res) => {
     const { filePath, outputDir, name, lodLevels, shBands, iterations } = req.body;
     if (!filePath || !fs.existsSync(filePath)) {
@@ -1036,20 +1044,69 @@ app.post('/api/lcc2-export-path', express.json(), async (req, res) => {
 
     console.log(`\n[lcc2-export] Request: ${path.basename(filePath)} → ${outputDir}/${name}`);
 
-    try {
-        const splatLib = await loadSplatTransform();
-        const { lcc2ExportToPath } = await import('./server/lcc2-export.mjs');
-        const result = await lcc2ExportToPath(filePath, outputDir, {
-            name,
-            lodLevels: lodLevels ?? 1,
-            shBands: shBands ?? 0,
-            iterations: iterations ?? 0
-        }, splatLib, native);
-        res.json(result);
-    } catch (error) {
-        console.error('[lcc2-export] Error:', error);
-        res.status(500).json({ error: error.message || 'LCC2 export failed' });
+    const jobId = String(nextLcc2JobId++);
+    const job = { status: 'running', progress: 0, text: '正在启动…', result: null, error: null, worker: null };
+    lcc2Jobs.set(jobId, job);
+
+    const workerPath = path.join(__dirname, 'server', 'lcc2-export-worker.mjs');
+    const worker = new Worker(workerPath, {
+        workerData: {
+            filePath,
+            outputDir,
+            options: {
+                name,
+                lodLevels: lodLevels ?? 1,
+                shBands: shBands ?? 0,
+                iterations: iterations ?? 0
+            }
+        }
+    });
+    job.worker = worker;
+
+    worker.on('message', (msg) => {
+        if (msg.type === 'progress') {
+            job.progress = msg.progress;
+            job.text = msg.text;
+        } else if (msg.type === 'done') {
+            job.status = 'done';
+            job.result = msg.result;
+            job.progress = 100;
+            job.text = '导出完成';
+        } else if (msg.type === 'error') {
+            job.status = 'error';
+            job.error = msg.error;
+        }
+    });
+    worker.on('error', (err) => {
+        job.status = 'error';
+        job.error = err.message || 'LCC2 export worker error';
+    });
+    worker.on('exit', (code) => {
+        if (job.status === 'running') {
+            job.status = 'error';
+            job.error = `LCC2 export worker exited with code ${code}`;
+        }
+        job.worker = null;
+        // Keep the result readable for a while, then drop the job.
+        setTimeout(() => lcc2Jobs.delete(jobId), 10 * 60 * 1000);
+    });
+
+    res.json({ jobId });
+});
+
+app.get('/api/lcc2-export-status', (req, res) => {
+    const job = lcc2Jobs.get(req.query.jobId);
+    if (!job) {
+        res.status(404).json({ error: 'Unknown job id' });
+        return;
     }
+    res.json({
+        status: job.status,
+        progress: job.progress,
+        text: job.text,
+        result: job.result,
+        error: job.error
+    });
 });
 
 // ---------------------------------------------------------------------------
