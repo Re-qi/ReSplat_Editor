@@ -526,7 +526,7 @@ const initFileHandler = (scene: Scene, events: Events, dropTarget: HTMLElement) 
             const resolvedFiles = isLcc(filenames) ? await resolveLccSiblings(files, events) : files;
             const model = await importSplatModel(resolvedFiles, animationFrame);
             if (model) {
-                model.originalFilePath = files[0].url ?? files[0].filename;
+                model.originalFilePath = files[0].filePath ?? files[0].url ?? files[0].filename;
                 result.push(model);
             }
         } else {
@@ -550,7 +550,7 @@ const initFileHandler = (scene: Scene, events: Events, dropTarget: HTMLElement) 
                     // load gaussian splat model
                     const model = await importSplatModel([files[i]], animationFrame);
                     if (model) {
-                        model.originalFilePath = files[i].url ?? files[i].filename;
+                        model.originalFilePath = files[i].filePath ?? files[i].url ?? files[i].filename;
                         result.push(model);
                     }
                 } else if (filename.endsWith('images.txt')) {
