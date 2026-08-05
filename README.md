@@ -3,7 +3,7 @@
 > **Powered by** **[SuperSplat](https://github.com/playcanvas/supersplat)** — This project is a fork/rebrand of the original SuperSplat editor.
 
 [![Github Release](https://img.shields.io/github/v/release/Re-qi/ReSplat_Editor)](https://github.com/Re-qi/ReSplat_Editor/releases)
-[![License](https://img.shields.io/github/license/Re-qi/ReSplat_Editor)](https://github.com/Re-qi/ReSplat_Editor/blob/main/LICENSE)
+[![License](https://img.shields.io/badge/license-CC%20BY%204.0-blue)](./LICENSE)
 
 | [在线使用](https://re-qi.github.io/ReSplat_Editor/) | [官方文档](https://my.feishu.cn/wiki/Zi4QwJ3Alin6oLkazSGcRywKnBf?from=from_copylink) | [问题反馈](https://github.com/Re-qi/ReSplat_Editor/issues) |
 | :------------------------------------------------: | :------------------------------------------------------------------------------------------: | :--------------------------------------------------------: |
