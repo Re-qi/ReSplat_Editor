@@ -73,7 +73,14 @@ const application = {
                 // copy it to dist/ and configureSplatTransform() sets
                 // WorkerQueue.workerUrl to ./worker.mjs.
                 // NOTE: source is dist/worker.mjs (lib/ has only webp.wasm).
-                { src: 'node_modules/@playcanvas/splat-transform/dist/worker.mjs' }
+                { src: 'node_modules/@playcanvas/splat-transform/dist/worker.mjs' },
+                // NanoGS CC BY-NC 4.0 license + attribution + project CC BY 4.0
+                // license (incl. third-party notices) — copied into dist/ so the
+                // license texts ship with the software (web dist/ and the
+                // packaged app asar both include dist/**).
+                { src: 'src/nanogs/LICENSE-NANOGS.txt', dest: 'licenses' },
+                { src: 'src/nanogs/README.md', dest: 'licenses' },
+                { src: 'LICENSE', dest: 'licenses', destFilename: 'LICENSE.txt' }
             ]
         }),
         alias({
@@ -128,7 +135,45 @@ const serviceWorker = {
     cache: false
 };
 
+// NanoGS TypeScript port — bundled as a standalone ESM module so the backend
+// LCC2 worker (server/lcc2-export-worker.mjs, run directly by Node without TS
+// compilation) can import it. The browser path consumes the same TS source
+// via src/splat-serialize.ts (bundled into index.js). The module is
+// self-contained (typed arrays + Math only), so no resolve()/external deps.
+// Licensed CC BY-NC 4.0 — see src/nanogs/README.md.
+const nanogs = {
+    input: 'src/nanogs/index.ts',
+    output: {
+        dir: 'dist',
+        format: 'esm',
+        sourcemap: true,
+        entryFileNames: 'nanogs.mjs',
+        // CC BY-NC 4.0 requires attribution to ship with the adapted material.
+        // banner is injected before terser runs, so use a `/*!` legal comment
+        // that terser preserves (plain // comments would be stripped).
+        banner: [
+            '/*!',
+            ' * NanoGS TypeScript port - Adapted Material',
+            ' * Original: NanoGS (https://github.com/RongLiu-Leo/NanoGS), CC BY-NC 4.0',
+            ' * Creators: Butian Xiong, Rong Liu, Tiantian Zhou, Meida Chen, Zhiwen Fan, Andrew Feng',
+            ' * License: CC BY-NC 4.0 - https://creativecommons.org/licenses/by-nc/4.0/',
+            ' * Modified (Python -> TypeScript port + multi-LOD extension). NOT under the project CC BY 4.0 license.',
+            ' * Full text: licenses/LICENSE-NANOGS.txt | Attribution details: licenses/README.md',
+            ' */'
+        ].join('\n')
+    },
+    plugins: [
+        typescript({
+            tsconfig: './tsconfig.json'
+        }),
+        BUILD_TYPE !== 'debug' && terser()
+    ],
+    treeshake: 'smallest',
+    cache: false
+};
+
 export default [
     application,
-    serviceWorker
+    serviceWorker,
+    nanogs
 ];

@@ -33,6 +33,7 @@ interface SceneExportOptions {
 
     // lcc2
     lodLevels?: number;
+    simplifyMethod?: 'nanogs' | 'uniform';
 
     // viewer
     viewerExportSettings?: ViewerExportSettings;
@@ -149,10 +150,12 @@ const isPlySequence = (filenames: string[]) => {
     return true;
 };
 
-// sog comprises a single meta.json file and zero or more .webp files
+// SOG has a meta.json file; streamed SOG (ssog) has a lod-meta.json file.
+// Matches supersplat's isSog — a ssog directory (lod-meta.json + per-node
+// meta.json/webp files) is recognized as a single multi-LOD container.
 const isSog = (filenames: string[]) => {
     const count = (extension: string) => filenames.reduce((sum, f) => sum + (f.endsWith(extension) ? 1 : 0), 0);
-    return count('meta.json') === 1;
+    return count('lod-meta.json') === 1 || count('meta.json') === 1;
 };
 
 // The LCC file contains meta.lcc, index.bin, data.bin and shcoef.bin (optional).
@@ -274,34 +277,36 @@ const loadImagesTxt = async (file: ImportFile, events: Events) => {
     });
 };
 
-// Electron-only: when an LCC/LCC2 container is dropped without its sibling
-// data files, resolve them from the dropped file's directory via the Electron
-// fs bridge (walkDir/readFile IPC). In the browser there is no path access, so
-// this is a no-op and the load will fail later with a missing-file error.
+// Electron-only: when a multi-file container (streamed SOG `lod-meta.json`,
+// LCC, LCC2) is dropped/selected without its sibling data files, resolve them
+// from the container's directory via the Electron fs bridge (walkDir/readFile
+// IPC). In the browser there is no path access, so this is a no-op and the load
+// will fail later with a missing-file error.
 //
 // LCC siblings are flat .bin (index/data/shcoef); LCC2 siblings are .sog/.spz
-// chunks nested under data/3dgs/. We walk the whole tree and add each sibling
-// under its path relative to the meta's directory (forward slashes) so the
-// loader can resolve it the same way as a folder drop.
-const resolveLccSiblings = async (files: ImportFile[], events: Events): Promise<ImportFile[]> => {
+// chunks nested under data/3dgs/; ssog siblings are per-node meta.json + .webp
+// textures nested under 0_0/, 0_1/, … We walk the whole tree and add each
+// sibling under its path relative to the container's directory (forward
+// slashes) so the loader can resolve it the same way as a folder drop.
+const resolveContainerSiblings = async (files: ImportFile[], events: Events): Promise<ImportFile[]> => {
     const electronAPI = (window as any).electronAPI;
     if (!electronAPI?.isElectron) return files;
 
-    const lccFile = files.find((f) => {
+    const containerFile = files.find((f) => {
         const n = f.filename.toLowerCase();
-        return n.endsWith('.lcc') || n.endsWith('.lcc2');
+        return n === 'lod-meta.json' || n.endsWith('.lcc') || n.endsWith('.lcc2');
     });
-    if (!lccFile?.filePath) return files;
+    if (!containerFile?.filePath) return files;
 
     // Siblings already provided (folder drop / multi-select) — nothing to do.
     const hasSibling = files.some((f) => {
         const n = f.filename.toLowerCase();
-        return n.endsWith('.bin') || n.endsWith('.sog') || n.endsWith('.spz');
+        return n !== 'lod-meta.json' && (n.endsWith('.json') || n.endsWith('.webp') || n.endsWith('.bin') || n.endsWith('.sog') || n.endsWith('.spz'));
     });
     if (hasSibling) return files;
 
     // Derive the dropped file's directory (handle both / and \ separators).
-    const fp = lccFile.filePath;
+    const fp = containerFile.filePath;
     const lastSep = Math.max(fp.lastIndexOf('/'), fp.lastIndexOf('\\'));
     const dirPath = lastSep >= 0 ? fp.substring(0, lastSep) : '';
     if (!dirPath) return files;
@@ -314,28 +319,29 @@ const resolveLccSiblings = async (files: ImportFile[], events: Events): Promise<
         try {
             entries = await electronAPI.walkDir(dirPath);
         } catch (err) {
-            console.warn(`[import] resolveLccSiblings: walkDir failed for ${dirPath}`, err);
+            console.warn(`[import] resolveContainerSiblings: walkDir failed for ${dirPath}`, err);
             return files;
         }
 
         const result: ImportFile[] = [...files];
         for (const e of entries) {
             const lower = e.rel.toLowerCase();
-            // LCC sibling data files only (.bin / .sog / .spz); skip the
-            // container meta itself and any unrelated files.
-            if (!lower.endsWith('.bin') && !lower.endsWith('.sog') && !lower.endsWith('.spz')) continue;
+            // Container sibling data files only; skip the container meta itself
+            // and any unrelated files.
+            if (lower.endsWith('lod-meta.json')) continue;
             if (lower.endsWith('.lcc') || lower.endsWith('.lcc2')) continue;
+            if (!lower.endsWith('.json') && !lower.endsWith('.webp') && !lower.endsWith('.bin') && !lower.endsWith('.sog') && !lower.endsWith('.spz')) continue;
             try {
                 const data: Uint8Array = await electronAPI.readFile(e.path);
-                // key by relative path so nested LCC2 chunks (data/3dgs/*.sog)
-                // resolve the same way as a folder drop
+                // key by relative path so nested ssog/LCC2 chunks resolve the
+                // same way as a folder drop
                 result.push({ filename: e.rel, contents: new Blob([data as BlobPart]) });
             } catch (err) {
-                console.warn(`[import] resolveLccSiblings: readFile failed for ${e.rel}`, err);
+                console.warn(`[import] resolveContainerSiblings: readFile failed for ${e.rel}`, err);
             }
         }
 
-        console.log(`[import] resolveLccSiblings: added ${result.length - files.length} sibling(s) from ${dirPath}`);
+        console.log(`[import] resolveContainerSiblings: added ${result.length - files.length} sibling(s) from ${dirPath}`);
         return result;
     } finally {
         events.fire('stopSpinner');
@@ -373,8 +379,8 @@ const initFileHandler = (scene: Scene, events: Events, dropTarget: HTMLElement) 
 
             // Determine the main file based on format
             let mainIndex: number;
-            if (filenames.some(f => f === 'meta.json')) {
-                mainIndex = filenames.findIndex(f => f === 'meta.json');
+            if (filenames.some(f => f === 'meta.json' || f === 'lod-meta.json')) {
+                mainIndex = filenames.findIndex(f => f === 'meta.json' || f === 'lod-meta.json');
             } else if (filenames.some(f => f.endsWith('.lcc') || f.endsWith('.lcc2'))) {
                 mainIndex = filenames.findIndex(f => f.endsWith('.lcc') || f.endsWith('.lcc2'));
             } else {
@@ -393,7 +399,7 @@ const initFileHandler = (scene: Scene, events: Events, dropTarget: HTMLElement) 
             // Multi-file container formats must load by their relative name so the
             // library resolves sibling files against the file system's baseUrl
             const lowerMainFilename = mainFile.filename.toLowerCase();
-            const isContainer = lowerMainFilename === 'meta.json' || lowerMainFilename.endsWith('.lcc') || lowerMainFilename.endsWith('.lcc2');
+            const isContainer = lowerMainFilename === 'meta.json' || lowerMainFilename === 'lod-meta.json' || lowerMainFilename.endsWith('.lcc') || lowerMainFilename.endsWith('.lcc2');
 
             // For URL-only single file, use full URL as filename
             const filename = (files.length === 1 && !mainFile.contents && mainFile.url && !isContainer) ?
@@ -521,9 +527,10 @@ const initFileHandler = (scene: Scene, events: Events, dropTarget: HTMLElement) 
             events.fire('plysequence.setFrames', files.map(f => f.contents));
             events.fire('timeline.frame', 0);
         } else if (isSog(filenames) || isLcc(filenames)) {
-            // Electron: auto-resolve sibling data files when a single .lcc/.lcc2
-            // is dropped without them (browser can't — no path access).
-            const resolvedFiles = isLcc(filenames) ? await resolveLccSiblings(files, events) : files;
+            // Electron: auto-resolve sibling data files when a single container
+            // file (ssog lod-meta.json / .lcc / .lcc2) is dropped without them
+            // (browser can't — no path access).
+            const resolvedFiles = await resolveContainerSiblings(files, events);
             const model = await importSplatModel(resolvedFiles, animationFrame);
             if (model) {
                 model.originalFilePath = files[0].filePath ?? files[0].url ?? files[0].filename;
@@ -580,7 +587,7 @@ const initFileHandler = (scene: Scene, events: Events, dropTarget: HTMLElement) 
         fileSelector = document.createElement('input');
         fileSelector.setAttribute('id', 'file-selector');
         fileSelector.setAttribute('type', 'file');
-        fileSelector.setAttribute('accept', '.ply,.splat,meta.json,.json,.webp,.respproj,.sog,.lcc,.lcc2,.bin,.txt,.ksplat,.spz');
+        fileSelector.setAttribute('accept', '.ply,.splat,meta.json,lod-meta.json,.json,.webp,.respproj,.sog,.lcc,.lcc2,.bin,.txt,.ksplat,.spz');
         fileSelector.setAttribute('multiple', 'true');
 
         fileSelector.onchange = () => {
@@ -673,6 +680,48 @@ const initFileHandler = (scene: Scene, events: Events, dropTarget: HTMLElement) 
                     console.error(error);
                 }
             }
+        }
+    });
+
+    // Import a whole directory (Electron only). Streamed SOG (ssog) and LCC2
+    // are directory-based formats — the single-file picker can't select them.
+    // walkDir + readFile reads every file (keyed by forward-slash relative
+    // path) so isSog/isLcc + MappedReadFileSystem resolve them like a folder
+    // drag & drop. In the browser use drag & drop instead.
+    events.function('scene.importFolder', async () => {
+        const electronAPI = (window as any).electronAPI;
+        if (!electronAPI?.isElectron) return;
+
+        const folderPath = await electronAPI.openFolderDialog();
+        if (!folderPath) return;
+
+        events.fire('startSpinner');
+        events.fire('spinnerText', localize('popup.lcc-resolving-siblings'));
+        try {
+            const entries: Array<{ path: string, rel: string }> = await electronAPI.walkDir(folderPath);
+            const files: ImportFile[] = [];
+            for (const e of entries) {
+                const lower = e.rel.toLowerCase();
+                // Only splat-container payload files — skips license.txt etc.
+                if (!lower.endsWith('.json') && !lower.endsWith('.webp') && !lower.endsWith('.bin') && !lower.endsWith('.sog') && !lower.endsWith('.spz')) continue;
+                try {
+                    const data: Uint8Array = await electronAPI.readFile(e.path);
+                    files.push({ filename: e.rel, contents: new Blob([data as BlobPart]) });
+                } catch (err) {
+                    console.warn(`[import] importFolder: readFile failed for ${e.rel}`, err);
+                }
+            }
+            console.log(`[import] importFolder: ${files.length} file(s) from ${folderPath}`);
+            if (files.length === 0) {
+                await showLoadError('No supported splat files found', folderPath);
+                return;
+            }
+            await importFiles(files);
+        } catch (error) {
+            console.error('[import] importFolder failed:', error);
+            await showLoadError(error.message ?? error, folderPath);
+        } finally {
+            events.fire('stopSpinner');
         }
     });
 
@@ -946,7 +995,8 @@ const initFileHandler = (scene: Scene, events: Events, dropTarget: HTMLElement) 
                             name: baseName,
                             lodLevels: options.lodLevels ?? 1,
                             shBands: serializeSettings.maxSHBands ?? 0,
-                            iterations: options.sogIterations ?? 0
+                            iterations: options.sogIterations ?? 0,
+                            simplifyMethod: options.simplifyMethod ?? 'nanogs'
                         }, ({ progress, text }) => {
                             events.fire('progressUpdate', { text, progress });
                         });
@@ -974,7 +1024,8 @@ const initFileHandler = (scene: Scene, events: Events, dropTarget: HTMLElement) 
                             splatIdx: null,
                             serializeSettings: buildSogSettings(),
                             lodLevels: options.lodLevels ?? 1,
-                            splatType: '.sog'
+                            splatType: '.sog',
+                            simplifyMethod: options.simplifyMethod ?? 'uniform'
                         }, fs);
                     }
                     break;

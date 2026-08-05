@@ -80,10 +80,6 @@ class AssetLoader {
                                 v: String(i),
                                 t: `LOD ${i} (${count.toLocaleString()} ${localize('popup.lod-select-splats')})`
                             }))
-                        },
-                        warning: {
-                            text: localize('popup.lod-upload-note'),
-                            link: `${window.location.origin}/upload`
                         }
                     });
                     if (result.action === 'ok') {

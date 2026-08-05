@@ -1,6 +1,6 @@
 {
     "name": "ReSplat",
-    "version": "1.2.5",
+    "version": "1.2.6",
     "main": "electron/main.cjs",
     "author": "Re祁",
     "homepage": "https://playcanvas.com/ReSplat/editor",
@@ -12,7 +12,7 @@
         "splat",
         "editor"
     ],
-    "license": "MIT",
+    "license": "CC-BY-4.0",
     "scripts": {
         "build": "rollup -c",
         "watch": "rollup -c -w",
@@ -102,6 +102,9 @@
         "win": {
             "target": "nsis",
             "icon": "static/icons/Logo512x512.png"
+        },
+        "electronDownload": {
+            "cache": "./node_modules/electron"
         },
         "mac": {
             "icon": "static/icons/Logo512x512.png"

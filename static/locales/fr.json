@@ -145,7 +145,6 @@
     "popup.load-options-header": "Options de chargement",
     "popup.lod-select-message": "Ce fichier contient plusieurs niveaux de détail. Sélectionnez celui à charger.",
     "popup.lod-select-splats": "splats",
-    "popup.lod-upload-note": "Remarque : vous pouvez télécharger des scènes avec LOD directement sur",
     "popup.export": "Exporter",
     "popup.copy-to-clipboard": "Copier le lien dans le presse-papiers",
     "popup.render-image.header": "Paramètres Image",

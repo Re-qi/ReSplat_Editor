@@ -145,7 +145,6 @@
     "popup.load-options-header": "Opciones de carga",
     "popup.lod-select-message": "Este archivo contiene varios niveles de detalle. Seleccione cuál cargar.",
     "popup.lod-select-splats": "splats",
-    "popup.lod-upload-note": "Nota: puede subir escenas con LODs directamente en",
     "popup.export": "Exportar",
     "popup.copy-to-clipboard": "Copiar enlace al portapapeles",
     "popup.render-image.header": "Configuración de imagen",

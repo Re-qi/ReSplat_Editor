@@ -29,6 +29,14 @@ import { version } from '../package.json';
 import { ColorGrade, dcDecode, dcEncode, sigmoid } from './color-grade';
 import { Events } from './events';
 import { BrowserFileSystem, dataTableToGSplatData, loadLodDataTable, ProgressWriter } from './io';
+import {
+    NANOGS_NODE_CAP,
+    NANOGS_NODE_MIN,
+    defaultSimplifyOpts,
+    simplifyNodeBatched,
+    type ColumnLookup,
+    type SimplifyOpts
+} from './nanogs';
 import { SHRotation } from './sh-utils';
 import { Splat } from './splat';
 import { State } from './splat-state';
@@ -1528,6 +1536,7 @@ type Lcc2ExportOptions = {
     serializeSettings: SogSettings;        // reuse serializeSog's settings (maxSHBands, iterations, events, ...)
     lodLevels?: number;                    // default 1 (Phase 1; >1 reserved for Phase 2, treated as 1)
     splatType?: '.sog' | '.spz';           // default '.sog' (Phase 1 only '.sog' is exercised)
+    simplifyMethod?: 'nanogs' | 'uniform'; // default 'uniform' (browser main-thread safety; backend defaults 'nanogs')
 };
 
 const serializeSog = async (splats: Splat[], settings: SogSettings, fs: FileSystem): Promise<void> => {
@@ -1992,6 +2001,11 @@ const serializeLcc2 = async (splats: Splat[], options: Lcc2ExportOptions, fs: Fi
     const { name, serializeSettings, splatIdx } = options;
     const { iterations = 0, events } = serializeSettings;
     const splatType = options.splatType ?? '.sog';
+    // Browser path defaults to 'uniform' for main-thread safety: NanoGS runs
+    // pure-TS KNN+cost on the main thread and can jank the UI for large nodes.
+    // Users opt in via the export popup. The backend (server/lcc2-export.mjs)
+    // defaults to 'nanogs' since it runs in a worker_thread off the main loop.
+    const simplifyMethod = options.simplifyMethod ?? 'uniform';
     // Clamp lodLevels to [1,20]. Max 20 matches the UE plugin's EndLevel cap
     // (LCCMacro.h). The adaptive hybrid tree keeps node count linear in L, so
     // values up to 20 are safe — unlike the old binary tree which froze the
@@ -2174,11 +2188,43 @@ const serializeLcc2 = async (splats: Splat[], options: Lcc2ExportOptions, fs: Fi
             const srcCols = dataTable.columns;
             const numCols = srcCols.length;
 
-            // LOD 精细度动态采样率：LOD0 (finest) = 100%, LOD(L-1) (coarsest) = 10%,
-            // 中间线性递减。保证各级别精细度严格递减且不重复（用户要求：从 lod0
-            // 开始依次递减，最小一级永远 10%）。L=1 时单 LOD = 100%。
-            // 旧逻辑用 step=2^k 导致 100/50/25/12.5... 粗糙 LOD 数据过少。
-            const lodRate = (k: number): number => (treeDepth === 1 ? 1 : 1 - 0.9 * k / (treeDepth - 1));
+            // --- NanoGS per-node simplification setup (browser mirror of
+            // server/lcc2-export.mjs). The browser path defaults to 'uniform'
+            // for main-thread safety; NanoGS only runs when the user opts in.
+            // Both paths share the same activation/deactivation glue
+            // (nodeAttrsFromColumns/nodeAttrsToColumns) and simplifyNode entry
+            // point, kept under CC BY-NC 4.0 (see src/nanogs/README.md). ---
+            const useNanogsRequested = simplifyMethod === 'nanogs';
+            // Browser safety guard (plan §4.3): NanoGS runs pure-TS KNN+cost on
+            // the main thread. For large scenes the accumulated per-node work
+            // (many nodes × KNN passes) janks the UI and risks OOM. Force
+            // uniform above 2M splats even when the user opted in. The backend
+            // worker_thread path (>10M, auto-routed in file-handler) has no
+            // such guard — it runs NanoGS off the main loop.
+            const NANOGS_BROWSER_MAX = 2_000_000;
+            const useNanogs = useNanogsRequested && N <= NANOGS_BROWSER_MAX;
+            if (useNanogsRequested && !useNanogs) {
+                console.warn(`[LCC2] NanoGS requested but N=${N.toLocaleString()} > ${NANOGS_BROWSER_MAX.toLocaleString()} (browser guard) — using uniform. Large scenes auto-route to the backend (no guard).`);
+            }
+            // Appearance columns = f_dc_* + f_rest_* (matches NanoGS app_names;
+            // normals nx,ny,nz are NOT appearance → zeroed on NanoGS output).
+            const srcColNames = srcCols.map(c => c.name);
+            const shColNames = srcColNames
+            .filter(cn => cn.startsWith('f_dc_') || cn.startsWith('f_rest_'));
+            // Column lookup by name for nodeAttrsFromColumns (typed-array views).
+            const colSrcLookup: ColumnLookup = {};
+            for (const col of srcCols) colSrcLookup[col.name] = col.data as Float32Array;
+            const nanogsOpts: SimplifyOpts | null = useNanogs ?
+                defaultSimplifyOpts({ shCols: shColNames.length }) :
+                null;
+            if (useNanogs) {
+                console.warn(`[LCC2] NanoGS enabled (shCols=${shColNames.length}, cap=${NANOGS_NODE_CAP}, min=${NANOGS_NODE_MIN}) — runs on main thread`);
+            }
+
+            // LOD 精细度采样率：LOD0 (finest) = 100%，等比 0.5^k 递减
+            // （100/50/25/12.5/6.25/3.125%），与官方 XGRIDS 参考对齐。
+            // L=1 时 k=0 → 100% 单 LOD。
+            const lodRate = (k: number): number => Math.pow(0.5, k);
 
             // Pre-compute estimated total splats for weighted progress.
             let totalEstimatedSplats = 0;
@@ -2189,6 +2235,81 @@ const serializeLcc2 = async (splats: Splat[], options: Lcc2ExportOptions, fs: Fi
             let cumulativeSplats = 0;
 
             events?.fire('progressUpdate', { text: `Writing ${treeDepth} LOD levels (${totalEstimatedSplats.toLocaleString()} splats total)…  —  1%`, progress: 1 });
+
+            // --- Build chain-top map (cell-major NanoGS reuse, plan §6 D3) ---
+            // Mirror of server/lcc2-export.mjs: the adaptive tree chains identical
+            // `finestIndices` across depths (chain continuations share the same
+            // Uint32Array reference). The depth-major loop below would otherwise
+            // re-simplify the same `finestIndices` once per depth, rebuilding KNN
+            // on N0 up to (treeDepth-1) times per cell. By mapping each node to its
+            // chain top, we simplify each cell ONCE with all its LOD rates via
+            // simplifyProgressive (one KNN pass) and cache per-rate snapshots.
+            //
+            // A chain ends when the node splits (child has different `finestIndices`)
+            // or reaches a leaf; `chainTopEndDepth` bounds which rates we compute.
+            const nodeToChainTop = new Map<AdaptiveNode, AdaptiveNode>();
+            const chainTopDepth = new Map<AdaptiveNode, number>();
+            const chainTopEndDepth = new Map<AdaptiveNode, number>();
+            const walkChainTop = (node: AdaptiveNode, parent: AdaptiveNode, parentChainTop: AdaptiveNode | null, depth: number) => {
+                const isRootChild = parent === adaptiveRoot;
+                const isChainTop = isRootChild || (node.finestIndices !== parent.finestIndices);
+                const chainTop = isChainTop ? node : (parentChainTop as AdaptiveNode);
+                nodeToChainTop.set(node, chainTop);
+                if (isChainTop) {
+                    chainTopDepth.set(chainTop, depth);
+                    chainTopEndDepth.set(chainTop, depth);
+                } else {
+                    chainTopEndDepth.set(chainTop, depth);
+                }
+                if (node.child) {
+                    for (const c of node.child) walkChainTop(c, node, chainTop, depth + 1);
+                }
+            };
+            if (adaptiveRoot.child) {
+                for (const c of adaptiveRoot.child) walkChainTop(c, adaptiveRoot, null, 1);
+            }
+
+            // --- NanoGS snapshot cache (chain top → Map<rate, {cols, count}> | null) ---
+            // Populated lazily on first encounter of each chain top. null =
+            // NanoGS failed/disabled → uniform fallback per depth.
+            type NanoSnapshot = { cols: { [name: string]: Float32Array }; count: number };
+            const simplifyCache = new Map<AdaptiveNode, Map<number, NanoSnapshot> | null>();
+            const getCachedSnapshot = (node: AdaptiveNode, rate: number): NanoSnapshot | null => {
+                const chainTop = nodeToChainTop.get(node) as AdaptiveNode;
+                let chainCaches = simplifyCache.get(chainTop);
+                if (chainCaches === undefined) {
+                    const topDepth = chainTopDepth.get(chainTop) as number;
+                    const endDepth = chainTopEndDepth.get(chainTop) as number;
+                    const ratesDesc: number[] = [];
+                    for (let d = topDepth; d <= endDepth; ++d) {
+                        const k = treeDepth - d;
+                        const r = lodRate(k);
+                        if (r < 1.0) ratesDesc.push(r);
+                    }
+                    ratesDesc.sort((a, b) => b - a); // descending (finest first)
+
+                    chainCaches = null;
+                    if (useNanogs && nanogsOpts && ratesDesc.length > 0) {
+                        const tCell = performance.now();
+                        try {
+                            const results = simplifyNodeBatched(chainTop.finestIndices, colSrcLookup, srcColNames, shColNames, ratesDesc, nanogsOpts);
+                            if (results && results.length === ratesDesc.length) {
+                                chainCaches = new Map<number, NanoSnapshot>();
+                                for (let i = 0; i < ratesDesc.length; ++i) {
+                                    chainCaches.set(ratesDesc[i], results[i]);
+                                }
+                                const cellSize = chainTop.finestIndices.length;
+                                const dur = ((performance.now() - tCell) / 1000).toFixed(1);
+                                console.warn(`[LCC2] Cell ${chainTop.id} simplified: ${ratesDesc.length} LOD snapshots (${cellSize.toLocaleString()} splats) [${dur}s]`);
+                            }
+                        } catch (e) {
+                            console.warn(`[LCC2] NanoGS cell simplify failed on ${chainTop.id} (${chainTop.finestIndices.length} splats): ${(e as Error).message} — fallback uniform`);
+                        }
+                    }
+                    simplifyCache.set(chainTop, chainCaches);
+                }
+                return chainCaches ? (chainCaches.get(rate) ?? null) : null;
+            };
 
             // Encode coarsest (depth 1) → finest (depth treeDepth).
             for (let D = 1; D <= treeDepth; ++D) {
@@ -2229,65 +2350,122 @@ const serializeLcc2 = async (splats: Splat[], options: Lcc2ExportOptions, fs: Fi
                 currentExportLod = k - 1;
                 lodExportProgress = Math.round(100 * (cumulativeSplats + levelTotal) / totalEstimatedSplats);
 
+                // NanoGS only applies to decimated levels (rate < 1.0). The
+                // finest level (rate=1.0) is the pristine source — no merging.
+                // Mirrors server/lcc2-export.mjs `depthUsesNanogs`.
+                const depthUsesNanogs = useNanogs && rate < 1.0;
+
+                // Resolve one node's LOD splats for the current rate.
+                //   NanoGS path (cached): getCachedSnapshot looks up this node's
+                //     chain top in `simplifyCache`. On the first depth where the
+                //     chain top appears, all its LOD snapshots are computed in one
+                //     simplifyNodeBatched call (one KNN pass via simplifyProgressive,
+                //     plan §6 D3); deeper depths hit the cache for free. Falls back
+                //     to whole-node uniform when NanoGS is disabled, the chain top's
+                //     simplify failed (cached null), or the depth is the finest
+                //     (rate=1.0). Per plan §4.2/§3.2 + nanogs-large-node-subbatch.md.
+                //   Uniform path: stride-sample finestIndices into source cols.
+                // Returns { cols, indices, count }: exactly one of cols/indices
+                // is set. `cols` (NanoGS) is keyed by PLY property name; missing
+                // columns (normals) are zeroed by the caller.
+                const resolveNode = (nodeIdx: number): { cols: { [name: string]: Float32Array } | null; indices: Uint32Array | null; count: number } => {
+                    const node = nodesAtD[nodeIdx];
+                    const finest = node.finestIndices;
+                    const nodeLen = finest.length;
+                    if (depthUsesNanogs) {
+                        const result = getCachedSnapshot(node, rate);
+                        if (result && result.count > 0) {
+                            return { cols: result.cols, indices: null, count: result.count };
+                        }
+                    }
+                    // uniform fallback / default
+                    const cnt = Math.max(1, Math.ceil(nodeLen * rate));
+                    const indices = new Uint32Array(cnt);
+                    for (let j = 0; j < cnt; ++j) indices[j] = finest[Math.floor(j * nodeLen / cnt)];
+                    return { cols: null, indices, count: cnt };
+                };
+
                 // Build a chunk's chunkTable + identity indices (pure CPU, no I/O).
                 // Returns null when no more nodes remain.
                 const prepareChunk = (startNode: number) => {
-                    let chunkSplatCount = 0;
+                    // Decide chunk span using ESTIMATED counts (counts[i] = ceil
+                    // (nodeLen*rate)). NanoGS output ≤ this estimate (it merges
+                    // down to the same target), so the estimate is a safe upper
+                    // bound — chunks never overflow SOG_CHUNK_TARGET.
+                    let estTotal = 0;
                     let endNode = startNode;
                     while (endNode < nodesAtD.length) {
-                        const nxt = chunkSplatCount + counts[endNode];
+                        const nxt = estTotal + counts[endNode];
                         if (nxt > 0 && nxt > SOG_CHUNK_TARGET) break; // don't split a node mid-way
-                        chunkSplatCount = nxt;
+                        estTotal = nxt;
                         endNode++;
                     }
-                    if (chunkSplatCount === 0) return null;
+                    if (estTotal === 0) return null;
 
-                    // Uniformly sample `cnt` points from each node's finestIndices
-                    // (idx = floor(j * nodeLen / cnt)) and concatenate
-                    // [startNode..endNode-1]. rate=1 → 全量; rate=0.1 → 均匀取 10%.
-                    const chunkIndices = new Uint32Array(chunkSplatCount);
-                    let wi = 0;
+                    // Resolve each node (NanoGS or uniform), cache results, and
+                    // sum the ACTUAL total (NanoGS snapshots may be ≤ estimate).
+                    const resolved: { cols: { [name: string]: Float32Array } | null; indices: Uint32Array | null; count: number }[] = new Array(endNode - startNode);
+                    let actualTotal = 0;
                     for (let n = startNode; n < endNode; ++n) {
-                        const finest = nodesAtD[n].finestIndices;
-                        const cnt = counts[n];
-                        const nodeLen = finest.length;
-                        for (let j = 0; j < cnt; ++j) {
-                            chunkIndices[wi++] = finest[Math.floor(j * nodeLen / cnt)];
-                        }
+                        const r = resolveNode(n);
+                        resolved[n - startNode] = r;
+                        actualTotal += r.count;
                     }
+                    if (actualTotal === 0) return null;
 
-                    // Column-by-column from source for memory safety.
+                    // Dense-fill chunkTable column-by-column from resolved nodes.
                     const chunkCols: Column[] = new Array(numCols);
                     for (let ci = 0; ci < numCols; ++ci) {
-                        const src = srcCols[ci].data as Float32Array;
-                        const dst = new Float32Array(chunkSplatCount);
-                        for (let i = 0; i < chunkSplatCount; ++i) dst[i] = src[chunkIndices[i]];
-                        chunkCols[ci] = new Column(srcCols[ci].name, dst);
+                        const colName = srcCols[ci].name;
+                        const dst = new Float32Array(actualTotal);
+                        let off = 0;
+                        for (let i = 0; i < resolved.length; ++i) {
+                            const r = resolved[i];
+                            const cnt = r.count;
+                            if (r.cols) {
+                                // NanoGS: merged appearance cols; missing cols
+                                // (nx,ny,nz normals) stay 0 (store_ply convention).
+                                const src = r.cols[colName];
+                                if (src) for (let j = 0; j < cnt; ++j) dst[off + j] = src[j];
+                            } else {
+                                // uniform: copy from source via stride indices.
+                                const src = srcCols[ci].data as Float32Array;
+                                const idx = r.indices!;
+                                for (let j = 0; j < cnt; ++j) dst[off + j] = src[idx[j]];
+                            }
+                            off += cnt;
+                        }
+                        chunkCols[ci] = new Column(colName, dst);
                     }
                     const chunkTable = new DataTable(chunkCols, dataTable.transform);
 
-                    const identity = new Uint32Array(chunkSplatCount);
-                    for (let i = 0; i < chunkSplatCount; ++i) identity[i] = i;
+                    const identity = new Uint32Array(actualTotal);
+                    for (let i = 0; i < actualTotal; ++i) identity[i] = i;
+
+                    // Actual per-node counts (NanoGS may differ from estimate).
+                    const nodeActualCounts = resolved.map(r => r.count);
 
                     const chunkIdx = chunkIdxByLevel[k]++;
                     const firstNode = nodesAtD[startNode];
                     const lodFileName = `${firstNode.id}.sog`;
                     const chunkPath = `${name}/data/3dgs/${lodFileName}`;
-                    console.warn(`[LCC2] LOD${k}/chunk${chunkIdx}: nodes[${startNode}..${endNode - 1}] ${chunkSplatCount.toLocaleString()} splats → ${chunkPath}`);
+                    console.warn(`[LCC2] LOD${k}/chunk${chunkIdx}: nodes[${startNode}..${endNode - 1}] ${actualTotal.toLocaleString()} splats → ${chunkPath}`);
 
-                    return { startNode, endNode, chunkTable, identity, lodFileName, chunkPath, chunkIdx };
+                    return { startNode, endNode, chunkTable, identity, lodFileName, chunkPath, chunkIdx, nodeActualCounts };
                 };
 
                 // Record splatFiles entry + per-node refs after a chunk's write completes.
-                const finalizeChunk = (info: { startNode: number; endNode: number; lodFileName: string; chunkIdx: number }) => {
+                const finalizeChunk = (info: { startNode: number; endNode: number; lodFileName: string; chunkIdx: number; nodeActualCounts: number[] }) => {
                     const fileIdx = splatFiles.length;
                     splatFiles.push(`data/3dgs/${info.lodFileName}`);
                     console.warn(`[LCC2] LOD${k}/chunk${info.chunkIdx}: done`);
                     let nodeOffset = 0;
-                    for (let n = info.startNode; n < info.endNode; ++n) {
-                        nodeRefs.set(nodesAtD[n], { name: fileIdx, start: nodeOffset, count: counts[n] });
-                        lodSplatsByLevel[k] += counts[n];
-                        nodeOffset += counts[n];
+                    for (let i = 0; i < info.nodeActualCounts.length; ++i) {
+                        const n = info.startNode + i;
+                        const cnt = info.nodeActualCounts[i];
+                        nodeRefs.set(nodesAtD[n], { name: fileIdx, start: nodeOffset, count: cnt });
+                        lodSplatsByLevel[k] += cnt;
+                        nodeOffset += cnt;
                     }
                     (globalThis as { gc?: () => void }).gc?.();
                 };

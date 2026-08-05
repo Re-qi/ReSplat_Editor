@@ -424,8 +424,8 @@ console.log('Test 8: degenerate — all points coincident');
     assert(stats.maxDepth === 5, `degenerate still reaches depth 5 (got ${stats.maxDepth})`);
 }
 
-// ---- Test 9: dynamic rate sampling (100%→10% linear decrease) ----
-console.log('Test 9: per-depth LOD sampling uses dynamic rate (100%→10%)');
+// ---- Test 9: dynamic rate sampling (geometric 0.5^k) ----
+console.log('Test 9: per-depth LOD sampling uses geometric rate (100%→3.125%)');
 {
     const N = 100_000;
     const xs = new Float32Array(N), ys = new Float32Array(N), zs = new Float32Array(N);
@@ -438,8 +438,8 @@ console.log('Test 9: per-depth LOD sampling uses dynamic rate (100%→10%)');
     const treeDepth = 6;
     const root = buildAdaptiveLcc2Tree(xs, ys, zs, N, treeDepth, aabb, 3_000_000);
 
-    // rate(k) = 1 - 0.9*k/(L-1): LOD0=100%, LOD(L-1)=10%, linear decrease.
-    const rate = (k) => treeDepth === 1 ? 1 : 1 - 0.9 * k / (treeDepth - 1);
+    // rate(k) = 0.5^k: LOD0=100%, LOD(L-1)=0.5^(L-1), geometric (XGRIDS reference).
+    const rate = (k) => Math.pow(0.5, k);
 
     // Per-depth totals ≈ N × rate(k). Collect rates indexed by k (0=finest).
     let totalsOk = true;
@@ -454,17 +454,17 @@ console.log('Test 9: per-depth LOD sampling uses dynamic rate (100%→10%)');
         const expected = Math.ceil(N * r);
         if (total < expected * 0.9 || total > expected * 1.1 + nodes.length) totalsOk = false;
     }
-    assert(totalsOk, `per-depth totals ≈ N×rate(k) (rates=${ratesByK.map(r => (r * 100).toFixed(0) + '%').join(',')})`);
+    assert(totalsOk, `per-depth totals ≈ N×rate(k) (rates=${ratesByK.map(r => (r * 100).toFixed(1) + '%').join(',')})`);
 
-    // Rates strictly decreasing by k: ratesByK[0]=100% > ratesByK[1] > ... > ratesByK[L-1]=10%.
+    // Rates strictly decreasing by k: ratesByK[0]=100% > ratesByK[1] > ... > ratesByK[L-1]=0.5^(L-1).
     let strictlyDecreasing = true;
     for (let k = 1; k < treeDepth; ++k) {
         if (ratesByK[k] >= ratesByK[k - 1]) strictlyDecreasing = false;
     }
     assert(strictlyDecreasing, 'rates strictly decreasing (no duplicate fidelity)');
 
-    // Coarsest (k=L-1) = 10%, finest (k=0) = 100%.
-    assert(Math.abs(ratesByK[treeDepth - 1] - 0.1) < 1e-9, `coarsest LOD = 10% (got ${(ratesByK[treeDepth - 1] * 100).toFixed(1)}%)`);
+    // Coarsest (k=L-1) = 0.5^(L-1) ≈ 3.125% for L=6, finest (k=0) = 100%.
+    assert(Math.abs(ratesByK[treeDepth - 1] - Math.pow(0.5, treeDepth - 1)) < 1e-9, `coarsest LOD = ${(Math.pow(0.5, treeDepth - 1) * 100).toFixed(1)}% (got ${(ratesByK[treeDepth - 1] * 100).toFixed(1)}%)`);
     assert(Math.abs(ratesByK[0] - 1) < 1e-9, `finest LOD = 100% (got ${(ratesByK[0] * 100).toFixed(1)}%)`);
 }
 

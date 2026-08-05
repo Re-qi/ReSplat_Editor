@@ -133,4 +133,10 @@ ReSplat 重构了原版的选择球与选择盒，并新增了阻挡平面，三
 
 ## 许可证
 
-本项目基于 [MIT License](./LICENSE) 开源。
+本项目基于 [CC BY 4.0](./LICENSE)（Creative Commons Attribution 4.0 International）开源，使用或修改时需保留作者署名。
+
+本项目衍生自多个第三方开源项目，各自的版权与许可声明见 [LICENSE](./LICENSE) 中的 "Third-Party Notices" 部分：
+
+- [SuperSplat](https://github.com/playcanvas/supersplat) — MIT License
+- [GaussianSplatEditor](https://github.com/TimChen1383/GaussianSplatEditor) — MIT License
+- [NanoGS](https://github.com/RongLiu-Leo/NanoGS) — CC BY-NC 4.0（非商用，见 `src/nanogs/LICENSE-NANOGS.txt`）

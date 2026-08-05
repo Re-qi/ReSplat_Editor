@@ -205,6 +205,15 @@ class Menu extends Container {
                 await events.invoke('scene.import');
             }
         }, {
+            // Import a whole directory (ssog / LCC2) — Electron only, the
+            // single-file picker can't select a directory.
+            text: localize('menu.file.import-folder', { ellipsis: true }),
+            icon: createSvg(sceneImport),
+            isEnabled: () => !!(window as any).electronAPI?.isElectron,
+            onSelect: async () => {
+                await events.invoke('scene.importFolder');
+            }
+        }, {
             text: localize('menu.file.export'),
             icon: createSvg(sceneExport),
             subMenu: exportMenuPanel

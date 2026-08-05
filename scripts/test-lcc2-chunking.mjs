@@ -98,10 +98,10 @@ const collectNodesAtDepth = (root, targetDepth) => {
 };
 
 // ---- per-depth counting (mirror the Phase 2 adaptive loop) ----
-// Uses the dynamic rate(k) = 1 - 0.9*k/(L-1) sampling (LOD0=100%, LOD(L-1)=10%),
+// Uses the geometric rate(k) = 0.5^k sampling (LOD0=100%, LOD(L-1)=0.5^(L-1)),
 // matching src/splat-serialize.ts. Returns { maxNodeCount, perLevelTotal, perLevelRate,
 // perLevelChunks, totalChunks, totalNodes }.
-const lodRate = (k, L) => L === 1 ? 1 : 1 - 0.9 * k / (L - 1);
+const lodRate = (k) => Math.pow(0.5, k);
 
 const countPerDepth = (root, N, treeDepth) => {
     let maxNodeCount = 0;
@@ -113,7 +113,7 @@ const countPerDepth = (root, N, treeDepth) => {
 
     for (let D = 1; D <= treeDepth; ++D) {
         const k = treeDepth - D;
-        const rate = lodRate(k, treeDepth);
+        const rate = lodRate(k);
         perLevelRate[k] = rate;
         const nodes = collectNodesAtDepth(root, D);
         totalNodes += nodes.length;
@@ -230,15 +230,15 @@ for (const { N, userL, label } of [
         `got [${perLevelTotal.join(',')}] rates=[${perLevelRate.map(r => (r * 100).toFixed(0) + '%').join(',')}]`);
 
     // INV-6: 精细度严格递减（用户要求：从 lod0 开始依次递减，无重复）。
-    // rate(0)=100% > rate(1) > ... > rate(TD-1)=10%. TD=1 时单 LOD 无递减概念。
+    // rate(0)=100% > rate(1) > ... > rate(TD-1)=0.5^(TD-1). TD=1 时单 LOD 无递减概念。
     let strictlyDecreasing = true;
     for (let k = 1; k < TD; ++k) {
         if (perLevelRate[k] >= perLevelRate[k - 1]) strictlyDecreasing = false;
     }
-    ok(`  ${label}: rates strictly decreasing (100%→10%)`, TD === 1 || strictlyDecreasing,
+    ok(`  ${label}: rates strictly decreasing (100%→${(Math.pow(0.5, TD - 1) * 100).toFixed(1)}%)`, TD === 1 || strictlyDecreasing,
         `rates=[${perLevelRate.map(r => (r * 100).toFixed(1) + '%').join(',')}]`);
-    // 最粗 LOD 永远 10%（TD=1 时唯一 LOD 即 finest=100%，跳过此断言）。
-    ok(`  ${label}: coarsest LOD = 10%`, TD === 1 || Math.abs(perLevelRate[TD - 1] - 0.1) < 1e-9,
+    // 最粗 LOD = 0.5^(TD-1)（TD=1 时唯一 LOD 即 finest=100%，跳过此断言）。
+    ok(`  ${label}: coarsest LOD = ${(Math.pow(0.5, TD - 1) * 100).toFixed(1)}%`, TD === 1 || Math.abs(perLevelRate[TD - 1] - Math.pow(0.5, TD - 1)) < 1e-9,
         `got ${(perLevelRate[TD - 1] * 100).toFixed(1)}%`);
     // finest LOD 永远 100%。
     ok(`  ${label}: finest LOD = 100%`, Math.abs(perLevelRate[0] - 1) < 1e-9,

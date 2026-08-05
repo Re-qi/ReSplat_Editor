@@ -307,6 +307,33 @@ class ExportPopup extends Container {
         lodRow.append(lodLabel);
         lodRow.append(lodSlider);
 
+        // lcc2 simplification method. 'nanogs' = training-free greedy merge
+        // (better coarse-LOD quality, slower); 'uniform' = stride sampling
+        // (fast, legacy). Browser path auto-downgrades to uniform above 2M
+        // splats for main-thread safety; the backend worker path has no such
+        // guard. See plan §4.4 / src/nanogs/README.md (CC BY-NC 4.0).
+
+        const simplifyRow = new Container({
+            class: 'row'
+        });
+
+        const simplifyLabel = new Label({
+            class: 'label',
+            text: localize('popup.export.simplify-method')
+        });
+
+        const simplifySelect = new SelectInput({
+            class: 'select',
+            defaultValue: 'nanogs',
+            options: [
+                { v: 'nanogs', t: localize('popup.export.simplify-method.nanogs') },
+                { v: 'uniform', t: localize('popup.export.simplify-method.uniform') }
+            ]
+        });
+
+        simplifyRow.append(simplifyLabel);
+        simplifyRow.append(simplifySelect);
+
         // filename
 
         const filenameRow = new Container({
@@ -338,6 +365,7 @@ class ExportPopup extends Container {
         content.append(bandsRow);
         content.append(iterationsRow);
         content.append(lodRow);
+        content.append(simplifyRow);
         content.append(filenameRow);
 
         // footer
@@ -403,7 +431,7 @@ class ExportPopup extends Container {
 
         const reset = (exportType: ExportType, splatNames: string[], hasPoses: boolean) => {
             const allRows = [
-                viewerTypeRow, animationRow, loopRow, colorRow, fovRow, startRow, compressRow, splatsRow, bandsRow, iterationsRow, lodRow, filenameRow
+                viewerTypeRow, animationRow, loopRow, colorRow, fovRow, startRow, compressRow, splatsRow, bandsRow, iterationsRow, lodRow, simplifyRow, filenameRow
             ];
 
             const activeRows = {
@@ -411,7 +439,7 @@ class ExportPopup extends Container {
                 standardPly: [splatsRow, bandsRow, filenameRow],
                 splat: [splatsRow, filenameRow],
                 sog: [splatsRow, bandsRow, iterationsRow, filenameRow],
-                lcc2: [splatsRow, bandsRow, lodRow, filenameRow],
+                lcc2: [splatsRow, bandsRow, lodRow, simplifyRow, filenameRow],
                 viewer: [viewerTypeRow, animationRow, loopRow, colorRow, fovRow, startRow, splatsRow, bandsRow, filenameRow]
             }[exportType] as Container[];
 
@@ -440,6 +468,7 @@ class ExportPopup extends Container {
 
             // lcc2
             lodSlider.value = 6;
+            simplifySelect.value = 'nanogs';
 
             // filename
             filenameEntry.value = splatNames[0];
@@ -526,7 +555,9 @@ class ExportPopup extends Container {
                 };
             };
 
-            // LCC2 options: splat selection, SH bands, LOD levels, filename.
+            // LCC2 options: splat selection, SH bands, LOD levels, simplification
+            // method, filename. simplifyMethod defaults to 'nanogs' (intelligent);
+            // the browser path auto-downgrades to 'uniform' for large scenes.
             const assembleLcc2Options = () : SceneExportOptions => {
                 return {
                     filename: filenameEntry.value,
@@ -534,7 +565,8 @@ class ExportPopup extends Container {
                     serializeSettings: {
                         maxSHBands: bandsSlider.value
                     },
-                    lodLevels: lodSlider.value
+                    lodLevels: lodSlider.value,
+                    simplifyMethod: simplifySelect.value as 'nanogs' | 'uniform'
                 };
             };
 

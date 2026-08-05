@@ -3,7 +3,8 @@
     {
       "target_name": "ply_reader",
       "sources": [
-        "ply-reader.cc"
+        "ply-reader.cc",
+        "nanogs.cc"
       ],
       "include_dirs": [
         "<!@(node -p \"require('node-addon-api').include\")"

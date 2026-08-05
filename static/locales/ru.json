@@ -145,7 +145,6 @@
     "popup.load-options-header": "Параметры загрузки",
     "popup.lod-select-message": "Этот файл содержит несколько уровней детализации. Выберите, какой загрузить.",
     "popup.lod-select-splats": "сплатов",
-    "popup.lod-upload-note": "Примечание: сцены с уровнями детализации можно загрузить напрямую на",
     "popup.export": "Экспорт",
     "popup.copy-to-clipboard": "Скопировать ссылку в буфер обмена",
     "popup.render-image.header": "Настройки изображения",

@@ -855,10 +855,14 @@ static Napi::Value MergePlyFiles(const Napi::CallbackInfo& info) {
 }
 
 // ========== Module init ==========
+namespace nanogs {
+Napi::Object InitNanogs(Napi::Env env, Napi::Object exports);
+}
 static Napi::Object Init(Napi::Env env, Napi::Object exports) {
     exports.Set(Napi::String::New(env, "readPlyFast"), Napi::Function::New(env, ReadPlyFast));
     exports.Set(Napi::String::New(env, "writeCompressedPly"), Napi::Function::New(env, WriteCompressedPly));
     exports.Set(Napi::String::New(env, "mergePlyFiles"), Napi::Function::New(env, MergePlyFiles));
+    nanogs::InitNanogs(env, exports);
     return exports;
 }
 

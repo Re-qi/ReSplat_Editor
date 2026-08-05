@@ -1028,7 +1028,7 @@ const lcc2Jobs = new Map(); // jobId → { status, progress, text, result, error
 let nextLcc2JobId = 1;
 
 app.post('/api/lcc2-export-path', express.json(), async (req, res) => {
-    const { filePath, outputDir, name, lodLevels, shBands, iterations } = req.body;
+    const { filePath, outputDir, name, lodLevels, shBands, iterations, simplifyMethod } = req.body;
     if (!filePath || !fs.existsSync(filePath)) {
         res.status(400).json({ error: 'Invalid file path' });
         return;
@@ -1057,8 +1057,19 @@ app.post('/api/lcc2-export-path', express.json(), async (req, res) => {
                 name,
                 lodLevels: lodLevels ?? 1,
                 shBands: shBands ?? 0,
-                iterations: iterations ?? 0
+                iterations: iterations ?? 0,
+                simplifyMethod: simplifyMethod ?? 'nanogs'
             }
+        },
+        // Worker threads do NOT inherit --max-old-space-size from the parent
+        // (js-flags apply to the main isolate only). The export worker holds
+        // the full column set + SharedArrayBuffer copy + stitched NanoGS
+        // snapshots — up to ~11 GB on a 10.5M×59-col scene. resourceLimits
+        // raises the per-isolate heap (execArgv V8 flags are rejected by
+        // Electron: ERR_WORKER_INVALID_EXEC_ARGV).
+        resourceLimits: {
+            maxOldGenerationSizeMb: 16384,
+            maxYoungGenerationSizeMb: 2048
         }
     });
     job.worker = worker;

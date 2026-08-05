@@ -249,7 +249,7 @@ class BackendClient {
     static async lcc2ExportPath(
         filePath: string,
         outputDir: string,
-        options: { name: string; lodLevels?: number; shBands?: number; iterations?: number },
+        options: { name: string; lodLevels?: number; shBands?: number; iterations?: number; simplifyMethod?: 'nanogs' | 'uniform' },
         onProgress?: (progress: { progress: number; text?: string }) => void
     ): Promise<{
         outputPath: string;

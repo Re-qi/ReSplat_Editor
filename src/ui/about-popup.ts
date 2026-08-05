@@ -107,8 +107,19 @@ class AboutPopup extends Container {
         const poweredByText = new Label({ class: 'about-dep-name', text: 'powered by SuperSplat' });
         poweredByRow.append(poweredByText);
 
+        // NanoGS attribution — CC BY-NC 4.0 (adapted material, see src/nanogs/README.md)
+        const nanogsRow = new Container({
+            class: 'about-dep-row'
+        });
+        const nanogsText = new Label({ class: 'about-dep-name', text: 'simplification by NanoGS (CC BY-NC 4.0)' });
+        nanogsRow.append(nanogsText);
+        nanogsRow.dom.addEventListener('click', () => {
+            openUrl('https://github.com/RongLiu-Leo/NanoGS');
+        });
+
         depsContainer.append(contactRow);
         depsContainer.append(poweredByRow);
+        depsContainer.append(nanogsRow);
 
         // Assemble content
         content.append(logoContainer);
