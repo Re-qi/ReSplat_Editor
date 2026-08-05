@@ -107,7 +107,7 @@ ReSplat 重构了原版的选择球与选择盒，并新增了阻挡平面，三
   </tr>
 </table>
 
-[点击下载默认Lut模板](./static/luts/默认.png)
+[点击下载默认Lut模板](./static/luts/默认.png) | [Lut网盘下载](https://pan.quark.cn/s/91f35906a104)
 
 ### 多语言支持
 
