@@ -227,6 +227,9 @@ class Splat extends Element {
         // when sort changes, re-render the scene
         instance.sorter.on('updated', () => {
             this.changedCounter++;
+            if (this.scene) {
+                this.scene.forceRender = true;
+            }
         });
     }
 
@@ -287,7 +290,7 @@ class Splat extends Element {
         }
     }
 
-    async updateSorting() {
+    async updateSorting(skipBounds = false) {
         const state = this.splatData.getProp('state') as Uint8Array;
 
         let mapping: Uint32Array;
@@ -314,7 +317,9 @@ class Splat extends Element {
         this.entity.gsplat.instance.sorter.setMapping(mapping);
 
         // recalculate bounds after sorting changes
-        await this.updateLocalBounds();
+        if (!skipBounds) {
+            await this.updateLocalBounds();
+        }
     }
 
     get worldTransform() {

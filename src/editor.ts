@@ -1548,7 +1548,7 @@ const registerEditorEvents = (events: Events, editHistory: EditHistory, scene: S
         'camera.tonemapping', 'camera.fov', 'view.bands',
         'camera.flySpeed', 'camera.splatSize',
         'view.centersUseGaussianColor', 'view.outlineSelection',
-        'grid.visible', 'camera.bound', 'camera.boundDimensions',
+        'camera.boundDimensions',
         'camera.showPoses'
     ].forEach((eventName) => {
         events.on(eventName, scheduleSavePrefs);

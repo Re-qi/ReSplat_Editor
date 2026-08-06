@@ -109,7 +109,9 @@ body {
     bottom: 20px;
     color: $text-primary;
     text-shadow: 1px 1px 4px black;
-    z-index: 100;
+    // HUD info sits above the 3D viewport (canvas / tool svg overlays) but
+    // below all interactive UI panels (which use z-index >= 10).
+    z-index: 5;
     pointer-events: auto;
 }
 
@@ -123,6 +125,7 @@ body {
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+    z-index: 5;
 }
 
 #cursor-label {
@@ -202,6 +205,8 @@ body {
     width: 100%;
     height: 100%;
     pointer-events: none;
+    // hover tooltips must always render above every other UI layer
+    z-index: 10000;
 }
 
 #top-container {

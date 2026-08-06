@@ -452,10 +452,7 @@ class LeftToolbar extends Container {
             if (e.button !== 0) return;
             if (compactToggle.contains(e.target as Node)) return;
 
-            if (!isCompact) {
-                events.fire('tool.brushSelection');
-                return;
-            }
+            if (!isCompact) return; // non-compact: handled by click handler below
 
             if (brushLongPressTimer) {
                 clearTimeout(brushLongPressTimer);

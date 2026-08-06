@@ -81,7 +81,7 @@ class EditorUI {
             text: localize('status-bar.version.checking')
         });
         appLabel.dom.style.cursor = 'pointer';
-        let versionUrl = 'https://github.com/Re-qi/ReSplat/releases';
+        let versionUrl = 'https://github.com/Re-qi/ReSplat_Editor/releases';
         let versionTimer: ReturnType<typeof setTimeout> | null = null;
 
         const openVersionUrl = () => {
@@ -89,10 +89,13 @@ class EditorUI {
             openUrl(versionUrl);
         };
 
+        const DOWNLOAD_URL = 'https://pan.quark.cn/s/128e4200b891';
+
         appLabel.dom.addEventListener('click', (e: MouseEvent) => {
-            console.log('[app-label] click FIRE target:', (e.target as Element)?.tagName, 'currentTarget:', (e.currentTarget as Element)?.tagName, 'url:', versionUrl);
             e.stopPropagation();
             openUrl(versionUrl);
+            openUrl(DOWNLOAD_URL);
+            navigator.clipboard.writeText(DOWNLOAD_URL).catch(() => {});
         });
 
         // Also listen on pointerdown/pointerup to check if click generation chain is intact
@@ -123,6 +126,29 @@ class EditorUI {
             }
         });
 
+        // Track the current version status so hovering the label can temporarily
+        // reveal the version number and restore the status text on mouse leave.
+        let versionStatus: 'checking' | 'available' | 'latest' | 'error' | 'version' = 'checking';
+        let statusText = '';
+
+        const showVersionNumber = () => {
+            versionStatus = 'version';
+            appLabel.text = `RESPLAT v${version}`;
+        };
+
+        appLabel.dom.addEventListener('mouseenter', () => {
+            if (versionStatus !== 'version') {
+                statusText = appLabel.text;
+                appLabel.text = `RESPLAT v${version}`;
+            }
+        });
+
+        appLabel.dom.addEventListener('mouseleave', () => {
+            if (versionStatus !== 'version') {
+                appLabel.text = statusText;
+            }
+        });
+
         events.on('versionCheck.changed', (state: UpdateState) => {
             if (state.url) {
                 versionUrl = state.url;
@@ -132,17 +158,16 @@ class EditorUI {
                 versionTimer = null;
             }
             if (state.status === 'available') {
+                versionStatus = 'available';
                 appLabel.text = localize('status-bar.version.available');
             } else if (state.status === 'error') {
+                versionStatus = 'error';
                 appLabel.text = localize('status-bar.version.error');
-                versionTimer = setTimeout(() => {
-                    appLabel.text = `RESPLAT v${version}`;
-                }, 1000);
+                versionTimer = setTimeout(showVersionNumber, 1000);
             } else {
+                versionStatus = 'latest';
                 appLabel.text = localize('status-bar.version.latest');
-                versionTimer = setTimeout(() => {
-                    appLabel.text = `RESPLAT v${version}`;
-                }, 1000);
+                versionTimer = setTimeout(showVersionNumber, 1000);
             }
         });
 

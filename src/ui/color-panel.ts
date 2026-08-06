@@ -675,6 +675,12 @@ class ColorPanel extends Container {
         // Default: show hue only
         updateHslToggleUI();
 
+        // Reset to hue mode whenever the panel is shown
+        events.on('colorPanel.shown', () => {
+            activeHslMode = 'hue';
+            updateHslToggleUI();
+        });
+
         this.append(header);
         this.append(tintRow);
         this.append(temperatureRow);
@@ -1173,6 +1179,7 @@ class ColorPanel extends Container {
                     this.hidden = !visible;
                     events.fire('colorPanel.visible', visible);
                     if (visible) {
+                        events.fire('colorPanel.shown');
                         requestAnimationFrame(refreshSliderHandles);
                         setTimeout(refreshSliderHandles, 100);
                     }

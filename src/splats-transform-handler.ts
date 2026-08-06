@@ -22,6 +22,10 @@ class SplatsTransformHandler implements TransformHandler {
     transform = new Mat4();
     paletteMap = new Map<number, number>();
 
+    originalCenters: Float32Array = null;
+    lastSortUpdate = 0;
+    private readonly SORT_THROTTLE_MS = 100;
+
     constructor(events: Events) {
         this.events = events;
 
@@ -131,6 +135,17 @@ class SplatsTransformHandler implements TransformHandler {
             transformPalette.setTransform(newIdx, mat);
         });
 
+        // save original centers of selected splats for CPU-side depth sorting during drag
+        const { centers } = splat.entity.gsplat.instance.sorter;
+        this.originalCenters = new Float32Array(centers.length);
+        for (let i = 0; i < state.length; ++i) {
+            if (state[i] === State.selected) {
+                this.originalCenters[i * 3 + 0] = centers[i * 3 + 0];
+                this.originalCenters[i * 3 + 1] = centers[i * 3 + 1];
+                this.originalCenters[i * 3 + 2] = centers[i * 3 + 2];
+            }
+        }
+
         splat.selectionAlpha = 0;
         splat.scene.outline.enabled = false;
         splat.scene.underlay.enabled = false;
@@ -152,11 +167,41 @@ class SplatsTransformHandler implements TransformHandler {
             transformPalette.setTransform(newIdx, mat2);
         });
 
+        // update sorter centers on CPU for correct depth sorting during drag
+        this.updateCenters();
+
+        // throttled re-sort: send updated centers to the sort worker
+        const now = performance.now();
+        if (now - this.lastSortUpdate > this.SORT_THROTTLE_MS) {
+            this.lastSortUpdate = now;
+            this.events.invoke('queue', () => this.splat.updateSorting(true));
+        }
+
         // route through the shared queue so overlapping drag ticks don't race
         // on CalcBound's shared render targets / readback buffers. fire-and-
         // forget is fine: the final bound is recomputed when end() awaits
         // updatePositions -> updateSorting -> updateLocalBounds.
         this.events.invoke('queue', () => this.splat.updateLocalBounds());
+    }
+
+    private updateCenters() {
+        const { centers } = this.splat.entity.gsplat.instance.sorter;
+        const state = this.splat.splatData.getProp('state') as Uint8Array;
+        const tmpVec = new Vec3();
+
+        for (let i = 0; i < state.length; ++i) {
+            if (state[i] === State.selected) {
+                tmpVec.set(
+                    this.originalCenters[i * 3 + 0],
+                    this.originalCenters[i * 3 + 1],
+                    this.originalCenters[i * 3 + 2]
+                );
+                this.transform.transformPoint(tmpVec, tmpVec);
+                centers[i * 3 + 0] = tmpVec.x;
+                centers[i * 3 + 1] = tmpVec.y;
+                centers[i * 3 + 2] = tmpVec.z;
+            }
+        }
     }
 
     async end() {

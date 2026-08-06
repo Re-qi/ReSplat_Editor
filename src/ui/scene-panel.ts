@@ -168,6 +168,9 @@ class ScenePanel extends Container {
         // Toggle color section visibility when clicking color mode button while already active
         events.on('colorPanel.toggleVisible', () => {
             colorSection.hidden = !colorSection.hidden;
+            if (!colorSection.hidden) {
+                events.fire('colorPanel.shown');
+            }
         });
 
         // Toggle view section visibility via menu bar button

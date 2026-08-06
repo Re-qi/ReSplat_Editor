@@ -320,11 +320,11 @@ class Menu extends Container {
         }, {
             text: localize('menu.help.github-repo'),
             icon: 'E259',
-            onSelect: () => openUrl('https://github.com/Re-qi/ReSplat')
+            onSelect: () => openUrl('https://github.com/Re-qi/ReSplat_Editor')
         }, {
             text: localize('menu.help.log-issue'),
             icon: 'E336',
-            onSelect: () => openUrl('https://github.com/Re-qi/ReSplat/discussions')
+            onSelect: () => openUrl('https://github.com/Re-qi/ReSplat_Editor/discussions')
         }, {
             // separator
         }, {

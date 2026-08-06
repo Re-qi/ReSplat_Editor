@@ -1161,6 +1161,81 @@ class DeleteShapeOp {
     }
 }
 
+// Add a measure (measure-tool) or orient (orient-tool) point so placing a point
+// becomes undoable via the edit history.
+class AddEditPointOp {
+    name = 'addEditPoint';
+    splat: Splat;
+    kind: 'measure' | 'orient';
+    point: Vec3;
+    skipDo: boolean;
+
+    constructor(options: { splat: Splat, kind: 'measure' | 'orient', point: Vec3, skipDo?: boolean }) {
+        this.splat = options.splat;
+        this.kind = options.kind;
+        this.point = options.point;
+        this.skipDo = options.skipDo || false;
+    }
+
+    private points(): Vec3[] {
+        return this.kind === 'measure' ? this.splat.measurePoints : this.splat.orientPoints;
+    }
+
+    do() {
+        // skipDo mirrors AddShapeOp: the point was already pushed by the caller
+        // on first application, so only push on redo.
+        if (!this.skipDo) {
+            this.points().push(this.point);
+        }
+        this.skipDo = false;
+    }
+
+    undo() {
+        const points = this.points();
+        const idx = points.indexOf(this.point);
+        if (idx !== -1) {
+            points.splice(idx, 1);
+        }
+        // keep the tool selection in range after removing a point
+        if (this.kind === 'measure') {
+            if (this.splat.measureSelection >= points.length) {
+                this.splat.measureSelection = -1;
+            }
+        } else if (this.splat.orientSelection >= points.length) {
+            this.splat.orientSelection = -1;
+        }
+    }
+
+    destroy() {
+        this.splat = null;
+        this.point = null;
+    }
+
+    serialize() {
+        return {
+            type: this.name,
+            data: {
+                splatIndex: this.splat.scene.getSplatIndex(this.splat),
+                kind: this.kind,
+                point: [this.point.x, this.point.y, this.point.z]
+            }
+        };
+    }
+
+    static deserialize(data: any, scene: Scene): AddEditPointOp | null {
+        const splat = scene.getSplatByIndex(data.splatIndex);
+        if (!splat) {
+            return null;
+        }
+        const [x, y, z] = data.point;
+        return new AddEditPointOp({
+            splat,
+            kind: data.kind,
+            point: new Vec3(x, y, z)
+        });
+    }
+}
+
 interface SerializedGroupData {
     name: string;
     indices: Uint32Array;
@@ -1380,6 +1455,8 @@ function deserializeEditOp(
             return AddShapeOp.deserialize(opData.data, scene);
         case 'deleteShape':
             return DeleteShapeOp.deserialize(opData.data, scene);
+        case 'addEditPoint':
+            return AddEditPointOp.deserialize(opData.data, scene);
         default:
             throw new Error(`Unknown EditOp type: ${opData.type}`);
     }
@@ -1412,6 +1489,7 @@ export {
     SplatRenameOp,
     AddShapeOp,
     DeleteShapeOp,
+    AddEditPointOp,
     MergeOp,
     AddGroupOp,
     DeleteGroupOp,

@@ -6,6 +6,8 @@
     width: 320px;
     max-height: calc(100% - 48px);
     overflow-y: auto;
+    // keep the right-hand panel above the bottom-right HUD labels (z-index 5)
+    z-index: 10;
 
     transition: transform 0.3s ease;
 

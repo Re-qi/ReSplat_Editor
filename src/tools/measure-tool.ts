@@ -1,7 +1,7 @@
 import { Button, Container, Label, NumericInput } from '@playcanvas/pcui';
 import { Entity, Mat4, Quat, TranslateGizmo, Vec3 } from 'playcanvas';
 
-import { EntityTransformOp } from '../edit-ops';
+import { AddEditPointOp, EntityTransformOp } from '../edit-ops';
 import { Events } from '../events';
 import { Scene } from '../scene';
 import { Splat } from '../splat';
@@ -314,6 +314,14 @@ class MeasureTool {
             }
         });
 
+        // refresh visuals when an added point is undone/redone
+        events.on('edit.apply', (op: AddEditPointOp) => {
+            if (active && splat && op instanceof AddEditPointOp && op.splat === splat && op.kind === 'measure') {
+                updateVisuals();
+                scene.forceRender = true;
+            }
+        });
+
         const isPrimary = (e: PointerEvent) => {
             return e.pointerType === 'mouse' ? e.button === 0 : e.isPrimary;
         };
@@ -366,8 +374,10 @@ class MeasureTool {
                 }
 
                 if (splat.measurePoints.length < 2 && pickSplatSurfacePoint(scene, splat, clickX, clickY, v)) {
+                    const op = new AddEditPointOp({ splat, kind: 'measure', point: v.clone(), skipDo: true });
                     splat.measureSelection = splat.measurePoints.length;
-                    splat.measurePoints.push(v.clone());
+                    splat.measurePoints.push(op.point);
+                    events.fire('edit.add', op);
                     updateVisuals();
                 }
 

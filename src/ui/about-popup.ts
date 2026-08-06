@@ -64,7 +64,7 @@ class AboutPopup extends Container {
         });
         logoContainer.dom.innerHTML = logoSvg;
         logoContainer.dom.addEventListener('click', () => {
-            openUrl('https://github.com/Re-qi/ReSplat');
+            openUrl('https://github.com/Re-qi/ReSplat_Editor');
         });
 
         // App name and version
@@ -72,7 +72,7 @@ class AboutPopup extends Container {
             id: 'about-app-info'
         });
         appInfo.dom.addEventListener('click', () => {
-            openUrl('https://github.com/Re-qi/ReSplat');
+            openUrl('https://github.com/Re-qi/ReSplat_Editor');
         });
 
         const appName = new Label({

@@ -1,7 +1,7 @@
 import { Button, Container, Label } from '@playcanvas/pcui';
 import { Entity, Mat4, Quat, TranslateGizmo, Vec3, math } from 'playcanvas';
 
-import { EntityTransformOp, MultiOp, PlacePivotOp, SetLocalFrameOp } from '../edit-ops';
+import { AddEditPointOp, EntityTransformOp, MultiOp, PlacePivotOp, SetLocalFrameOp } from '../edit-ops';
 import { Events } from '../events';
 import type { Pivot } from '../pivot';
 import { Scene } from '../scene';
@@ -266,6 +266,14 @@ class OrientTool {
             }
         });
 
+        // refresh visuals when an added point is undone/redone
+        events.on('edit.apply', (op: AddEditPointOp) => {
+            if (active && splat && op instanceof AddEditPointOp && op.splat === splat && op.kind === 'orient') {
+                updateVisuals();
+                scene.forceRender = true;
+            }
+        });
+
         // rotate and translate the splat so the picked plane aligns with Y+ (xZ plane)
         const alignToGrid = () => {
             if (!splat || splat.orientPoints.length !== 3 || !calcPlane()) {
@@ -378,8 +386,10 @@ class OrientTool {
             if (!pickSplatSurfacePoint(scene, splat, offsetX, offsetY, v)) {
                 return false;
             }
+            const op = new AddEditPointOp({ splat, kind: 'orient', point: v.clone(), skipDo: true });
             splat.orientSelection = splat.orientPoints.length;
-            splat.orientPoints.push(v.clone());
+            splat.orientPoints.push(op.point);
+            events.fire('edit.add', op);
             return true;
         };
 
