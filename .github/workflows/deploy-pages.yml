@@ -10,6 +10,9 @@ permissions:
   pages: write
   id-token: write
 
+env:
+  ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION: true
+
 concurrency:
   group: pages
   cancel-in-progress: true
