@@ -122,9 +122,7 @@ class VersionCheck {
 
             // Find the installer file and extract version
             const files = folderData?.data?.list || [];
-            const installer = files.find((f: any) =>
-                f.file_name?.startsWith('ReSplat Setup ') && f.file_name?.endsWith('.exe')
-            );
+            const installer = files.find((f: any) => f.file_name?.startsWith('ReSplat Setup ') && f.file_name?.endsWith('.exe'));
             if (!installer) {
                 throw new Error('No installer found in Quark ReSplat folder');
             }
