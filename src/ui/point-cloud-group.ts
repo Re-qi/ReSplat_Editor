@@ -6,12 +6,12 @@ import { IndexRanges } from '../index-ranges';
 import { Splat } from '../splat';
 import { State } from '../splat-state';
 import { localize } from './localization';
+import scanEyeSvg from './scan-eye.svg';
 import deleteSvg from './svg/delete.svg';
 import gripSvg from './svg/grip.svg';
 import newGroupSvg from './svg/new.svg';
-import scanEyeSvg from './scan-eye.svg';
-import shownOnly2Svg from './svg/shown-only2.svg';
 import shownOnlySvg from './svg/shown-only.svg';
+import shownOnly2Svg from './svg/shown-only2.svg';
 import { Tooltips } from './tooltips';
 
 const createSvg = (svgString: string) => {

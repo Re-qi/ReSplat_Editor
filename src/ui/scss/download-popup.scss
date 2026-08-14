@@ -64,10 +64,10 @@
             transition: background-color 0.15s ease;
 
             &:hover {
-                background-color: rgba(77, 158, 255, 0.15);
+                background-color: rgba($clr-hilight, 0.15);
 
                 .download-option-name {
-                    color: #4d9eff;
+                    color: $clr-hilight;
                 }
             }
         }

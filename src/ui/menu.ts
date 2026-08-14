@@ -1,6 +1,7 @@
 import { Button, Container, Element, Label } from '@playcanvas/pcui';
 
 import { Events } from '../events';
+import { openUrl } from '../open-url';
 import { recentFiles } from '../recent-files';
 import { ShortcutManager } from '../shortcut-manager';
 import { localize } from './localization';
@@ -12,6 +13,12 @@ import sceneImport from './svg/import.svg';
 import iterationCw from './svg/iteration-cw.svg';
 import lockKeyholeOpen from './svg/lock-keyhole-open.svg';
 import lockKeyhole from './svg/lock-keyhole.svg';
+import menuBook from './svg/menu-book.svg';
+import menuDiscussion from './svg/menu-discussion.svg';
+import menuGithub from './svg/menu-github.svg';
+import menuInfo from './svg/menu-info.svg';
+import menuKeyboard from './svg/menu-keyboard.svg';
+import menuPlay from './svg/menu-play.svg';
 import sceneNew from './svg/new.svg';
 import sceneOpen from './svg/open.svg';
 import sceneSave from './svg/save.svg';
@@ -22,14 +29,7 @@ import selectNone from './svg/select-none.svg';
 import selectSeparate from './svg/select-separate.svg';
 import squaresUnite from './svg/squares-unite.svg';
 import wrenchIcon from './svg/wrench.svg';
-import menuPlay from './svg/menu-play.svg';
-import menuBook from './svg/menu-book.svg';
-import menuKeyboard from './svg/menu-keyboard.svg';
-import menuGithub from './svg/menu-github.svg';
-import menuDiscussion from './svg/menu-discussion.svg';
-import menuInfo from './svg/menu-info.svg';
 import { Tooltips } from './tooltips';
-import { openUrl } from '../open-url';
 
 const createSvg = (svgString: string) => {
     const decodedStr = decodeURIComponent(svgString.substring('data:image/svg+xml,'.length));

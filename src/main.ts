@@ -415,9 +415,9 @@ const main = async () => {
     try {
         const gl = editorUI.canvas.getContext('webgl2');
         const dbg = gl?.getExtension('WEBGL_debug_renderer_info');
-        const renderer = dbg
-            ? String(gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL))
-            : String(gl?.getParameter(gl.RENDERER) ?? '');
+        const renderer = dbg ?
+            String(gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL)) :
+            String(gl?.getParameter(gl.RENDERER) ?? '');
         const isSoftware = /swiftshader|llvmpipe|software/i.test(renderer);
         console.log(`[ReSplat] WebGL renderer: ${renderer}${isSoftware ? ' (software rendering — expect low FPS)' : ''}`);
         if (isSoftware) {
