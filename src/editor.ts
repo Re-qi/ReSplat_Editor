@@ -429,9 +429,27 @@ const registerEditorEvents = (events: Events, editHistory: EditHistory, scene: S
     // BEFORE constructing SelectOp, because SelectOp consumes sel in its
     // constructor. For non-LCC splats lodEditLog is null and this is a no-op.
     const fireSelectWithLog = (splat: Splat, op: 'add'|'remove'|'set', sel: Uint8Array | Uint32Array) => {
+        // 独立编辑激活时，剔除组外点云，使选择/选区工具只能命中组内点云
+        const edited = events.invoke('pointCloudGroup.editActive') ? splat.desaturateMaskData : null;
+        let filteredSel = sel;
+        if (edited && edited.length > 0) {
+            if (sel instanceof Uint32Array) {
+                const keep: number[] = [];
+                for (let i = 0; i < sel.length; i++) {
+                    const idx = sel[i];
+                    if (idx < edited.length && edited[idx] === 0) keep.push(idx);
+                }
+                filteredSel = new Uint32Array(keep);
+            } else {
+                const n = Math.min(sel.length, edited.length);
+                for (let i = 0; i < n; i++) {
+                    if (edited[i] !== 0) sel[i] = 0;
+                }
+            }
+        }
         splat.lodEditLog?.onEditHistoryAdd();
-        splat.lodEditLog?.recordSelect(splat, op, sel);
-        events.fire('edit.add', new SelectOp(splat, op, sel));
+        splat.lodEditLog?.recordSelect(splat, op, filteredSel);
+        events.fire('edit.add', new SelectOp(splat, op, filteredSel));
     };
 
     const intersectCenters = (splat: Splat, op: 'add'|'remove'|'set', options: any) => {
@@ -1035,6 +1053,48 @@ const registerEditorEvents = (events: Events, editHistory: EditHistory, scene: S
         });
     });
 
+    // Re-center a fresh set of extracted gaussian positions around their own
+    // bound center and return that center (world space). Positions are
+    // subtracted in place so the new splat's entity can sit at the gaussians;
+    // the gizmo (pivot origin 'center') then appears at the gaussians instead
+    // of the world origin.
+    const recenterExtractedPositions = (props: { name: string, storage: any }[], count: number): Vec3 | null => {
+        const x = props.find(p => p.name === 'x')?.storage as Float32Array;
+        const y = props.find(p => p.name === 'y')?.storage as Float32Array;
+        const z = props.find(p => p.name === 'z')?.storage as Float32Array;
+        if (!x || !y || !z || count === 0) return null;
+
+        let minX = Infinity;
+        let minY = Infinity;
+        let minZ = Infinity;
+        let maxX = -Infinity;
+        let maxY = -Infinity;
+        let maxZ = -Infinity;
+
+        for (let i = 0; i < count; i++) {
+            if (x[i] < minX) minX = x[i];
+            if (x[i] > maxX) maxX = x[i];
+            if (y[i] < minY) minY = y[i];
+            if (y[i] > maxY) maxY = y[i];
+            if (z[i] < minZ) minZ = z[i];
+            if (z[i] > maxZ) maxZ = z[i];
+        }
+
+        if (!Number.isFinite(minX) || !Number.isFinite(minY) || !Number.isFinite(minZ)) return null;
+
+        const cx = (minX + maxX) / 2;
+        const cy = (minY + maxY) / 2;
+        const cz = (minZ + maxZ) / 2;
+
+        for (let i = 0; i < count; i++) {
+            x[i] -= cx;
+            y[i] -= cy;
+            z[i] -= cz;
+        }
+
+        return new Vec3(cx, cy, cz);
+    };
+
     const performSelectionFunc = (func: 'duplicate' | 'separate') => {
         const splats = selectedSplats();
         if (splats.length === 0) return;
@@ -1072,8 +1132,10 @@ const registerEditorEvents = (events: Events, editHistory: EditHistory, scene: S
         // Use SingleSplat to bake palette transforms into the extracted data.
         // Without this, palette transforms applied via point-cloud group
         // (move/rotate/scale) are lost — separating or duplicating would
-        // revert gaussians to their pre-transform state.
-        const singleSplat = new SingleSplat(propNames, { keepWorldTransform: false, skipPlyRotation: true });
+        // revert gaussians to their pre-transform state. The entity transform
+        // is kept separate so the copy can clone it and stay identical to the
+        // source model (including gizmo position/orientation/scale).
+        const singleSplat = new SingleSplat(propNames, { keepWorldTransform: true, skipPlyRotation: true });
 
         const extractedProps: typeof props = [];
 
@@ -1107,13 +1169,17 @@ const registerEditorEvents = (events: Events, editHistory: EditHistory, scene: S
             properties: extractedProps
         }]);
 
-        // Use identity transform — all transforms (entity + palette) are
-        // already baked into the gaussian data by SingleSplat.read().
+        // Gaussian data stays in the source's local space (palette transforms
+        // already baked in), so clone the source entity transform to make the
+        // copy a true duplicate — including its gizmo position/orientation/scale.
         const filename = `${removeExtension(splat.filename)}_${func}.ply`;
         const asset = new Asset(filename, 'gsplat', { url: `local-asset-${Date.now()}`, filename: filename });
         scene.app.assets.add(asset);
         asset.resource = new GSplatResource(scene.app.graphicsDevice, extractedGSplatData);
         const copy = new Splat(asset, new Quat());
+        copy.entity.setLocalPosition(splat.entity.getLocalPosition().clone());
+        copy.entity.setLocalRotation(splat.entity.getLocalRotation().clone());
+        copy.entity.setLocalScale(splat.entity.getLocalScale().clone());
 
         if (func === 'separate') {
             editHistory.add(new MultiOp([
@@ -1243,6 +1309,11 @@ const registerEditorEvents = (events: Events, editHistory: EditHistory, scene: S
                 }
             }
 
+            // Re-center the merged gaussians around their own bound center and
+            // park the merged splat's entity there, so its gizmo appears at the
+            // gaussians instead of the world origin.
+            const mergedPosition = recenterExtractedPositions(mergedProps, totalCount);
+
             const mergedGSplatData = new GSplatData([{
                 name: 'vertex',
                 count: totalCount,
@@ -1257,6 +1328,9 @@ const registerEditorEvents = (events: Events, editHistory: EditHistory, scene: S
             asset.resource = new GSplatResource(scene.app.graphicsDevice, mergedGSplatData);
             // Use identity rotation since all transforms are already baked into the merged data
             const mergedSplat = new Splat(asset, new Quat());
+            if (mergedPosition) {
+                mergedSplat.entity.setLocalPosition(mergedPosition);
+            }
 
             const mergeOp = new MergeOp(scene, multiSelected, mergedSplat);
             await editHistory.add(mergeOp);

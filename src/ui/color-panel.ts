@@ -611,7 +611,7 @@ class ColorPanel extends Container {
             return { section, sliders, titleLabel };
         };
 
-        const hueSection = createMixerSection(localize('panel.colors.mixer.hue'), 'hue', -180, 180);
+        const hueSection = createMixerSection(localize('panel.colors.mixer.hue'), 'hue', -45, 45);
         const satSection = createMixerSection(localize('panel.colors.mixer.saturation'), 'saturation', -100, 100);
         const lightSection = createMixerSection(localize('panel.colors.mixer.lightness'), 'lightness', -100, 100);
 
@@ -744,9 +744,17 @@ class ColorPanel extends Container {
             whitePointRow.hidden = isShape;
             transparencyRow.hidden = isShape;
             lutRow.hidden = isShape;
-            hslSections.forEach((s) => {
-                s.hidden = isShape;
-            });
+            if (isShape) {
+                // Shape selected: hide all HSL mixer sections
+                hslSections.forEach((s) => {
+                    s.hidden = true;
+                });
+            } else {
+                // Shape deselected: restore HSL sections per current toggle mode,
+                // so hue/saturation/lightness are never all shown at once
+                // unless the user is in "all" mode.
+                updateHslToggleUI();
+            }
             suppress = false;
         };
 

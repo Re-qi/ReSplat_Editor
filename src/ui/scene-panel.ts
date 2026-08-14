@@ -6,18 +6,10 @@ import { localize } from './localization';
 import { LodSwitcher } from './lod-switcher';
 import { PointCloudGroup } from './point-cloud-group';
 import { SplatList } from './splat-list';
-import sceneImportSvg from './svg/import.svg';
-import sceneNewSvg from './svg/new.svg';
-import soloSvg from './svg/solo.svg';
 import { Tooltips } from './tooltips';
 import { Transform } from './transform';
 import { ViewPanel } from './view-panel';
 import { WrapperList } from './wrapper-list';
-
-const createSvg = (svgString: string) => {
-    const decodedStr = decodeURIComponent(svgString.substring('data:image/svg+xml,'.length));
-    return new DOMParser().parseFromString(decodedStr, 'image/svg+xml').documentElement;
-};
 
 class ScenePanel extends Container {
     constructor(events: Events, tooltips: Tooltips, canvasContainer: Container, args = {}) {
@@ -51,52 +43,10 @@ class ScenePanel extends Container {
             class: 'panel-header-label'
         });
 
-        let soloActive = false;
-
-        const soloToggle = new Container({
-            class: 'panel-header-button'
-        });
-        soloToggle.dom.appendChild(createSvg(soloSvg));
-
-        soloToggle.on('click', () => {
-            soloActive = !soloActive;
-            if (soloActive) {
-                soloToggle.class.add('active');
-            } else {
-                soloToggle.class.remove('active');
-            }
-            events.fire('scene.solo', soloActive);
-        });
-
-        const sceneImport = new Container({
-            class: ['panel-header-button', 'scene-import-btn']
-        });
-        sceneImport.dom.appendChild(createSvg(sceneImportSvg));
-
-        const sceneNew = new Container({
-            class: 'panel-header-button'
-        });
-        sceneNew.dom.appendChild(createSvg(sceneNewSvg));
-
         sceneHeader.append(sceneIcon);
         sceneHeader.append(sceneLabel);
-        sceneHeader.append(soloToggle);
-        sceneHeader.append(sceneImport);
-        sceneHeader.append(sceneNew);
 
-        sceneImport.on('click', async () => {
-            await events.invoke('scene.import');
-        });
-
-        sceneNew.on('click', () => {
-            events.invoke('doc.new');
-        });
-
-        tooltips.register(soloToggle, localize('tooltip.scene.solo'), 'bottom');
-        tooltips.register(sceneImport, 'Import Scene', 'bottom');
-        tooltips.register(sceneNew, 'New Scene', 'bottom');
-
-        const splatList = new SplatList(events);
+        const splatList = new SplatList(events, tooltips);
 
         const splatListContainer = new Container({
             class: 'splat-list-container'

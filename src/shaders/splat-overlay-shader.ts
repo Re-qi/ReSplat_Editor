@@ -6,6 +6,7 @@ const vertexShader = /* glsl */ `
     uniform uint splatTextureSize;                  // width of order texture
 
     uniform sampler2D splatState;
+    uniform sampler2D soloMask;                 // 255 = visible, 0 = hidden (point-cloud-group solo)
     uniform highp usampler2D splatPosition;
     uniform highp usampler2D splatTransform;        // per-splat index into transform palette
     uniform sampler2D transformPalette;             // palette of transform matrices
@@ -99,7 +100,11 @@ const vertexShader = /* glsl */ `
         uint splatState = uint(texelFetch(splatState, splatUV, 0).r * 255.0);
 
         // check for locked splats (deleted splats are already excluded from order texture)
-        if ((splatState & 2u) != 0u) {
+        if (texelFetch(soloMask, splatUV, 0).r < 0.5) {
+            // hidden by point-cloud-group solo isolation
+            gl_Position = vec4(0.0, 0.0, 2.0, 1.0);
+            gl_PointSize = 0.0;
+        } else if ((splatState & 2u) != 0u) {
             // locked
             gl_Position = vec4(0.0, 0.0, 2.0, 1.0);
             gl_PointSize = 0.0;

@@ -1,6 +1,6 @@
 {
     "name": "ReSplat",
-    "version": "1.2.7",
+    "version": "1.2.8",
     "main": "electron/main.cjs",
     "author": "Re祁",
     "homepage": "https://playcanvas.com/ReSplat/editor",
@@ -21,6 +21,7 @@
         "develop:auto-launch": "concurrently --kill-others \"xdg-open 'http://localhost:3000/'\" \"npm run watch\" \"npm run serve\"",
         "local": "node --max-old-space-size=8192 server.js",
         "local:build": "npm run build && npm run local",
+        "postinstall": "node scripts/patch-splat-transform.mjs",
         "electron:dev": "npm run build && electron .",
         "electron:build": "npm run build && electron-builder",
         "lint": "eslint src"
@@ -97,14 +98,15 @@
             }
         ],
         "asarUnpack": [
-            "native/**/*.node"
+            "native/**/*.node",
+            "dist/nanogs.mjs"
         ],
         "win": {
             "target": "nsis",
             "icon": "static/icons/Logo512x512.png"
         },
         "electronDownload": {
-            "cache": "./node_modules/electron"
+            "cache": "C:\\Users\\123\\AppData\\Local\\electron-builder\\Cache\\electron"
         },
         "mac": {
             "icon": "static/icons/Logo512x512.png"

@@ -1,20 +1,34 @@
 import { type FileSystem } from '@playcanvas/splat-transform';
-import { path, Quat, Vec3 } from 'playcanvas';
+import { Color, Mat4, path, Quat, Vec3 } from 'playcanvas';
 
 import { BackendClient } from './backend';
 import { CreateDropHandler } from './drop-handler';
 import { ElementType } from './element';
 import { Events } from './events';
-import { BrowserFileSystem, MappedReadFileSystem, readSogMeta, readPlyMeta } from './io';
+import { BrowserFileSystem, loadGSplatData, MappedReadFileSystem, readSogMeta, readPlyMeta, validateGSplatData } from './io';
 import { createDirectoryFileSystem, DirectoryFileSystem } from './io/write';
 import { Scene } from './scene';
 import { Splat } from './splat';
-import { serializeLcc2, serializeLcc2FromLodLog, serializePly, serializePlyCompressed, serializeStandardPly, SerializeSettings, serializeSog, serializeSplat, serializeViewer, SogSettings, ViewerExportSettings } from './splat-serialize';
+import { serializeLcc2, serializeLcc2FromLodLog, serializeLcc2FromLodSplats, serializePly, serializePlyCompressed, serializeStandardPly, SerializeSettings, serializeSog, serializeSplat, serializeViewer, SogSettings, ViewerExportSettings } from './splat-serialize';
 import { showDownloadPrompt } from './ui/download-prompt';
 import { localize } from './ui/localization';
 
 // ts compiler and vscode find this type, but eslint does not
 type FilePickerAcceptType = unknown;
+
+// Export completion sound effects. Files live in static/audio/ and are copied
+// to dist/static/audio by rollup (copy-and-watch). Audio failures are always
+// swallowed so a blocked autoplay or missing file never breaks the export.
+const playExportSound = (name: 'complet' | 'error') => {
+    try {
+        const url = new URL(`static/audio/${name}.mp3`, document.baseURI).toString();
+        const audio = new Audio(url);
+        audio.volume = 0.6;
+        audio.play().catch(() => { /* autoplay policy may block; ignore */ });
+    } catch {
+        // audio unavailable — ignore
+    }
+};
 
 type ExportType = 'ply' | 'standardPly' | 'splat' | 'sog' | 'lcc2' | 'viewer';
 
@@ -725,6 +739,130 @@ const initFileHandler = (scene: Scene, events: Events, dropTarget: HTMLElement) 
         }
     });
 
+    // Load a single-LOD file as CPU-side GSplatData and wrap it in a
+    // lightweight mock Splat (no GPU entity/textures) so
+    // serializeLcc2FromLodSplats / extractDataTable can read it exactly like a
+    // real in-scene Splat.
+    const loadLodSplatData = async (fileName: string, fileSystem: MappedReadFileSystem): Promise<Splat | null> => {
+        const result = await loadGSplatData(fileName, fileSystem, false, undefined);
+        if (!result) {
+            return null;
+        }
+        validateGSplatData(result.gsplatData);
+
+        const { gsplatData, transform } = result;
+
+        // GaussianFilter reads 'state'; single-LOD files don't carry it, so add
+        // an all-zero array (no selections/deletions).
+        if (!gsplatData.getProp('state')) {
+            gsplatData.getElement('vertex').properties.push({
+                type: 'uchar',
+                name: 'state',
+                storage: new Uint8Array(gsplatData.numSplats),
+                byteSize: 1
+            });
+        }
+
+        const worldTransform = new Mat4().setTRS(new Vec3(0, 0, 0), transform.rotation, new Vec3(1, 1, 1));
+
+        return {
+            splatData: gsplatData,
+            numSplats: gsplatData.numSplats,
+            transformTexture: { getSource: (): null => null },
+            transformPalette: null,
+            entity: { getWorldTransform: (): Mat4 => worldTransform },
+            tintClr: new Color(1, 1, 1),
+            temperature: 0,
+            saturation: 1,
+            brightness: 0,
+            blackPoint: 0,
+            whitePoint: 1,
+            transparency: 1
+        } as unknown as Splat;
+    };
+
+    // Combine a list of independently supplied LOD files into a single
+    // multi-LOD LCC2. The first file in the list is the finest LOD (LOD 0);
+    // the last is the coarsest. Each file is loaded as a lightweight mock
+    // Splat (CPU-side only, no GPU resources), serialized via
+    // serializeLcc2FromLodSplats.
+    events.function('lcc2.combineLod', async (filePaths: string[], exportName?: string) => {
+        const electronAPI = (window as any).electronAPI;
+        const isElectron = !!electronAPI?.isElectron;
+
+        const splats: Splat[] = [];
+        try {
+            // Pick the output directory first so nothing is loaded when the
+            // user cancels the save dialog.
+            const dirFs = await createDirectoryFileSystem();
+            if (!dirFs) {
+                return;
+            }
+
+            events.fire('startSpinner');
+
+            for (const filePath of filePaths) {
+                const fileName = filePath.split(/[\\/]/).pop() || filePath;
+
+                let contents: Blob;
+                if (isElectron && electronAPI?.readFile) {
+                    const data: Uint8Array = await electronAPI.readFile(filePath);
+                    contents = new Blob([data as BlobPart]);
+                } else {
+                    throw new Error(localize('popup.combine-lcc2.browser-unsupported'));
+                }
+
+                const fileSystem = new MappedReadFileSystem();
+                fileSystem.addFile(fileName, contents);
+
+                events.fire('spinnerText', `${localize('popup.combine-lcc2.loading')} ${fileName}`);
+                const splat = await loadLodSplatData(fileName, fileSystem);
+                if (splat) {
+                    splats.push(splat);
+                }
+            }
+
+            events.fire('stopSpinner');
+
+            if (splats.length < 2) {
+                throw new Error(localize('popup.combine-lcc2.need-more'));
+            }
+
+            const baseName = exportName?.trim() ?
+                removeExtension(exportName.trim()) :
+                removeExtension(filePaths[0].split(/[\\/]/).pop() || 'combined-lod');
+            await serializeLcc2FromLodSplats(splats, {
+                name: baseName,
+                splatIdx: null,
+                serializeSettings: {
+                    maxSHBands: events.invoke('view.bands') ?? 3,
+                    minOpacity: 1 / 255,
+                    removeInvalid: true,
+                    // Files are loaded raw (already in PLY space) without the
+                    // load-time 180° Z flip, so skip undoing it — otherwise the
+                    // export gets an extra Rx(180°) and needs X=-180 in viewers.
+                    skipPlyRotation: true,
+                    iterations: 10,
+                    events
+                },
+                splatType: '.sog'
+            }, dirFs);
+
+            playExportSound('complet');
+        } catch (error) {
+            await events.invoke('showPopup', {
+                type: 'error',
+                header: localize('popup.combine-lcc2.header'),
+                message: `${error.message ?? error}`
+            });
+        } finally {
+            // Lightweight mock splats hold no GPU resources; release references
+            // so their CPU-side GSplatData can be garbage collected.
+            splats.length = 0;
+            events.fire('stopSpinner');
+        }
+    });
+
     // Progressive LOD loader: load lowest level first, then replace with higher levels
     const loadLODLevels = async (
         lodResult: { levels: Array<{ level: number; count: number; url: string; sizeBytes: number }> },
@@ -863,8 +1001,20 @@ const initFileHandler = (scene: Scene, events: Events, dropTarget: HTMLElement) 
         // shown. Other formats only show it when no file picker is available.
         const showFilenameEdit = exportType === 'lcc2' || !hasFilePicker;
 
+        // LOD levels & simplification only apply when the scene contains
+        // files that don't already carry a full LOD hierarchy: non-LCC
+        // sources and LCC/LCC2 files edited in single-LOD mode (no multi-LOD
+        // metadata). Multi-LOD LCC/LCC2 splats reuse their existing LODs on
+        // export, so the options stay hidden for those.
+        const hasNonLcc = splats.some((s) => {
+            const f = (s.filename || s.name || '').toLowerCase();
+            const isLcc = f.endsWith('.lcc') || f.endsWith('.lcc2');
+            const isMultiLod = !!s.lccFilePath && s.lodCounts.length >= 2 && !!s.lodEditLog;
+            return !isLcc || !isMultiLod;
+        });
+
         // show viewer export options
-        const options = await events.invoke('show.exportPopup', exportType, splats.map(s => s.name), showFilenameEdit) as SceneExportOptions;
+        const options = await events.invoke('show.exportPopup', exportType, splats.map(s => s.name), showFilenameEdit, hasNonLcc) as SceneExportOptions;
 
         // return if user cancelled
         if (!options) {
@@ -957,7 +1107,7 @@ const initFileHandler = (scene: Scene, events: Events, dropTarget: HTMLElement) 
                 ...serializeSettings,
                 minOpacity: 1 / 255,
                 removeInvalid: true,
-                iterations: options.sogIterations ?? 0,
+                iterations: options.sogIterations ?? 10,
                 events
             });
 
@@ -986,8 +1136,22 @@ const initFileHandler = (scene: Scene, events: Events, dropTarget: HTMLElement) 
 
                     // Route to backend for large datasets (>10M splats) when a
                     // PLY file path and output directory are available (Electron).
+                    // The backend re-simplifies the whole dataset from a single
+                    // PLY and cannot merge a multi-LOD LCC file's own LOD levels
+                    // — keep scenes containing such splats on the browser path,
+                    // where serializeLcc2 merges each output level with the LCC
+                    // source's corresponding LOD.
+                    const hasLccPreserve = splats.some(s => !!s.lccFilePath && s.lodCounts.length >= 2 && !!s.lodEditLog);
                     const plyPath = splats[0]?.originalFilePath;
-                    if (totalSplats > 10_000_000 && plyPath && outputRoot && await BackendClient.isAvailable()) {
+                    // Desktop build: the backend worker runs NanoGS off the
+                    // main thread with no splat cap, so intelligent (nanogs)
+                    // requests above the browser main-thread cap (2M, mirrors
+                    // NANOGS_BROWSER_MAX in splat-serialize.ts) route here too.
+                    // Uniform requests keep the old 10M threshold.
+                    const wantNanogs = options.simplifyMethod === 'nanogs';
+                    const nanogsBrowserCap = 2_000_000;
+                    const backendThreshold = wantNanogs ? nanogsBrowserCap : 10_000_000;
+                    if (totalSplats > backendThreshold && plyPath && outputRoot && await BackendClient.isAvailable() && !hasLccPreserve) {
                         console.warn(`[LCC2] Routing ${totalSplats.toLocaleString()} splats to backend (${plyPath})`);
                         events.fire('progressStart', 'Exporting LCC2');
                         events.fire('progressUpdate', { text: 'Exporting via backend…', progress: 0 });
@@ -995,7 +1159,7 @@ const initFileHandler = (scene: Scene, events: Events, dropTarget: HTMLElement) 
                             name: baseName,
                             lodLevels: options.lodLevels ?? 1,
                             shBands: serializeSettings.maxSHBands ?? 0,
-                            iterations: options.sogIterations ?? 0,
+                            iterations: options.sogIterations ?? 10,
                             simplifyMethod: options.simplifyMethod ?? 'nanogs'
                         }, ({ progress, text }) => {
                             events.fire('progressUpdate', { text, progress });
@@ -1015,15 +1179,36 @@ const initFileHandler = (scene: Scene, events: Events, dropTarget: HTMLElement) 
                             name: baseName,
                             splatIdx: null,
                             serializeSettings: buildSogSettings(),
-                            lodLevels: options.lodLevels ?? 1,
+                            // When the popup hid the LOD options (multi-LOD
+                            // LCC source) lodLevels is undefined — the
+                            // serializer then defaults to the source's own
+                            // LOD count (e.g. all 8 LODs of an 8-LOD file).
+                            lodLevels: options.lodLevels,
                             splatType: '.sog'
                         }, fs);
                     } else {
+                        // Browser path. If intelligent simplification was
+                        // requested but the browser path will force uniform
+                        // (main-thread cap above 2M splats, or multi-LOD LCC
+                        // rows merged from the source), surface it instead of
+                        // silently downgrading. In the desktop build nanogs
+                        // requests >2M are routed to the backend above, so this
+                        // popup mainly affects the web build.
+                        if (wantNanogs && (totalSplats > nanogsBrowserCap || hasLccPreserve)) {
+                            await events.invoke('showPopup', {
+                                type: 'info',
+                                header: localize('popup.export.nanogs-fallback-header'),
+                                message: localize('popup.export.nanogs-fallback-message')
+                            });
+                        }
                         await serializeLcc2(splats, {
                             name: baseName,
                             splatIdx: null,
                             serializeSettings: buildSogSettings(),
-                            lodLevels: options.lodLevels ?? 1,
+                            // undefined → serializeLcc2 defaults to 6 LODs
+                            // (its own clamp default), matching the hidden
+                            // slider's previous default value.
+                            lodLevels: options.lodLevels,
                             splatType: '.sog',
                             simplifyMethod: options.simplifyMethod ?? 'uniform'
                         }, fs);
@@ -1035,6 +1220,8 @@ const initFileHandler = (scene: Scene, events: Events, dropTarget: HTMLElement) 
                     await serializeViewer(splats, serializeSettings, { ...viewerExportSettings!, events }, fs);
                     break;
             }
+
+            playExportSound('complet');
 
         } catch (error) {
             await events.invoke('showPopup', {

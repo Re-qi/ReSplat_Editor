@@ -1540,7 +1540,7 @@ type Lcc2ExportOptions = {
 };
 
 const serializeSog = async (splats: Splat[], settings: SogSettings, fs: FileSystem): Promise<void> => {
-    const { iterations = 0, events, filename = 'output.sog' } = settings;
+    const { iterations = 10, events, filename = 'output.sog' } = settings;
 
     configureSplatTransform();
     splatTransformLogger.setRenderer(createProgressRenderer('Exporting SOG', events));
@@ -1575,17 +1575,19 @@ const serializeSog = async (splats: Splat[], settings: SogSettings, fs: FileSyst
 // accumulate an extraneous Rx(-90°) rotation. The spatial chain
 //   p_lcc2 = Rz(180°) * Rx(90°) * Rz(180°) * p_ply
 // simplifies to Rx(-90°) = (x, z, -y). Positions, rotation quaternions, and
-// degree-1 SH coefficients all receive the same Rx(-90°) transform so each
-// gaussian's orientation, shape, and first-order view-dependent lighting
-// stay consistent.
+// SH coefficients (all degrees) receive the same Rx(-90°) transform so each
+// gaussian's orientation, shape, and view-dependent lighting stay consistent.
 //
 //   Position:     (x, y, z) → (x, z, -y).
 //   Quaternion:   q' = Rx(-90°) * q  (left-multiply, w-first order).
-//   SH l=1:       (y→z, z→-y, x unchanged) per channel.
+//   SH l=1:       (y→z, z→-y, x unchanged) per channel (manual, kept as-is).
+//   SH l≥2:       rotated via SHRotation. Previously these were left
+//                 uncompensated — view-dependent lighting then disagreed with
+//                 the splats' orientation and some blocks rendered black from
+//                 certain angles.
 //
-// Higher-degree SH (l≥2) are not compensated; their angular power is small
-// enough that the visual impact is negligible for export. Returns the scene
-// AABB in LCC2 space (splat-center extents, not scale-expanded).
+// Returns the scene AABB in LCC2 space (splat-center extents, not
+// scale-expanded).
 const applyLcc2CoordinateTransform = (dataTable: DataTable, maxSHBands: number): { min: [number, number, number]; max: [number, number, number] } => {
     const N = dataTable.numRows;
     const xs = dataTable.getColumnByName('x')!.data as Float32Array;
@@ -1597,19 +1599,26 @@ const applyLcc2CoordinateTransform = (dataTable: DataTable, maxSHBands: number):
     const r3 = dataTable.getColumnByName('rot_3')!.data as Float32Array;
     const SQRT1_2 = Math.SQRT1_2;
 
-    // Degree-1 SH rotation. getColumnByName returns Column|null, so test for
+    // Degree-1..3 SH rotation. getColumnByName returns Column|null, so test for
     // null (not undefined) — an earlier version used `!== undefined` which is
     // always true for a Column|null return and would crash on SH-less scenes.
     const shCoeffs = [0, 3, 8, 15][maxSHBands];
     let shCols: Float32Array[] | null = null;
+    let shRot: SHRotation | null = null;
+    const shTmp = new Float32Array(15);
     if (shCoeffs >= 3 && dataTable.getColumnByName('f_rest_0')) {
         shCols = [];
         for (let ch = 0; ch < 3; ++ch) {
             const base = ch * shCoeffs;
-            shCols.push(
-                dataTable.getColumnByName(`f_rest_${base + 0}`)!.data as Float32Array,
-                dataTable.getColumnByName(`f_rest_${base + 1}`)!.data as Float32Array
-            );
+            for (let d = 0; d < shCoeffs; ++d) {
+                shCols.push(dataTable.getColumnByName(`f_rest_${base + d}`)!.data as Float32Array);
+            }
+        }
+        if (shCoeffs >= 8) {
+            // Rx(-90°) in column-major Mat3 layout: (x, y, z) → (x, z, -y).
+            const rotMat = new Mat3();
+            rotMat.data.set([1, 0, 0, 0, 0, -1, 0, 1, 0]);
+            shRot = new SHRotation(rotMat);
         }
     }
 
@@ -1628,13 +1637,25 @@ const applyLcc2CoordinateTransform = (dataTable: DataTable, maxSHBands: number):
         r2[i] = (qy + qz) * SQRT1_2;
         r3[i] = (qz - qy) * SQRT1_2;
 
-        // SH l=1: rotate per-channel (y→z, z→-y, x unchanged)
+        // SH l=1: rotate per-channel (y→z, z→-y, x unchanged) — existing
+        // compensation kept as-is.
         if (shCols) {
             for (let ch = 0; ch < 3; ++ch) {
-                const s0 = shCols[ch * 2 + 0], s1 = shCols[ch * 2 + 1];
-                const v0 = s0[i], v1 = s1[i];
-                s0[i] = v1;
-                s1[i] = -v0;
+                const b = ch * shCoeffs;
+                const v0 = shCols[b + 0][i], v1 = shCols[b + 1][i];
+                shCols[b + 0][i] = v1;
+                shCols[b + 1][i] = -v0;
+            }
+        }
+        // SH l>=2: rotate to match the coordinate transform. Previously left
+        // uncompensated — view-dependent lighting then disagreed with splat
+        // orientation and some blocks rendered black from certain angles.
+        if (shCols && shRot) {
+            for (let ch = 0; ch < 3; ++ch) {
+                const b = ch * shCoeffs;
+                for (let d = 0; d < shCoeffs; ++d) shTmp[d] = shCols[b + d][i];
+                shRot.apply(shTmp);
+                for (let d = 2; d < shCoeffs; ++d) shCols[b + d][i] = shTmp[d];
             }
         }
     }
@@ -1997,9 +2018,79 @@ const emitAdaptiveTreeJson = (
 //   - Node count grows LINEARLY with L (≈ cells × L), so the UE plugin can
 //     traverse high-LOD trees without freezing — unlike the old fixed binary
 //     tree whose 2^(L+2) leaves froze the plugin for L > 6.
+
+// Stream one LOD level of a multi-LOD LCC splat into a PLY-space DataTable,
+// applying the splat's LodEditLog deletions and reusing its world transform
+// / color grade (mirrors serializeLcc2FromLodLog's loadLodForExport). Used by
+// serializeLcc2 to merge the LCC source's own LOD-k into output level k.
+const loadLccLodForExport = async (lccSplat: Splat, lodIndex: number, settings: SerializeSettings): Promise<DataTable> => {
+    if (!lccSplat.lccFilePath || !lccSplat.lccFileSystem || !lccSplat.lodEditLog) {
+        throw new Error('[LCC2] loadLccLodForExport requires multi-LOD LCC metadata');
+    }
+    const rawDataTable = await loadLodDataTable(lccSplat.lccFilePath, lccSplat.lccFileSystem, lodIndex);
+    const gsplatData = dataTableToGSplatData(rawDataTable);
+
+    // Add 'state' property (all 0) for GaussianFilter's deleted checks.
+    if (!gsplatData.getProp('state')) {
+        gsplatData.getElement('vertex').properties.push({
+            type: 'uchar',
+            name: 'state',
+            storage: new Uint8Array(gsplatData.numSplats),
+            byteSize: 1
+        });
+    }
+    // Apply deletions recorded in LodEditLog (world-space voxel bitmaps).
+    lccSplat.lodEditLog.applyDeletionsToState(
+        gsplatData.getProp('state') as Uint8Array,
+        gsplatData.getProp('x') as Float32Array,
+        gsplatData.getProp('y') as Float32Array,
+        gsplatData.getProp('z') as Float32Array,
+        lccSplat.worldTransform
+    );
+
+    // Mock Splat: reuse the current splat's entity/world transform and color
+    // grade; a null transformTexture source → identity per-splat transform.
+    const mockSplat = {
+        splatData: gsplatData,
+        numSplats: gsplatData.numSplats,
+        transformTexture: { getSource: (): null => null },
+        transformPalette: null,
+        entity: lccSplat.entity,
+        tintClr: lccSplat.tintClr,
+        temperature: lccSplat.temperature,
+        saturation: lccSplat.saturation,
+        brightness: lccSplat.brightness,
+        blackPoint: lccSplat.blackPoint,
+        whitePoint: lccSplat.whitePoint,
+        transparency: lccSplat.transparency
+    } as unknown as Splat;
+
+    return extractDataTable([mockSplat], settings);
+};
+
+// Concatenate DataTables with identical column layout (same names/order) into
+// one table. Used to merge non-LCC rows with streamed LCC LOD rows.
+const concatDataTables = (tables: DataTable[]): DataTable => {
+    const totalRows = tables.reduce((sum, t) => sum + t.numRows, 0);
+    const cols = tables[0].columns.map((c, ci) => {
+        const data = new Float32Array(totalRows);
+        let off = 0;
+        for (const t of tables) {
+            const src = t.columns[ci].data as Float32Array;
+            data.set(src, off);
+            off += src.length;
+        }
+        return new Column(c.name, data);
+    });
+    return new DataTable(cols, tables[0].transform);
+};
+
 const serializeLcc2 = async (splats: Splat[], options: Lcc2ExportOptions, fs: FileSystem): Promise<void> => {
     const { name, serializeSettings, splatIdx } = options;
-    const { iterations = 0, events } = serializeSettings;
+    // Default >0: splat-transform's shN k-means skips its Lloyd loop at 0
+    // iterations, quantizing every splat to the same SH centroid and breaking
+    // view-dependent lighting (blocks render black/white).
+    const { iterations = 10, events } = serializeSettings;
     const splatType = options.splatType ?? '.sog';
     // Browser path defaults to 'uniform' for main-thread safety: NanoGS runs
     // pure-TS KNN+cost on the main thread and can jank the UI for large nodes.
@@ -2068,8 +2159,35 @@ const serializeLcc2 = async (splats: Splat[], options: Lcc2ExportOptions, fs: Fi
 
     // Build the splat-transform DataTable ONCE (PLY space). SingleSplat.read
     // pre-applies the PLY-style 180° Z flip + world transform.
-    const dataTable = extractDataTable(selectedSplats, exportSettings);
+    //
+    // Mixed-scene handling: multi-LOD LCC splats contribute their OWN LOD
+    // levels to the export (each output level k merges the other splats'
+    // simplified data with the LCC source's LOD-k), so their rows here come
+    // from the LCC source's FINEST LOD (streamed, independent of the
+    // currently loaded LOD) and are concatenated after the other splats'
+    // rows.
+    const lccPreserveSplats = selectedSplats.filter(s => !!s.lccFilePath && s.lodCounts.length >= 2 && !!s.lodEditLog);
+    const otherSplats = selectedSplats.filter(s => lccPreserveSplats.indexOf(s) === -1);
+    const hasLccRows = lccPreserveSplats.length > 0;
+
+    let nlN = 0;
+    let dataTable: DataTable;
+    if (hasLccRows) {
+        const tables: DataTable[] = [];
+        if (otherSplats.length > 0) {
+            tables.push(extractDataTable(otherSplats, exportSettings));
+            nlN = tables[0].numRows;
+        }
+        for (const lccSplat of lccPreserveSplats) {
+            tables.push(await loadLccLodForExport(lccSplat, 0, exportSettings));
+        }
+        dataTable = concatDataTables(tables);
+    } else {
+        dataTable = extractDataTable(selectedSplats, exportSettings);
+        nlN = dataTable.numRows;
+    }
     const N = dataTable.numRows;
+    const lccTotal = N - nlN;
 
     // Convert PLY-space data to LCC2-native space (in-place). Done before any
     // clone so coarser-level subsets inherit the transform.
@@ -2202,9 +2320,15 @@ const serializeLcc2 = async (splats: Splat[], options: Lcc2ExportOptions, fs: Fi
             // worker_thread path (>10M, auto-routed in file-handler) has no
             // such guard — it runs NanoGS off the main loop.
             const NANOGS_BROWSER_MAX = 2_000_000;
-            const useNanogs = useNanogsRequested && N <= NANOGS_BROWSER_MAX;
+            // NanoGS merges a whole node's rows — it cannot selectively merge
+            // a subset, so it would alter the multi-LOD LCC rows too. Force
+            // uniform when those rows are present (their LODs come from the
+            // source file instead).
+            const useNanogs = useNanogsRequested && N <= NANOGS_BROWSER_MAX && !hasLccRows;
             if (useNanogsRequested && !useNanogs) {
-                console.warn(`[LCC2] NanoGS requested but N=${N.toLocaleString()} > ${NANOGS_BROWSER_MAX.toLocaleString()} (browser guard) — using uniform. Large scenes auto-route to the backend (no guard).`);
+                console.warn(hasLccRows ?
+                    '[LCC2] NanoGS requested but the scene contains multi-LOD LCC splats (their LODs are merged from the source) — using uniform.' :
+                    `[LCC2] NanoGS requested but N=${N.toLocaleString()} > ${NANOGS_BROWSER_MAX.toLocaleString()} (browser guard) — using uniform. Large scenes auto-route to the backend (no guard).`);
             }
             // Appearance columns = f_dc_* + f_rest_* (matches NanoGS app_names;
             // normals nx,ny,nz are NOT appearance → zeroed on NanoGS output).
@@ -2227,12 +2351,181 @@ const serializeLcc2 = async (splats: Splat[], options: Lcc2ExportOptions, fs: Fi
             const lodRate = (k: number): number => Math.pow(0.5, k);
 
             // Pre-compute estimated total splats for weighted progress.
+            // In mixed scenes, level k>0 merges the non-LCC decimated rows
+            // (ceil(nlN·rate)) with the LCC source's own LOD-k row counts.
+            const nlN = N - lccTotal;
+            const estLevelSplats = (k: number): number => {
+                if (!hasLccRows) return Math.ceil(N * lodRate(k));
+                if (k === 0) return N;
+                let lcc = 0;
+                for (const s of lccPreserveSplats) lcc += s.lodCounts[Math.min(k, s.lodCounts.length - 1)];
+                return (nlN > 0 ? Math.ceil(nlN * lodRate(k)) : 0) + lcc;
+            };
             let totalEstimatedSplats = 0;
             for (let D = 1; D <= treeDepth; ++D) {
                 const k = treeDepth - D;
-                totalEstimatedSplats += Math.ceil(N * lodRate(k));
+                totalEstimatedSplats += estLevelSplats(k);
             }
             let cumulativeSplats = 0;
+
+            // Mixed-scene LOD level writer: at level k>0, each node's output
+            // = [non-LCC rows stride-sampled at `rate`] + [LCC rows from the
+            // preserved LCC splats' OWN LOD level k (streamed from the source
+            // file, binned into the tree by AABB)]. This merges each level's
+            // corresponding LODs instead of exporting separately. Consecutive
+            // depths may map to the same source LOD when numLods < treeDepth;
+            // the level table is simply reloaded per depth.
+            const writeMixedLevel = async (D: number, k: number): Promise<number> => {
+                const rate = lodRate(k);
+                const nodesAtD = collectNodesAtDepth(adaptiveRoot, D);
+                if (nodesAtD.length === 0) return 0;
+
+                // Load the combined LCC LOD-k table (all preserved splats).
+                const lccTables: DataTable[] = [];
+                for (const s of lccPreserveSplats) {
+                    lccTables.push(await loadLccLodForExport(s, Math.min(k, s.lodCounts.length - 1), exportSettings));
+                }
+                const lccLevelTable = lccTables.length === 1 ? lccTables[0] : concatDataTables(lccTables);
+                applyLcc2CoordinateTransform(lccLevelTable, maxSHBands);
+                const lccN = lccLevelTable.numRows;
+                if (lccN === 0) {
+                    throw new Error('[LCC2] LCC LOD level is empty after deletions');
+                }
+                const lccCols = lccLevelTable.columns;
+                const numCols = lccCols.length;
+                const lccXs = lccLevelTable.getColumnByName('x')!.data as Float32Array;
+                const lccYs = lccLevelTable.getColumnByName('y')!.data as Float32Array;
+                const lccZs = lccLevelTable.getColumnByName('z')!.data as Float32Array;
+
+                // Bin LCC LOD-k rows into depth-D nodes by AABB descent.
+                const nodeIndex = new Map<AdaptiveNode, number>();
+                for (let i = 0; i < nodesAtD.length; ++i) nodeIndex.set(nodesAtD[i], i);
+                const lccCounts: number[] = new Array(nodesAtD.length).fill(0);
+                for (let i = 0; i < lccN; ++i) {
+                    const node = findAdaptiveNodeAtDepth(adaptiveRoot, lccXs[i], lccYs[i], lccZs[i], D);
+                    if (node) {
+                        const idx = nodeIndex.get(node);
+                        if (idx !== undefined) lccCounts[idx]++;
+                    }
+                }
+                const lccSubsets: (Uint32Array | null)[] = new Array(nodesAtD.length).fill(null);
+                for (let i = 0; i < nodesAtD.length; ++i) {
+                    if (lccCounts[i] > 0) lccSubsets[i] = new Uint32Array(lccCounts[i]);
+                }
+                const fill = new Uint32Array(nodesAtD.length);
+                for (let i = 0; i < lccN; ++i) {
+                    const node = findAdaptiveNodeAtDepth(adaptiveRoot, lccXs[i], lccYs[i], lccZs[i], D);
+                    if (node) {
+                        const idx = nodeIndex.get(node);
+                        if (idx !== undefined && lccSubsets[idx]) lccSubsets[idx]![fill[idx]++] = i;
+                    }
+                }
+
+                // Per-node combined output: non-LCC rows (stride-sampled at
+                // `rate`) followed by the binned LCC rows.
+                const nlSubsets: (Uint32Array | null)[] = new Array(nodesAtD.length).fill(null);
+                const counts: number[] = new Array(nodesAtD.length);
+                let levelTotal = 0;
+                for (let i = 0; i < nodesAtD.length; ++i) {
+                    const finest = nodesAtD[i].finestIndices;
+                    // Positions (within `finest`) of the non-LCC rows.
+                    const nlPos: number[] = [];
+                    for (let j = 0; j < finest.length; ++j) {
+                        if (finest[j] < nlN) nlPos.push(j);
+                    }
+                    const nlTake = nlPos.length > 0 ? Math.max(1, Math.ceil(nlPos.length * rate)) : 0;
+                    if (nlTake > 0) {
+                        const nlIdx = new Uint32Array(nlTake);
+                        for (let j = 0; j < nlTake; ++j) nlIdx[j] = finest[nlPos[Math.floor(j * nlPos.length / nlTake)]];
+                        nlSubsets[i] = nlIdx;
+                    }
+                    counts[i] = nlTake + lccCounts[i];
+                    levelTotal += counts[i];
+                }
+                if (levelTotal === 0) return 0;
+
+                console.warn(`[LCC2] LOD${k}/depth${D}: ${nodesAtD.length} nodes, ${levelTotal.toLocaleString()} splats (rate=${(rate * 100).toFixed(1)}%, LCC merged)`);
+
+                // ---- Chunk pipeline (two sources: dataTable + lccLevelTable) ----
+                const prepareChunk = (startNode: number) => {
+                    let estTotal = 0;
+                    let endNode = startNode;
+                    while (endNode < nodesAtD.length) {
+                        const nxt = estTotal + counts[endNode];
+                        if (nxt > 0 && nxt > SOG_CHUNK_TARGET) break;
+                        estTotal = nxt;
+                        endNode++;
+                    }
+                    if (estTotal === 0) return null;
+
+                    const chunkCols: Column[] = new Array(numCols);
+                    for (let ci = 0; ci < numCols; ++ci) {
+                        const dst = new Float32Array(estTotal);
+                        const nlSrc = dataTable.columns[ci].data as Float32Array;
+                        const lccSrc = lccCols[ci].data as Float32Array;
+                        let off = 0;
+                        for (let n = startNode; n < endNode; ++n) {
+                            const nlIdx = nlSubsets[n];
+                            if (nlIdx) {
+                                for (let j = 0; j < nlIdx.length; ++j) dst[off + j] = nlSrc[nlIdx[j]];
+                                off += nlIdx.length;
+                            }
+                            const lccSub = lccSubsets[n];
+                            if (lccSub) {
+                                for (let j = 0; j < lccSub.length; ++j) dst[off + j] = lccSrc[lccSub[j]];
+                                off += lccSub.length;
+                            }
+                        }
+                        chunkCols[ci] = new Column(lccCols[ci].name, dst);
+                    }
+                    const chunkTable = new DataTable(chunkCols, dataTable.transform);
+
+                    const identity = new Uint32Array(estTotal);
+                    for (let i = 0; i < estTotal; ++i) identity[i] = i;
+
+                    const chunkIdx = chunkIdxByLevel[k]++;
+                    const firstNode = nodesAtD[startNode];
+                    const lodFileName = `${firstNode.id}.sog`;
+                    const chunkPath = `${name}/data/3dgs/${lodFileName}`;
+                    console.warn(`[LCC2] LOD${k}/chunk${chunkIdx}: nodes[${startNode}..${endNode - 1}] ${estTotal.toLocaleString()} splats → ${chunkPath}`);
+                    return { startNode, endNode, chunkTable, identity, lodFileName, chunkPath, chunkIdx };
+                };
+                const finalizeChunk = (info: { startNode: number; endNode: number; lodFileName: string; chunkIdx: number }) => {
+                    const fileIdx = splatFiles.length;
+                    splatFiles.push(`data/3dgs/${info.lodFileName}`);
+                    let nodeOffset = 0;
+                    for (let n = info.startNode; n < info.endNode; ++n) {
+                        if (counts[n] > 0) {
+                            nodeRefs.set(nodesAtD[n], { name: fileIdx, start: nodeOffset, count: counts[n] });
+                            lodSplatsByLevel[k] += counts[n];
+                        }
+                        nodeOffset += counts[n];
+                    }
+                    (globalThis as { gc?: () => void }).gc?.();
+                };
+
+                let cursor = 0;
+                let nextInfo = prepareChunk(cursor);
+                while (nextInfo) {
+                    cursor = nextInfo.endNode;
+                    const writePromise = writeSogInternal({
+                        filename: nextInfo.chunkPath,
+                        dataTable: nextInfo.chunkTable,
+                        bundle: true,
+                        iterations,
+                        createDevice: createGpuDevice,
+                        indices: nextInfo.identity
+                    }, fs);
+                    const currentInfo = nextInfo;
+                    nextInfo = prepareChunk(cursor);
+                    await writePromise;
+                    finalizeChunk(currentInfo);
+                }
+
+                // Release the level table before the next depth loads a new one.
+                (globalThis as { gc?: () => void }).gc?.();
+                return levelTotal;
+            };
 
             events?.fire('progressUpdate', { text: `Writing ${treeDepth} LOD levels (${totalEstimatedSplats.toLocaleString()} splats total)…  —  1%`, progress: 1 });
 
@@ -2315,6 +2608,22 @@ const serializeLcc2 = async (splats: Splat[], options: Lcc2ExportOptions, fs: Fi
             for (let D = 1; D <= treeDepth; ++D) {
                 const k = treeDepth - D;     // LOD level index (0=finest)
                 const rate = lodRate(k);     // 动态采样率：100% → 10% 线性递减
+
+                // Mixed scene: coarser levels merge the non-LCC decimated rows
+                // with the preserved LCC splats' own LOD-k (streamed from the
+                // source). The finest level (k=0) is the full combined data —
+                // handled by the normal path below.
+                if (hasLccRows && k > 0) {
+                    const levelTotal = await writeMixedLevel(D, k);
+                    cumulativeSplats += levelTotal;
+                    const progressPercent = Math.round(100 * cumulativeSplats / totalEstimatedSplats);
+                    events?.fire('progressUpdate', {
+                        text: `LOD ${k} (${D}/${treeDepth}): ${levelTotal.toLocaleString()} splats  —  ${progressPercent}%`,
+                        progress: progressPercent
+                    });
+                    continue;
+                }
+
                 const nodesAtD = collectNodesAtDepth(adaptiveRoot, D);
 
                 // ---- Pass 1: count LOD samples per node (no subset allocation yet) ----
@@ -2598,7 +2907,10 @@ const serializeLcc2FromLodLog = async (
     fs: FileSystem
 ): Promise<void> => {
     const { name, serializeSettings } = options;
-    const { iterations = 0, events } = serializeSettings;
+    // Default >0: splat-transform's shN k-means skips its Lloyd loop at 0
+    // iterations, quantizing every splat to the same SH centroid and breaking
+    // view-dependent lighting (blocks render black/white).
+    const { iterations = 10, events } = serializeSettings;
     const splatType = options.splatType ?? '.sog';
 
     // Cap maxSHBands to the source file's actual SH bands. loadLodForExport
@@ -2760,7 +3072,7 @@ const serializeLcc2FromLodLog = async (
     const SOG_CHUNK_TARGET = 3_000_000;
     const SPLIT_TARGET = 500_000;
     const safeTreeDepth = Math.max(1, Math.ceil(Math.log2(treeN / SOG_CHUNK_TARGET)) - 2);
-    const userLodLevels = Math.max(1, Math.min(20, options.lodLevels ?? 6));
+    const userLodLevels = Math.max(1, Math.min(20, options.lodLevels ?? numLods));
     const treeDepth = Math.min(numLods, 20, Math.max(safeTreeDepth, userLodLevels));
 
     if (treeDepth < userLodLevels) {
@@ -3112,6 +3424,360 @@ const serializeLcc2FromLodLog = async (
     }
 };
 
+// Serialize an in-memory list of splats into a multi-LOD LCC2 directory. Each
+// splat is treated as one pre-built LOD level (splats[0] = finest LOD 0,
+// splats[N-1] = coarsest). Unlike serializeLcc2 (which generates LODs by
+// simplification from a single fine model), this combines independently
+// supplied LOD files — e.g. the "combine multi-LOD LCC2" file-menu action.
+//
+// This mirrors serializeLcc2FromLodLog's tree-building / per-depth chunk
+// writing, but the LOD source is simply `extractDataTable([splats[k]])` rather
+// than streaming a multi-LOD LCC file with a LodEditLog. Deletions/edits do
+// not apply because the inputs are pristine files, not edited scene splats.
+const serializeLcc2FromLodSplats = async (
+    splats: Splat[],
+    options: Lcc2ExportOptions,
+    fs: FileSystem
+): Promise<void> => {
+    const { name, serializeSettings } = options;
+    const { iterations = 10, events } = serializeSettings;
+    const splatType = options.splatType ?? '.sog';
+
+    if (splats.length < 2) {
+        throw new Error('[LCC2] combine requires at least 2 LOD files');
+    }
+    const numLods = splats.length;
+    const lodCounts = splats.map(s => s.numSplats);
+
+    // Cap maxSHBands to the finest file's actual SH bands (all LODs of the
+    // same model share the same SH layout). Prevents zero-fill OOM for
+    // "portable" (SH=0) inputs when the caller requested SH=3.
+    const requestedSHBands = serializeSettings.maxSHBands ?? 3;
+    const sourceMaxSHBands = calcSHBands(getVertexProperties(splats[0].splatData));
+    const maxSHBands = Math.min(requestedSHBands, sourceMaxSHBands);
+    if (maxSHBands < requestedSHBands) {
+        console.warn(
+            `[LCC2] Source SH=${sourceMaxSHBands} < requested SH=${requestedSHBands}; ` +
+            `capping to SH=${maxSHBands} (avoids zero-fill column OOM)`
+        );
+    }
+    const exportSettings: SerializeSettings = { ...serializeSettings, maxSHBands };
+
+    await fs.mkdir(`${name}/data/3dgs`);
+    configureSplatTransform();
+
+    events?.fire('progressStart', 'Exporting LCC2 (Multi-LOD)');
+    events?.fire('progressUpdate', { text: 'Building spatial tree…  —  1%', progress: 1 });
+
+    // Same manual progress lifecycle as serializeLcc2FromLodLog — avoid
+    // progressStart/progressEnd from the shared renderer resetting the dialog.
+    let currentExportLod = -1;
+    let lodExportProgress = 5;
+    splatTransformLogger.setRenderer({
+        handle: (event: LogEvent) => {
+            switch (event.kind) {
+                case 'scopeStart':
+                    if (event.depth > 0) {
+                        const label = currentExportLod >= 0 ? `正在导出 LOD${currentExportLod}` : event.name;
+                        events?.fire('progressUpdate', { text: `${label}  —  ${lodExportProgress}%` });
+                    }
+                    break;
+                case 'scopeEnd':
+                case 'barStart':
+                case 'barTick':
+                case 'barEnd':
+                    break;
+                case 'message':
+                    if (event.level === 'error') console.error(event.text);
+                    else if (event.level === 'warn') console.warn(event.text);
+                    break;
+            }
+        }
+    });
+
+    // Load a LOD as a PLY-space DataTable. Does NOT apply
+    // applyLcc2CoordinateTransform — the caller does that.
+    const loadLodForExport = (lodIndex: number, settings: SerializeSettings = exportSettings): DataTable => {
+        return extractDataTable([splats[lodIndex]], settings);
+    };
+
+    // Build the spatial tree from the finest LOD with SH=0 (position-only) to
+    // keep memory low, matching serializeLcc2FromLodLog's treeSettings path.
+    const treeSettings: SerializeSettings = { ...serializeSettings, maxSHBands: 0 };
+    console.warn(`[LCC2] Building spatial tree from finest LOD (${lodCounts[0].toLocaleString()} splats, SH=0)`);
+    const treeDataTable = loadLodForExport(0, treeSettings);
+    (globalThis as { gc?: () => void }).gc?.();
+    const boundingBox = applyLcc2CoordinateTransform(treeDataTable, maxSHBands);
+    const treeN = treeDataTable.numRows;
+
+    if (treeN === 0) {
+        throw new Error('[LCC2] No splats to export in finest LOD');
+    }
+
+    const fileType = maxSHBands > 0 ? 'quality' : 'portable';
+    const guid = crypto.randomUUID().replace(/-/g, '');
+
+    const SOG_CHUNK_TARGET = 3_000_000;
+    const SPLIT_TARGET = 500_000;
+    const safeTreeDepth = Math.max(1, Math.ceil(Math.log2(treeN / SOG_CHUNK_TARGET)) - 2);
+    const userLodLevels = Math.max(1, Math.min(20, options.lodLevels ?? numLods));
+    const treeDepth = Math.min(numLods, 20, Math.max(safeTreeDepth, userLodLevels));
+
+    if (treeDepth < userLodLevels) {
+        console.warn(`[LCC2] treeDepth capped at numLods=${numLods} (user requested ${userLodLevels})`);
+    }
+
+    // Pre-compute total estimated splats for weighted progress.
+    let totalEstimatedSplats = 0;
+    for (let D = 1; D <= treeDepth; ++D) {
+        const k = treeDepth - D;
+        totalEstimatedSplats += lodCounts[Math.min(k, numLods - 1)];
+    }
+    let cumulativeSplats = 0;
+
+    const xs = treeDataTable.getColumnByName('x')!.data as Float32Array;
+    const ys = treeDataTable.getColumnByName('y')!.data as Float32Array;
+    const zs = treeDataTable.getColumnByName('z')!.data as Float32Array;
+
+    console.warn(`[LCC2] building adaptive tree: N=${treeN.toLocaleString()}, treeDepth=${treeDepth}`);
+    const adaptiveRoot = buildAdaptiveLcc2Tree(xs, ys, zs, treeN, treeDepth, boundingBox, SPLIT_TARGET);
+    assignAdaptiveNodeIds(adaptiveRoot);
+    events?.fire('progressUpdate', { text: `Writing ${treeDepth} LOD levels (${totalEstimatedSplats.toLocaleString()} splats total)…  —  5%`, progress: 5 });
+
+    const splatFiles: string[] = [];
+    const lodSplats: number[] = [];
+    const nodeRefs = new Map<AdaptiveNode, Lcc2NodeRef>();
+    const lodSplatsByLevel = new Array(treeDepth).fill(0);
+    const chunkIdxByLevel = new Array(treeDepth).fill(0);
+
+    try {
+        // ---- Per-depth chunk writing (coarsest → finest) ----
+        for (let D = 1; D <= treeDepth; ++D) {
+            const k = treeDepth - D;          // LOD level index (0=finest)
+            const actualLod = Math.min(k, numLods - 1);
+
+            // Resolve the LOD DataTable for this depth. Each imported file is
+            // already a distinct LOD, so every level is exported at full
+            // fidelity with no simplification / SH down-sampling. The finest
+            // LOD must NOT reuse the SH=0 treeDataTable — that would strip its
+            // SH/color. Row order is identical to the tree table (extractDataTable
+            // filters rows the same regardless of SH settings), so the tree's
+            // `finestIndices` remain valid.
+            let lodDataTable: DataTable;
+            if (actualLod === 0) {
+                lodDataTable = loadLodForExport(0);
+            } else {
+                lodDataTable = loadLodForExport(actualLod);
+            }
+            applyLcc2CoordinateTransform(lodDataTable, maxSHBands);
+
+            const lodN = lodDataTable.numRows;
+            const lodXs = lodDataTable.getColumnByName('x')!.data as Float32Array;
+            const lodYs = lodDataTable.getColumnByName('y')!.data as Float32Array;
+            const lodZs = lodDataTable.getColumnByName('z')!.data as Float32Array;
+            const lodCols = lodDataTable.columns;
+            const numCols = lodCols.length;
+
+            const nodesAtD = collectNodesAtDepth(adaptiveRoot, D);
+
+            // Bin LOD splats into depth-D nodes.
+            const nodeSubsets: (Uint32Array | null)[] = new Array(nodesAtD.length).fill(null);
+            const counts: number[] = new Array(nodesAtD.length).fill(0);
+            let levelTotal = 0;
+
+            if (actualLod === 0) {
+                for (let i = 0; i < nodesAtD.length; ++i) {
+                    const sub = nodesAtD[i].finestIndices;
+                    nodeSubsets[i] = sub;
+                    counts[i] = sub.length;
+                    levelTotal += sub.length;
+                }
+            } else {
+                const nodeIndex = new Map<AdaptiveNode, number>();
+                for (let i = 0; i < nodesAtD.length; ++i) nodeIndex.set(nodesAtD[i], i);
+
+                for (let i = 0; i < lodN; ++i) {
+                    const node = findAdaptiveNodeAtDepth(adaptiveRoot, lodXs[i], lodYs[i], lodZs[i], D);
+                    if (node) {
+                        const idx = nodeIndex.get(node);
+                        if (idx !== undefined) counts[idx]++;
+                    }
+                }
+                for (let i = 0; i < nodesAtD.length; ++i) {
+                    if (counts[i] > 0) {
+                        nodeSubsets[i] = new Uint32Array(counts[i]);
+                        levelTotal += counts[i];
+                    }
+                }
+                const fill = new Uint32Array(nodesAtD.length);
+                for (let i = 0; i < lodN; ++i) {
+                    const node = findAdaptiveNodeAtDepth(adaptiveRoot, lodXs[i], lodYs[i], lodZs[i], D);
+                    if (node) {
+                        const idx = nodeIndex.get(node);
+                        if (idx !== undefined && nodeSubsets[idx]) {
+                            nodeSubsets[idx]![fill[idx]++] = i;
+                        }
+                    }
+                }
+            }
+            console.warn(`[LCC2] LOD${k}/depth${D}: ${nodesAtD.length} nodes, ${levelTotal.toLocaleString()} splats`);
+
+            if (levelTotal === 0) {
+                continue;
+            }
+
+            currentExportLod = k - 1;
+            lodExportProgress = 5 + Math.round(95 * (cumulativeSplats + levelTotal) / totalEstimatedSplats);
+
+            const prepareChunk = (startNode: number) => {
+                let chunkSplatCount = 0;
+                let endNode = startNode;
+                while (endNode < nodesAtD.length) {
+                    const nxt = chunkSplatCount + counts[endNode];
+                    if (nxt > 0 && nxt > SOG_CHUNK_TARGET) break;
+                    chunkSplatCount = nxt;
+                    endNode++;
+                }
+                if (chunkSplatCount === 0) return null;
+
+                const chunkIndices = new Uint32Array(chunkSplatCount);
+                let wi = 0;
+                for (let n = startNode; n < endNode; ++n) {
+                    const sub = nodeSubsets[n];
+                    if (sub) {
+                        chunkIndices.set(sub, wi);
+                        wi += counts[n];
+                    }
+                }
+
+                const chunkCols: Column[] = new Array(numCols);
+                for (let ci = 0; ci < numCols; ++ci) {
+                    const src = lodCols[ci].data as Float32Array;
+                    const dst = new Float32Array(chunkSplatCount);
+                    for (let i = 0; i < chunkSplatCount; ++i) dst[i] = src[chunkIndices[i]];
+                    chunkCols[ci] = new Column(lodCols[ci].name, dst);
+                }
+                const chunkTable = new DataTable(chunkCols, lodDataTable.transform);
+
+                const identity = new Uint32Array(chunkSplatCount);
+                for (let i = 0; i < chunkSplatCount; ++i) identity[i] = i;
+
+                const chunkIdx = chunkIdxByLevel[k]++;
+                const firstNode = nodesAtD[startNode];
+                const lodFileName = `${firstNode.id}.sog`;
+                const chunkPath = `${name}/data/3dgs/${lodFileName}`;
+                console.warn(`[LCC2] LOD${k}/chunk${chunkIdx}: nodes[${startNode}..${endNode - 1}] ${chunkSplatCount.toLocaleString()} splats → ${chunkPath}`);
+
+                return { startNode, endNode, chunkTable, identity, lodFileName, chunkPath, chunkIdx };
+            };
+
+            const finalizeChunk = (info: { startNode: number; endNode: number; lodFileName: string; chunkIdx: number }) => {
+                const fileIdx = splatFiles.length;
+                splatFiles.push(`data/3dgs/${info.lodFileName}`);
+
+                let nodeOffset = 0;
+                for (let n = info.startNode; n < info.endNode; ++n) {
+                    if (counts[n] > 0) {
+                        nodeRefs.set(nodesAtD[n], { name: fileIdx, start: nodeOffset, count: counts[n] });
+                        lodSplatsByLevel[k] += counts[n];
+                    }
+                    nodeOffset += counts[n];
+                }
+                (globalThis as { gc?: () => void }).gc?.();
+            };
+
+            let cursor = 0;
+            let nextInfo = prepareChunk(cursor);
+            while (nextInfo) {
+                cursor = nextInfo.endNode;
+
+                const writePromise = writeSogInternal({
+                    filename: nextInfo.chunkPath,
+                    dataTable: nextInfo.chunkTable,
+                    bundle: true,
+                    iterations,
+                    createDevice: createGpuDevice,
+                    indices: nextInfo.identity
+                }, fs);
+                const currentInfo = nextInfo;
+
+                nextInfo = prepareChunk(cursor);
+
+                await writePromise;
+                finalizeChunk(currentInfo);
+            }
+
+            cumulativeSplats += levelTotal;
+            const progressPercent = 5 + Math.round(95 * cumulativeSplats / totalEstimatedSplats);
+            events?.fire('progressUpdate', {
+                text: `LOD ${k} (${D}/${treeDepth}): ${levelTotal.toLocaleString()} splats  —  ${progressPercent}%`,
+                progress: progressPercent
+            });
+            lodExportProgress = progressPercent;
+        }
+
+        for (let k = 0; k < treeDepth; ++k) lodSplats.push(lodSplatsByLevel[k]);
+
+        const root = emitAdaptiveTreeJson(adaptiveRoot, nodeRefs, splatFiles);
+
+        const totalSplats = lodSplats.reduce((a, b) => a + b, 0);
+
+        const meta = {
+            version: '0.0.3',
+            name: name || 'ReSplat Lcc2 Splats',
+            description: 'ReSplat exported LCC2 splats (multi-LOD combined)',
+            guid,
+            source: 'resplat',
+            dataType: 'Editor',
+            epsg: 0,
+            offset: [0, 0, 0],
+            shift: [0, 0, 0],
+            scale: [1, 1, 1],
+            fileType,
+            totalSplats,
+            lodSplats,
+            totalLevels: treeDepth,
+            splatType,
+            virtualLoD: null as null,
+            env: null as null,
+            splatExtraAttributes: null as null,
+            renderingHints: {
+                renderMethod: 'splatting',
+                renderMethodVariant: 'ewa',
+                sortingMethod: 'depth',
+                cameraModel: 'pinhole',
+                colorSpace: 'srgb_rec709_display'
+            },
+            root
+        };
+
+        const jsonWriter = await fs.createWriter(`${name}/${name}.lcc2`);
+        await jsonWriter.write(new TextEncoder().encode(JSON.stringify(meta, null, 2)));
+        await jsonWriter.close();
+
+        // ZIP fallback (same as serializeLcc2).
+        if (fs instanceof MemoryFileSystem) {
+            const downloadFs = new BrowserFileSystem(`${name}.zip`);
+            const zipWriter = await downloadFs.createWriter(`${name}.zip`);
+            const zipFs = new ZipFileSystem(zipWriter);
+            try {
+                for (const [filename, data] of fs.results.entries()) {
+                    const writer = await zipFs.createWriter(filename);
+                    await writer.write(data);
+                    await writer.close();
+                }
+            } finally {
+                await zipFs.close();
+            }
+        }
+    } catch (err) {
+        splatTransformLogger.unwindAll(true);
+        throw err;
+    } finally {
+        events?.fire('progressEnd');
+    }
+};
+
 export {
     Writer,
     serializePly,
@@ -3122,6 +3788,7 @@ export {
     serializeSog,
     serializeLcc2,
     serializeLcc2FromLodLog,
+    serializeLcc2FromLodSplats,
     serializeViewer,
     AnimTrack,
     CameraPose,

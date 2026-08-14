@@ -2,6 +2,8 @@ const vertexShader = /* glsl*/ `
 #include "gsplatCommonVS"
 
 uniform sampler2D splatState;
+uniform sampler2D soloMask;             // 255 = visible, 0 = hidden (point-cloud-group solo)
+uniform sampler2D desaturateMask;       // 255 = desaturate, 0 = normal (point-cloud-group edit)
 
 uniform vec4 selectedClr;
 uniform vec4 lockedClr;
@@ -27,9 +29,9 @@ mediump vec4 discardVec = vec4(0.0, 0.0, 2.0, 1.0);
 
 uniform float saturation;
 
-vec3 applySaturation(vec3 color) {
+vec3 applySaturation(vec3 color, float s) {
     vec3 grey = vec3(dot(color, vec3(0.299, 0.587, 0.114)));
-    return grey + (color - grey) * saturation;
+    return grey + (color - grey) * s;
 }
 
 #if HSL_MIXER
@@ -171,7 +173,19 @@ void main(void) {
     // get per-gaussian edit state, discard if deleted
     uint vertexState = uint(texelFetch(splatState, splat.uv, 0).r * 255.0 + 0.5) & 7u;
 
+    // skip gaussians hidden by point-cloud-group solo isolation
+    if (texelFetch(soloMask, splat.uv, 0).r < 0.5) {
+        gl_Position = discardVec;
+        return;
+    }
+
     #if PICK_PASS
+        // 独立编辑激活时，选择/选区工具只能选中组内点云（组外点云被去饱和标记跳过）
+        if (pickMode == 0 && texelFetch(desaturateMask, splat.uv, 0).r > 0.5) {
+            gl_Position = discardVec;
+            return;
+        }
+
         if (pickOp == 0u) {
             // add: skip deleted, locked and selected splats
             if (vertexState != 0u) {
@@ -267,8 +281,10 @@ void main(void) {
         color.xyz = applyHslMixer(color.xyz);
         #endif
 
-        // apply saturation
-        color.xyz = applySaturation(color.xyz);
+        // apply saturation (point-cloud-group edit desaturates gaussians
+        // outside the enabled groups)
+        float s = mix(saturation, 0.0, texelFetch(desaturateMask, splat.uv, 0).r);
+        color.xyz = applySaturation(color.xyz, s);
 
         // apply LUT color grading (16^3 3D LUT, intensity-mixed)
         #if LUT_ENABLED

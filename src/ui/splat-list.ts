@@ -4,9 +4,13 @@ import { SplatRenameOp } from '../edit-ops';
 import { Element, ElementType } from '../element';
 import { Events } from '../events';
 import { Splat } from '../splat';
+import { localize } from './localization';
 import deleteSvg from './svg/delete.svg';
 import hiddenSvg from './svg/hidden.svg';
+import shownOnlySvg from './svg/shown-only.svg';
+import shownOnly2Svg from './svg/shown-only2.svg';
 import shownSvg from './svg/shown.svg';
+import { Tooltips } from './tooltips';
 
 const createSvg = (svgString: string) => {
     const decodedStr = decodeURIComponent(svgString.substring('data:image/svg+xml,'.length));
@@ -20,9 +24,11 @@ class SplatItem extends Container {
     setSelected: (value: boolean) => void;
     getVisible: () => boolean;
     setVisible: (value: boolean) => void;
+    getSolo: () => boolean;
+    setSolo: (value: boolean) => void;
     destroy: () => void;
 
-    constructor(name: string, edit: TextInput, args = {}) {
+    constructor(name: string, edit: TextInput, tooltips: Tooltips, args = {}) {
         args = {
             ...args,
             class: ['splat-item', 'visible']
@@ -33,6 +39,20 @@ class SplatItem extends Container {
         const text = new Label({
             class: 'splat-item-text',
             text: name
+        });
+
+        // Solo button: toggle isolate-visibility for this splat. Default icon
+        // is shown-only.svg; when active (soloed) it switches to shown-only2.svg.
+        // Placed to the left of the visibility toggle, same style.
+        const solo = new PcuiElement({
+            dom: createSvg(shownOnlySvg),
+            class: 'splat-item-solo'
+        });
+
+        const soloActive = new PcuiElement({
+            dom: createSvg(shownOnly2Svg),
+            class: ['splat-item-solo', 'active'],
+            hidden: true
         });
 
         const visible = new PcuiElement({
@@ -52,9 +72,18 @@ class SplatItem extends Container {
         });
 
         this.append(text);
+        this.append(solo);
+        this.append(soloActive);
         this.append(visible);
         this.append(invisible);
         this.append(remove);
+
+        // Hover tooltips for the three gaussian-file buttons
+        tooltips.register(solo, localize('tooltip.splat-list.solo'), 'bottom');
+        tooltips.register(soloActive, localize('tooltip.splat-list.solo'), 'bottom');
+        tooltips.register(visible, localize('tooltip.splat-list.visible'), 'bottom');
+        tooltips.register(invisible, localize('tooltip.splat-list.visible'), 'bottom');
+        tooltips.register(remove, localize('tooltip.splat-list.delete'), 'bottom');
 
         this.getName = () => {
             return text.value;
@@ -98,9 +127,30 @@ class SplatItem extends Container {
             }
         };
 
+        this.getSolo = () => {
+            return this.class.contains('solo');
+        };
+
+        this.setSolo = (value: boolean) => {
+            if (value !== this.solo) {
+                solo.hidden = value;
+                soloActive.hidden = !value;
+                if (value) {
+                    this.class.add('solo');
+                } else {
+                    this.class.remove('solo');
+                }
+            }
+        };
+
         const toggleVisible = (event: MouseEvent) => {
             event.stopPropagation();
             this.visible = !this.visible;
+        };
+
+        const toggleSolo = (event: MouseEvent) => {
+            event.stopPropagation();
+            this.emit('soloToggle', this);
         };
 
         const handleRemove = (event: MouseEvent) => {
@@ -130,11 +180,15 @@ class SplatItem extends Container {
         // handle clicks
         visible.dom.addEventListener('click', toggleVisible);
         invisible.dom.addEventListener('click', toggleVisible);
+        solo.dom.addEventListener('click', toggleSolo);
+        soloActive.dom.addEventListener('click', toggleSolo);
         remove.dom.addEventListener('click', handleRemove);
 
         this.destroy = () => {
             visible.dom.removeEventListener('click', toggleVisible);
             invisible.dom.removeEventListener('click', toggleVisible);
+            solo.dom.removeEventListener('click', toggleSolo);
+            soloActive.dom.removeEventListener('click', toggleSolo);
             remove.dom.removeEventListener('click', handleRemove);
         };
     }
@@ -162,10 +216,18 @@ class SplatItem extends Container {
     get visible() {
         return this.getVisible();
     }
+
+    set solo(value: boolean) {
+        this.setSolo(value);
+    }
+
+    get solo() {
+        return this.getSolo();
+    }
 }
 
 class SplatList extends Container {
-    constructor(events: Events, args = {}) {
+    constructor(events: Events, tooltips: Tooltips, args = {}) {
         args = {
             ...args,
             class: 'splat-list'
@@ -176,6 +238,36 @@ class SplatList extends Container {
         const items = new Map<Splat, SplatItem>();
         let soloMode = false;
         const savedVisibility = new Map<Splat, boolean>();
+
+        // Per-item solo (isolate) state: when a splat is soloed, all others
+        // are hidden; their original visibility is saved here and restored
+        // when solo is toggled off. Only one splat can be soloed at a time.
+        let soloedSplat: Splat | null = null;
+        const soloSavedVisibility = new Map<Splat, boolean>();
+
+        // Shared helper: restore visibility of all splats except `keep` from
+        // the given save map, then clear the map.
+        const restoreSoloVisibility = (keep: Splat | null, saveMap: Map<Splat, boolean>) => {
+            items.forEach((_, otherSplat) => {
+                if (otherSplat !== keep) {
+                    const wasVisible = saveMap.get(otherSplat);
+                    otherSplat.visible = wasVisible !== undefined ? wasVisible : true;
+                }
+            });
+            saveMap.clear();
+        };
+
+        // Auto-cancel the current solo. The clicked splat is hidden while
+        // another splat is soloed, so it must be restored before it can be
+        // selected.
+        const cancelSolo = () => {
+            if (soloedSplat) {
+                const prevItem = items.get(soloedSplat);
+                if (prevItem) prevItem.solo = false;
+                restoreSoloVisibility(soloedSplat, soloSavedVisibility);
+                soloedSplat = null;
+            }
+        };
 
         // Three-stage click interaction state per splat item
         // Stage 0: not clicked → first click selects
@@ -208,7 +300,7 @@ class SplatList extends Container {
         events.on('scene.elementAdded', (element: Element) => {
             if (element.type === ElementType.splat) {
                 const splat = element as Splat;
-                const item = new SplatItem(splat.name, edit);
+                const item = new SplatItem(splat.name, edit, tooltips);
                 this.append(item);
                 items.set(splat, item);
 
@@ -231,6 +323,34 @@ class SplatList extends Container {
                 item.on('rename', (value: string) => {
                     events.fire('edit.add', new SplatRenameOp(splat, value));
                 });
+                item.on('soloToggle', () => {
+                    if (soloedSplat === splat) {
+                        // Toggling off the currently-soloed splat: restore
+                        // other splats to their pre-solo visibility.
+                        item.solo = false;
+                        restoreSoloVisibility(splat, soloSavedVisibility);
+                        soloedSplat = null;
+                    } else {
+                        // Toggling on a new splat: first restore visibility
+                        // if another splat was previously soloed.
+                        if (soloedSplat) {
+                            const prevItem = items.get(soloedSplat);
+                            if (prevItem) prevItem.solo = false;
+                            restoreSoloVisibility(soloedSplat, soloSavedVisibility);
+                        }
+                        // Activate solo: ensure this splat is visible, save &
+                        // hide all others.
+                        soloedSplat = splat;
+                        item.solo = true;
+                        splat.visible = true;
+                        items.forEach((_, otherSplat) => {
+                            if (otherSplat !== splat) {
+                                soloSavedVisibility.set(otherSplat, otherSplat.visible);
+                                otherSplat.visible = false;
+                            }
+                        });
+                    }
+                });
             }
         });
 
@@ -243,6 +363,13 @@ class SplatList extends Container {
                     items.delete(splat);
                 }
                 savedVisibility.delete(splat);
+
+                // If the removed splat was soloed, restore visibility of
+                // the remaining splats.
+                if (soloedSplat === splat) {
+                    soloedSplat = null;
+                    restoreSoloVisibility(null, soloSavedVisibility);
+                }
             }
         });
 
@@ -313,6 +440,12 @@ class SplatList extends Container {
         this.on('click', (item: SplatItem, event: MouseEvent) => {
             for (const [key, value] of items) {
                 if (item === value) {
+                    // If another splat is soloed, the clicked splat is hidden
+                    // and can't be selected — auto-cancel the solo first.
+                    if (soloedSplat && soloedSplat !== key) {
+                        cancelSolo();
+                    }
+
                     if (soloMode && !key.visible) {
                         key.visible = true;
                     }

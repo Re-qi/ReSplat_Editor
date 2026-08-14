@@ -21,6 +21,7 @@ import { BlockingPlane } from './blocking-plane';
 import { BoxShape } from './box-shape';
 import { HSL_CENTERS_F32, HSL_HALF_WIDTHS_F32 } from './color-grade';
 import { Element, ElementType } from './element';
+import { IndexRanges } from './index-ranges';
 import { LodEditLog } from './lod-edit-log';
 import { GaussianLUT } from './lut';
 import { Serializer } from './serializer';
@@ -61,6 +62,14 @@ class Splat extends Element {
     // all writes go through state.setBits/clearBits/toggleBits, then flush().
     state: SplatState;
     transformTexture: Texture;
+    // transient viewport-only visibility mask for point-cloud-group solo:
+    // texel value 255 = visible, 0 = hidden. Never persisted to disk.
+    soloMaskData: Uint8Array;
+    soloMaskTexture: Texture;
+    // transient viewport-only desaturation mask for point-cloud-group edit:
+    // texel value 255 = desaturated (grey), 0 = normal. Never persisted.
+    desaturateMaskData: Uint8Array;
+    desaturateMaskTexture: Texture;
     selectionBoundStorage: BoundingBox;
     localBoundStorage: BoundingBox;
     worldBoundStorage: BoundingBox;
@@ -200,6 +209,20 @@ class Splat extends Element {
         this.state = new SplatState(this.splatData.getProp('state') as Uint8Array, this.stateTexture);
         this.transformTexture = createTexture('splatTransform', PIXELFORMAT_R16U);
 
+        // solo mask texture: same layout as the state texture, default all-visible.
+        this.soloMaskTexture = createTexture('soloMask', PIXELFORMAT_R8);
+        const maskBuffer = this.soloMaskTexture.lock() as Uint8Array;
+        maskBuffer.fill(255);
+        this.soloMaskTexture.unlock();
+        this.soloMaskData = new Uint8Array(this.splatData.numSplats);
+
+        // desaturate mask texture: default all-normal (no desaturation).
+        this.desaturateMaskTexture = createTexture('desaturateMask', PIXELFORMAT_R8);
+        const desatBuffer = this.desaturateMaskTexture.lock() as Uint8Array;
+        desatBuffer.fill(0);
+        this.desaturateMaskTexture.unlock();
+        this.desaturateMaskData = new Uint8Array(this.splatData.numSplats);
+
         // create the transform palette
         this.transformPalette = new TransformPalette(device);
 
@@ -213,6 +236,8 @@ class Splat extends Element {
             material.setDefine('SH_BANDS', `${Math.min(bands, (instance.resource as GSplatResource).shBands)}`);
             material.setParameter('splatState', this.stateTexture);
             material.setParameter('splatTransform', this.transformTexture);
+            material.setParameter('soloMask', this.soloMaskTexture);
+            material.setParameter('desaturateMask', this.desaturateMaskTexture);
             material.update();
         };
 
@@ -239,6 +264,8 @@ class Splat extends Element {
             this._lutTexture.destroy();
             this._lutTexture = null;
         }
+        this.soloMaskTexture.destroy();
+        this.desaturateMaskTexture.destroy();
         this.entity.destroy();
         this.asset.registry.remove(this.asset);
         this.asset.unload();
@@ -263,6 +290,51 @@ class Splat extends Element {
         if (this.scene) {
             this.scene.forceRender = true;
             this.scene.events.fire('splat.stateChanged', this);
+        }
+    }
+
+    // Point-cloud-group solo isolation (viewport only, not persisted).
+    // `ranges` marks gaussians that remain visible; null/empty shows everything.
+    setSoloMask(ranges: IndexRanges[] | null) {
+        const data = this.soloMaskData;
+        if (ranges && ranges.length > 0) {
+            data.fill(0);
+            for (const r of ranges) {
+                r.forEach((i) => {
+                    data[i] = 255;
+                });
+            }
+        } else {
+            data.fill(255);
+        }
+        const buffer = this.soloMaskTexture.lock() as Uint8Array;
+        buffer.set(data);
+        this.soloMaskTexture.unlock();
+        if (this.scene) {
+            this.scene.forceRender = true;
+        }
+    }
+
+    // Point-cloud-group independent edit (viewport only, not persisted).
+    // `ranges` marks gaussians that keep their color; every other gaussian is
+    // desaturated (saturation -> 0). null/empty restores normal saturation.
+    setDesaturateMask(ranges: IndexRanges[] | null) {
+        const data = this.desaturateMaskData;
+        if (ranges && ranges.length > 0) {
+            data.fill(255);
+            for (const r of ranges) {
+                r.forEach((i) => {
+                    data[i] = 0;
+                });
+            }
+        } else {
+            data.fill(0);
+        }
+        const buffer = this.desaturateMaskTexture.lock() as Uint8Array;
+        buffer.set(data);
+        this.desaturateMaskTexture.unlock();
+        if (this.scene) {
+            this.scene.forceRender = true;
         }
     }
 

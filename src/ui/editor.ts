@@ -5,6 +5,8 @@ import { DataPanel } from './data-panel';
 import { Events } from '../events';
 import { AboutPopup } from './about-popup';
 import { CameraModeSwitch } from './camera-mode-switch';
+import { CombineLcc2Popup } from './combine-lcc2-popup';
+import { DownloadPopup } from './download-popup';
 import { ExportPopup } from './export-popup';
 import { FixPlyDialog } from './fix-ply-dialog';
 import { ImageSettingsDialog } from './image-settings-dialog';
@@ -13,7 +15,6 @@ import { localize } from './localization';
 import { Menu } from './menu';
 import { ModeSwitch } from './mode-switch';
 import { ModeToggle } from './mode-toggle';
-import { openUrl } from '../open-url';
 import { OverlayToggle } from './overlay-toggle';
 // import logo from './playcanvas-logo.png';
 import { Popup, ShowOptions } from './popup';
@@ -81,21 +82,11 @@ class EditorUI {
             text: localize('status-bar.version.checking')
         });
         appLabel.dom.style.cursor = 'pointer';
-        let versionUrl = 'https://github.com/Re-qi/ReSplat_Editor/releases';
         let versionTimer: ReturnType<typeof setTimeout> | null = null;
-
-        const openVersionUrl = () => {
-            console.log('[app-label] openVersionUrl called, url:', versionUrl);
-            openUrl(versionUrl);
-        };
-
-        const DOWNLOAD_URL = 'https://pan.quark.cn/s/128e4200b891';
 
         appLabel.dom.addEventListener('click', (e: MouseEvent) => {
             e.stopPropagation();
-            openUrl(versionUrl);
-            openUrl(DOWNLOAD_URL);
-            navigator.clipboard.writeText(DOWNLOAD_URL).catch(() => {});
+            downloadPopup.show();
         });
 
         // Also listen on pointerdown/pointerup to check if click generation chain is intact
@@ -150,9 +141,6 @@ class EditorUI {
         });
 
         events.on('versionCheck.changed', (state: UpdateState) => {
-            if (state.url) {
-                versionUrl = state.url;
-            }
             if (versionTimer) {
                 clearTimeout(versionTimer);
                 versionTimer = null;
@@ -300,16 +288,29 @@ class EditorUI {
         // about popup
         const aboutPopup = new AboutPopup();
 
+        // download dialog (GitHub / Quark mirrors) — opened by the version
+        // label and by the web-version "软件版" links
+        const downloadPopup = new DownloadPopup();
+
         // fix ply dialog
         const fixPlyDialog = new FixPlyDialog(events);
+
+        // combine multi-LOD lcc2 dialog
+        const combineLcc2Popup = new CombineLcc2Popup(events);
 
         topContainer.append(popup);
         topContainer.append(exportPopup);
         topContainer.append(fixPlyDialog);
+        topContainer.append(combineLcc2Popup);
         topContainer.append(imageSettingsDialog);
         topContainer.append(videoSettingsDialog);
         topContainer.append(shortcutsPopup);
         topContainer.append(aboutPopup);
+        topContainer.append(downloadPopup);
+
+        // Remote popups can request the download dialog (e.g. the export
+        // popup's "软件版" hint link in the web build).
+        events.on('downloadPopup.show', () => downloadPopup.show());
 
         appContainer.append(editorContainer);
         appContainer.append(topContainer);
@@ -329,12 +330,19 @@ class EditorUI {
             shortcutsPopup.hidden = false;
         });
 
-        events.function('show.exportPopup', (exportType, splatNames: [string], showFilenameEdit: boolean) => {
-            return exportPopup.show(exportType, splatNames, showFilenameEdit);
+        events.function('show.exportPopup', (exportType, splatNames: [string], showFilenameEdit: boolean, hasNonLcc: boolean) => {
+            return exportPopup.show(exportType, splatNames, showFilenameEdit, hasNonLcc);
         });
 
         events.function('show.fixPlyDialog', () => {
             return fixPlyDialog.show();
+        });
+
+        events.function('show.combineLcc2Popup', async () => {
+            const result = await combineLcc2Popup.show();
+            if (result) {
+                await events.invoke('lcc2.combineLod', result.files, result.name);
+            }
         });
 
         events.function('show.imageSettingsDialog', async () => {
@@ -433,6 +441,19 @@ class EditorUI {
         });
 
         events.function('showPopup', (options: ShowOptions) => {
+            // Play error sound for error-type popups. Sound file lives in
+            // static/audio/error.mp3 (copied to dist by rollup). Failures are
+            // swallowed so a blocked autoplay never blocks the popup itself.
+            if (options.type === 'error') {
+                try {
+                    const url = new URL('static/audio/error.mp3', document.baseURI).toString();
+                    const audio = new Audio(url);
+                    audio.volume = 0.6;
+                    audio.play().catch(() => { /* autoplay policy may block; ignore */ });
+                } catch {
+                    // audio unavailable — ignore
+                }
+            }
             return this.popup.show(options);
         });
 

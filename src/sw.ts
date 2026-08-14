@@ -20,6 +20,8 @@ const cacheUrls = [
     './static/lib/lodepng/lodepng.wasm',
     './static/lib/webp/webp.mjs',
     './static/lib/webp/webp.wasm',
+    './static/audio/complet.mp3',
+    './static/audio/error.mp3',
     './static/locales/de.json',
     './static/locales/en.json',
     './static/locales/fr.json',

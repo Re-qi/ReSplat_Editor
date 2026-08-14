@@ -41,7 +41,7 @@ const removeKnownExtension = (filename: string) => {
 };
 
 class ExportPopup extends Container {
-    show: (exportType: ExportType, splatNames: string[], showFilenameEdit: boolean) => Promise<null | SceneExportOptions>;
+    show: (exportType: ExportType, splatNames: string[], showFilenameEdit: boolean, hasNonLcc: boolean) => Promise<null | SceneExportOptions>;
     hide: () => void;
     destroy: () => void;
 
@@ -273,7 +273,7 @@ class ExportPopup extends Container {
             min: 0,
             max: 20,
             precision: 0,
-            value: 0
+            value: 10
         });
 
         iterationsRow.append(iterationsLabel);
@@ -334,6 +334,30 @@ class ExportPopup extends Container {
         simplifyRow.append(simplifyLabel);
         simplifyRow.append(simplifySelect);
 
+        // Web version note: intelligent (NanoGS) simplification runs on the
+        // browser main thread and is capped at 2M splats (NANOGS_BROWSER_MAX in
+        // splat-serialize.ts) — above that it silently falls back to uniform.
+        // The desktop build routes large scenes to the backend worker (no cap),
+        // so web users are pointed to the app. "软件版" is a link that opens the
+        // download dialog. Hidden on Electron / non-lcc2.
+        const simplifyHint = new Label({ class: 'hint' });
+        simplifyHint.dom.innerHTML = localize('popup.export.simplify-method.web-note').replace(
+            '{software}',
+            `<span class="hint-link">${localize('popup.export.simplify-method.web-note-link')}</span>`
+        );
+        simplifyHint.dom.querySelector('.hint-link')?.addEventListener('click', () => {
+            events.fire('downloadPopup.show');
+        });
+
+        // The web note only shows while intelligent simplification is selected
+        // (it warns that NanoGS caps at 2M splats on the web). Toggled by the
+        // select and by reset() (which also hides it for non-lcc2 / desktop).
+        let hintContextVisible = false;
+        const updateHintVisibility = () => {
+            simplifyHint.hidden = !(hintContextVisible && simplifySelect.value === 'nanogs');
+        };
+        simplifySelect.on('change', updateHintVisibility);
+
         // filename
 
         const filenameRow = new Container({
@@ -366,6 +390,7 @@ class ExportPopup extends Container {
         content.append(iterationsRow);
         content.append(lodRow);
         content.append(simplifyRow);
+        content.append(simplifyHint);
         content.append(filenameRow);
 
         // footer
@@ -429,9 +454,9 @@ class ExportPopup extends Container {
             loopSelect.enabled = value;
         });
 
-        const reset = (exportType: ExportType, splatNames: string[], hasPoses: boolean) => {
-            const allRows = [
-                viewerTypeRow, animationRow, loopRow, colorRow, fovRow, startRow, compressRow, splatsRow, bandsRow, iterationsRow, lodRow, simplifyRow, filenameRow
+        const reset = (exportType: ExportType, splatNames: string[], hasPoses: boolean, hasNonLcc: boolean) => {
+            const allRows: (Container | Label)[] = [
+                viewerTypeRow, animationRow, loopRow, colorRow, fovRow, startRow, compressRow, splatsRow, bandsRow, iterationsRow, lodRow, simplifyRow, simplifyHint, filenameRow
             ];
 
             const activeRows = {
@@ -439,13 +464,23 @@ class ExportPopup extends Container {
                 standardPly: [splatsRow, bandsRow, filenameRow],
                 splat: [splatsRow, filenameRow],
                 sog: [splatsRow, bandsRow, iterationsRow, filenameRow],
-                lcc2: [splatsRow, bandsRow, lodRow, simplifyRow, filenameRow],
+                // LOD levels & simplification only apply when the scene contains
+                // non-LCC source files (LCC/LCC2 files already carry their own
+                // LOD hierarchy, so the export re-uses it instead of regenerating).
+                lcc2: [splatsRow, bandsRow, ...(hasNonLcc ? [lodRow, simplifyRow, simplifyHint] : []), filenameRow],
                 viewer: [viewerTypeRow, animationRow, loopRow, colorRow, fovRow, startRow, splatsRow, bandsRow, filenameRow]
-            }[exportType] as Container[];
+            }[exportType] as (Container | Label)[];
 
             allRows.forEach((r) => {
                 r.hidden = activeRows.indexOf(r) === -1;
             });
+
+            // The NanoGS main-thread cap only applies to the browser; the
+            // desktop backend worker has no cap, so the web note stays hidden
+            // in the desktop build. On the web it only appears while the user
+            // has selected intelligent simplification (not uniform).
+            hintContextVisible = !(window as any).electronAPI?.isElectron && activeRows.indexOf(simplifyHint) !== -1;
+            updateHintVisibility();
 
             // update splat list
             splatsSelect.options = [
@@ -464,7 +499,10 @@ class ExportPopup extends Container {
             compressBoolean.value = false;
 
             // sog
-            iterationsSlider.value = 0;
+            // Default >0: splat-transform's shN k-means skips its Lloyd loop at
+            // 0 iterations, so every splat quantizes to the same SH centroid and
+            // view-dependent lighting breaks (blocks render black/white).
+            iterationsSlider.value = 10;
 
             // lcc2
             lodSlider.value = 6;
@@ -507,7 +545,7 @@ class ExportPopup extends Container {
             fovSlider.value = events.invoke('camera.fov');
         };
 
-        this.show = (exportType: ExportType, splatNames: string[], showFilenameEdit: boolean) => {
+        this.show = (exportType: ExportType, splatNames: string[], showFilenameEdit: boolean, hasNonLcc: boolean) => {
             const frames = events.invoke('timeline.frames');
             const frameRate = events.invoke('timeline.frameRate');
             const smoothness = events.invoke('timeline.smoothness');
@@ -516,7 +554,7 @@ class ExportPopup extends Container {
             .filter(p => p.frame >= 0 && p.frame < frames)
             .sort((a, b) => a.frame - b.frame);
 
-            reset(exportType, splatNames, orderedPoses.length > 0);
+            reset(exportType, splatNames, orderedPoses.length > 0, hasNonLcc);
 
             // filename is only shown in safari where file picker is not supported
             filenameRow.hidden = !showFilenameEdit;
@@ -558,16 +596,22 @@ class ExportPopup extends Container {
             // LCC2 options: splat selection, SH bands, LOD levels, simplification
             // method, filename. simplifyMethod defaults to 'nanogs' (intelligent);
             // the browser path auto-downgrades to 'uniform' for large scenes.
+            // When the scene is all multi-LOD LCC/LCC2 the LOD/simplify rows are
+            // hidden — omit the settings so export reuses the source's own LOD
+            // count instead of the (hidden) slider value.
             const assembleLcc2Options = () : SceneExportOptions => {
-                return {
+                const opts: SceneExportOptions = {
                     filename: filenameEntry.value,
                     splatIdx: splatsSelect.value === 'all' ? 'all' : parseInt(splatsSelect.value, 10),
                     serializeSettings: {
                         maxSHBands: bandsSlider.value
-                    },
-                    lodLevels: lodSlider.value,
-                    simplifyMethod: simplifySelect.value as 'nanogs' | 'uniform'
+                    }
                 };
+                if (hasNonLcc) {
+                    opts.lodLevels = lodSlider.value;
+                    opts.simplifyMethod = simplifySelect.value as 'nanogs' | 'uniform';
+                }
+                return opts;
             };
 
             const assembleViewerOptions = () : SceneExportOptions => {

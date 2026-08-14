@@ -3,6 +3,7 @@ dist
 dist-release
 release
 temp
+native/build
 .DS_Store
 .npmrc
 .vscode
@@ -10,13 +11,9 @@ temp
 .idea
 .env
 .env.local
-*.log
-Thumbs.db
 .trae
 .agents
 .claude
-bench
-native/build
+*.log
+Thumbs.db
 desktop.ini
-skills-lock.json
-server/lcc2-export.mjs

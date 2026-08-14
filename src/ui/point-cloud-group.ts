@@ -9,6 +9,9 @@ import { localize } from './localization';
 import deleteSvg from './svg/delete.svg';
 import gripSvg from './svg/grip.svg';
 import newGroupSvg from './svg/new.svg';
+import scanEyeSvg from './scan-eye.svg';
+import shownOnly2Svg from './svg/shown-only2.svg';
+import shownOnlySvg from './svg/shown-only.svg';
 import { Tooltips } from './tooltips';
 
 const createSvg = (svgString: string) => {
@@ -26,11 +29,17 @@ class PointCloudGroupItem extends Container {
     groupData: PointCloudGroupData;
     onSelect: ((item: PointCloudGroupItem) => void) | null = null;
 
+    private soloEl: PcuiElement;
+    private soloActiveEl: PcuiElement;
+    private editEl: PcuiElement;
+
     constructor(
         groupData: PointCloudGroupData,
         tooltips: Tooltips,
         editInput: TextInput,
-        onDeleteGroup: (gd: PointCloudGroupData) => void
+        onDeleteGroup: (gd: PointCloudGroupData) => void,
+        onSoloToggle: (item: PointCloudGroupItem, additive: boolean) => void,
+        onEditToggle: (item: PointCloudGroupItem, additive: boolean) => void
     ) {
         super({
             class: 'point-cloud-group-item'
@@ -43,12 +52,35 @@ class PointCloudGroupItem extends Container {
             text: groupData.name
         });
 
+        // Solo (isolate) button: shown-only.svg normally, shown-only2.svg
+        // when active. Clicking it hides all other point cloud group items.
+        this.soloEl = new PcuiElement({
+            dom: createSvg(shownOnlySvg),
+            class: 'point-cloud-group-solo-btn'
+        });
+
+        this.soloActiveEl = new PcuiElement({
+            dom: createSvg(shownOnly2Svg),
+            class: ['point-cloud-group-solo-btn', 'active'],
+            hidden: true
+        });
+
+        // Independent edit button (scan-eye.svg): desaturates gaussians
+        // outside this group (and other edit-enabled groups).
+        this.editEl = new PcuiElement({
+            dom: createSvg(scanEyeSvg),
+            class: 'point-cloud-group-edit-btn'
+        });
+
         const deleteBtn = new PcuiElement({
             dom: createSvg(deleteSvg),
             class: 'point-cloud-group-delete-btn'
         });
 
         this.append(nameLabel);
+        this.append(this.soloEl);
+        this.append(this.soloActiveEl);
+        this.append(this.editEl);
         this.append(deleteBtn);
 
         // Click on the item to select it (like splat-item)
@@ -82,12 +114,28 @@ class PointCloudGroupItem extends Container {
             editInput.focus();
         });
 
+        const toggleSolo = (event: MouseEvent) => {
+            event.stopPropagation();
+            onSoloToggle(this, event.shiftKey);
+        };
+
         deleteBtn.dom.addEventListener('click', (event: MouseEvent) => {
             event.stopPropagation();
             onDeleteGroup(groupData);
         });
 
+        this.soloEl.dom.addEventListener('click', toggleSolo);
+        this.soloActiveEl.dom.addEventListener('click', toggleSolo);
+
+        this.editEl.dom.addEventListener('click', (event: MouseEvent) => {
+            event.stopPropagation();
+            onEditToggle(this, event.shiftKey);
+        });
+
         tooltips.register(deleteBtn, localize('tooltip.point-cloud-group.delete'), 'bottom');
+        tooltips.register(this.soloEl, localize('tooltip.point-cloud-group.solo'), 'bottom');
+        tooltips.register(this.soloActiveEl, localize('tooltip.point-cloud-group.solo'), 'bottom');
+        tooltips.register(this.editEl, localize('tooltip.point-cloud-group.edit'), 'bottom');
     }
 
     set selected(value: boolean) {
@@ -100,6 +148,36 @@ class PointCloudGroupItem extends Container {
 
     get selected() {
         return this.class.contains('selected');
+    }
+
+    set solo(value: boolean) {
+        if (value !== this.solo) {
+            this.soloEl.hidden = value;
+            this.soloActiveEl.hidden = !value;
+            if (value) {
+                this.class.add('solo');
+            } else {
+                this.class.remove('solo');
+            }
+        }
+    }
+
+    get solo() {
+        return this.class.contains('solo');
+    }
+
+    set editActive(value: boolean) {
+        if (value !== this.editActive) {
+            if (value) {
+                this.editEl.class.add('active');
+            } else {
+                this.editEl.class.remove('active');
+            }
+        }
+    }
+
+    get editActive() {
+        return this.editEl.class.contains('active');
     }
 }
 
@@ -114,6 +192,8 @@ class PointCloudGroup extends Container {
     private _activeGroup = false;
     private _needsGaussianSelection = false;
     private selectedGroupData: PointCloudGroupData | null = null;
+    private soloedGroups: Set<PointCloudGroupData> = new Set();
+    private editedGroups: Set<PointCloudGroupData> = new Set();
     private toolbar: Container;
     private toolbarSelectBtn: Button;
     private toolbarAddBtn: Button;
@@ -228,6 +308,12 @@ class PointCloudGroup extends Container {
         // Register a function so splat rendering can check if a group is active
         events.function('pointCloudGroup.activeGroup', () => {
             return this._activeGroup;
+        });
+
+        // Register a function so selection tools can check if independent edit
+        // is active (gaussians outside edited groups must not be selectable).
+        events.function('pointCloudGroup.editActive', () => {
+            return this.editedGroups.size > 0;
         });
 
         // Get serializable group data for a specific splat
@@ -389,12 +475,22 @@ class PointCloudGroup extends Container {
             this.groups = [];
             this.listContainer.clear();
             this.currentSplat = null;
+            this.soloedGroups.clear();
+            this.editedGroups.clear();
             this.hidden = true;
         });
 
         // Splat removed - remove associated groups
         events.on('scene.elementRemoved', (element: any) => {
             if (element instanceof Splat) {
+                // Drop solo/edit state for groups belonging to the removed splat.
+                // No mask clear needed: the splat is being destroyed.
+                for (const gd of Array.from(this.soloedGroups)) {
+                    if (gd.splat === element) this.soloedGroups.delete(gd);
+                }
+                for (const gd of Array.from(this.editedGroups)) {
+                    if (gd.splat === element) this.editedGroups.delete(gd);
+                }
                 const before = this.groups.length;
                 this.groups = this.groups.filter(g => g.splat !== element);
                 if (this.groups.length !== before && this.currentSplat === element) {
@@ -433,15 +529,56 @@ class PointCloudGroup extends Container {
         this.listContainer.clear();
         this.groupItems = [];
         const splatGroups = this.groups.filter(g => g.splat === splat);
+
+        // 清理已不存在（被删除或属于其他 splat）的独显/编辑组
+        const staleSplats = new Set<Splat>();
+        for (const gd of Array.from(this.soloedGroups)) {
+            if (splatGroups.indexOf(gd) === -1) {
+                this.soloedGroups.delete(gd);
+                staleSplats.add(gd.splat);
+            }
+        }
+        for (const gd of Array.from(this.editedGroups)) {
+            if (splatGroups.indexOf(gd) === -1) {
+                this.editedGroups.delete(gd);
+                staleSplats.add(gd.splat);
+            }
+        }
+
+        // 复位被清理 splat 的视口遮罩（当前 splat 稍后统一同步）
+        for (const s of staleSplats) {
+            if (s !== splat) {
+                s.setSoloMask(null);
+                s.setDesaturateMask(null);
+            }
+        }
+
         for (const groupData of splatGroups) {
             const item = this.addGroupItem(groupData);
             // 恢复选中状态
             if (selectedGroups.includes(groupData)) {
                 item.selected = true;
             }
+            // 恢复独显/编辑状态：仅在3D视口中生效，UI列表保持全部可见
+            if (this.soloedGroups.has(groupData)) {
+                item.solo = true;
+            }
+            if (this.editedGroups.has(groupData)) {
+                item.editActive = true;
+            }
             this.groupItems.push(item);
         }
+
+        // 组范围可能变化（增删点云），重新同步视口遮罩
+        splat.setSoloMask(this.soloedGroups.size > 0 ? this.collectRanges(this.soloedGroups) : null);
+        splat.setDesaturateMask(this.editedGroups.size > 0 ? this.collectRanges(this.editedGroups) : null);
         // 不在这里调用 updateActiveGroupState()，让调用者决定
+    }
+
+    private collectRanges(groups: Set<PointCloudGroupData>): IndexRanges[] {
+        const result: IndexRanges[] = [];
+        groups.forEach(g => result.push(g.ranges));
+        return result;
     }
 
     private updateActiveGroupState() {
@@ -545,6 +682,9 @@ class PointCloudGroup extends Container {
         if (this.selectedGroupData === gd) {
             this.setSelectedGroupData(null);
         }
+        // 被删除的组若处于独显/编辑状态，从集合移除（遮罩由 renderGroupsForSplat 同步）
+        this.soloedGroups.delete(gd);
+        this.editedGroups.delete(gd);
         this.renderGroupsForSplat(this.currentSplat!);
 
         const splat = this.currentSplat!;
@@ -556,12 +696,80 @@ class PointCloudGroup extends Container {
         ));
     }
 
+    // Solo (isolate) toggle: enabled groups are the only gaussians shown in
+    // the 3D viewport. The UI list stays fully visible.
+    // Shift-click adds/removes a group without affecting the others.
+    private handleGroupSoloToggle(item: PointCloudGroupItem, additive: boolean) {
+        const gd = item.groupData;
+
+        if (additive) {
+            if (this.soloedGroups.has(gd)) {
+                this.soloedGroups.delete(gd);
+                item.solo = false;
+            } else {
+                this.soloedGroups.add(gd);
+                item.solo = true;
+            }
+        } else {
+            if (this.soloedGroups.size === 1 && this.soloedGroups.has(gd)) {
+                // Toggling off the only soloed group: restore all gaussians.
+                this.soloedGroups.clear();
+                item.solo = false;
+            } else {
+                // Replace the soloed set with just this group.
+                for (const other of this.groupItems) {
+                    other.solo = false;
+                }
+                this.soloedGroups.clear();
+                this.soloedGroups.add(gd);
+                item.solo = true;
+            }
+        }
+
+        gd.splat.setSoloMask(this.soloedGroups.size > 0 ? this.collectRanges(this.soloedGroups) : null);
+    }
+
+    // Independent edit toggle: gaussians outside the enabled groups are
+    // desaturated (saturation -> 0). Shift-click adds/removes a group without
+    // affecting the others.
+    private handleGroupEditToggle(item: PointCloudGroupItem, additive: boolean) {
+        const gd = item.groupData;
+
+        if (additive) {
+            if (this.editedGroups.has(gd)) {
+                this.editedGroups.delete(gd);
+                item.editActive = false;
+            } else {
+                this.editedGroups.add(gd);
+                item.editActive = true;
+            }
+        } else {
+            if (this.editedGroups.size === 1 && this.editedGroups.has(gd)) {
+                // Toggling off the only edited group: restore full saturation.
+                this.editedGroups.clear();
+                item.editActive = false;
+            } else {
+                // Replace the edited set with just this group.
+                for (const other of this.groupItems) {
+                    other.editActive = false;
+                }
+                this.editedGroups.clear();
+                this.editedGroups.add(gd);
+                item.editActive = true;
+            }
+        }
+
+        gd.splat.setDesaturateMask(this.editedGroups.size > 0 ? this.collectRanges(this.editedGroups) : null);
+    }
+
     private addGroupItem(groupData: PointCloudGroupData): PointCloudGroupItem {
         const item = new PointCloudGroupItem(
             groupData,
             this.tooltips,
             this.editInput,
-            this.handleGroupDelete.bind(this)
+            this.handleGroupDelete.bind(this),
+            this.handleGroupSoloToggle.bind(this),
+            this.handleGroupEditToggle.bind(this)
         );
         item.onSelect = (clicked: PointCloudGroupItem) => {
             // Deselect all other group items

@@ -408,6 +408,31 @@ const main = async () => {
     // resolve scene config
     const sceneConfig = getSceneConfig(overrides);
 
+    // Detect software WebGL (e.g. IDE webviews, headless browsers → SwiftShader /
+    // llvmpipe). The splat renderer is fill-rate bound, so software rendering is
+    // ~40x slower and makes the editor unusable. Warn the user to enable hardware
+    // acceleration (or use the Edge browser / Electron app).
+    try {
+        const gl = editorUI.canvas.getContext('webgl2');
+        const dbg = gl?.getExtension('WEBGL_debug_renderer_info');
+        const renderer = dbg
+            ? String(gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL))
+            : String(gl?.getParameter(gl.RENDERER) ?? '');
+        const isSoftware = /swiftshader|llvmpipe|software/i.test(renderer);
+        console.log(`[ReSplat] WebGL renderer: ${renderer}${isSoftware ? ' (software rendering — expect low FPS)' : ''}`);
+        if (isSoftware) {
+            setTimeout(() => {
+                events.invoke('showPopup', {
+                    type: 'info',
+                    header: localize('popup.software-rendering.title'),
+                    message: localize('popup.software-rendering.message')
+                });
+            }, 1500);
+        }
+    } catch (_) {
+        // renderer detection is best-effort only
+    }
+
     // construct the manager
     const scene = new Scene(
         events,

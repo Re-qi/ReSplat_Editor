@@ -60,17 +60,39 @@
             width: 24px;
             height: 24px;
             line-height: 24px;
+            margin: 0 2px;
 
             color: $text-secondary;
 
             cursor: pointer;
 
-            .visible & {
-                color: $text-secondary;
-            }
-
             &:hover {
                 color: $text-primary;
+            }
+        }
+
+        .splat-item-solo {
+            flex-grow: 0;
+            flex-shrink: 0;
+
+            width: 24px;
+            height: 24px;
+            line-height: 24px;
+            margin: 0 2px;
+
+            color: $text-secondary;
+
+            cursor: pointer;
+
+            // svg path uses fill="currentColor", so it follows the color
+            // property below (grey normally, orange when .active, white when
+            // the row is .current).
+            &:hover {
+                color: $text-primary;
+            }
+
+            &.active {
+                color: $clr-hilight;
             }
         }
 
@@ -82,14 +104,30 @@
             width: 16px;
             height: 16px;
             line-height: 16px;
+            margin: 0 2px;
 
             color: $text-secondary;
 
             cursor: pointer;
-            margin: 0 5px;
 
             &:hover {
                 color: $text-primary;
+            }
+        }
+
+        // When this splat is current (orange highlight), force all action
+        // buttons to white. Placed AFTER the button rules so equal-specificity
+        // selectors win by source order; :hover is nested to raise specificity
+        // above the plain hover rule.
+        &.current {
+            .splat-item-visible,
+            .splat-item-solo,
+            .splat-item-delete {
+                color: $clr-active;
+
+                &:hover {
+                    color: $clr-active;
+                }
             }
         }
     }

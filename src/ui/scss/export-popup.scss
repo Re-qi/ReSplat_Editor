@@ -48,6 +48,18 @@
             min-height: 60px;
             padding: 12px;
 
+            .hint {
+                margin: 0 0 8px;
+                color: $text-secondary;
+                font-size: 12px;
+
+                .hint-link {
+                    color: #4d9eff;
+                    text-decoration: underline;
+                    cursor: pointer;
+                }
+            }
+
             .row {
                 height: 24px;
                 line-height: 24px;

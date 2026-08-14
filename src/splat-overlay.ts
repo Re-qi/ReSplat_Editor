@@ -114,6 +114,7 @@ class SplatOverlay extends Element {
         // set up other uniforms
         const resource = instance.resource as GSplatResource;
         material.setParameter('splatState', splat.stateTexture);
+        material.setParameter('soloMask', splat.soloMaskTexture);
         material.setParameter('splatPosition', (resource as any).getTexture('transformA'));
         material.setParameter('splatTransform', splat.transformTexture);
         material.setParameter('splatColor', (resource as any).getTexture('splatColor'));

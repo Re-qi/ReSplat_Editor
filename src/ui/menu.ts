@@ -22,6 +22,12 @@ import selectNone from './svg/select-none.svg';
 import selectSeparate from './svg/select-separate.svg';
 import squaresUnite from './svg/squares-unite.svg';
 import wrenchIcon from './svg/wrench.svg';
+import menuPlay from './svg/menu-play.svg';
+import menuBook from './svg/menu-book.svg';
+import menuKeyboard from './svg/menu-keyboard.svg';
+import menuGithub from './svg/menu-github.svg';
+import menuDiscussion from './svg/menu-discussion.svg';
+import menuInfo from './svg/menu-info.svg';
 import { Tooltips } from './tooltips';
 import { openUrl } from '../open-url';
 
@@ -218,6 +224,12 @@ class Menu extends Container {
             icon: createSvg(sceneExport),
             subMenu: exportMenuPanel
         }, {
+            // separator
+        }, {
+            text: localize('menu.file.combine-lod-lcc2', { ellipsis: true }),
+            icon: createSvg(squaresUnite),
+            onSelect: async () => await events.invoke('show.combineLcc2Popup')
+        }, {
             text: localize('menu.file.fix-ply', { ellipsis: true }),
             icon: createSvg(wrenchIcon),
             onSelect: async () => await events.invoke('ply.fix')
@@ -295,41 +307,41 @@ class Menu extends Container {
 
         const videoTutorialsMenuPanel = new MenuPanel([{
             text: localize('menu.help.video-tutorials.basics'),
-            icon: 'E261',
+            icon: createSvg(menuPlay),
             onSelect: () => openUrl('https://www.bilibili.com/video/BV1ZXTC63Ema/?spm_id_from=333.1387.homepage.video_card.click')
         }, {
             text: localize('menu.help.video-tutorials.in-depth'),
-            icon: 'E261',
+            icon: createSvg(menuPlay),
             onSelect: () => openUrl('https://www.bilibili.com/video/BV1v6Nu6vEgE?spm_id_from=333.788.videopod.sections&vd_source=f154045dbf2add36b59ecb76904972d2')
         }]);
 
         const helpMenuPanel = new MenuPanel([{
             text: localize('menu.help.video-tutorials'),
-            icon: 'E261',
+            icon: createSvg(menuPlay),
             subMenu: videoTutorialsMenuPanel
         }, {
             text: localize('menu.help.user-guide'),
-            icon: 'E232',
+            icon: createSvg(menuBook),
             onSelect: () => openUrl('https://my.feishu.cn/wiki/Zi4QwJ3Alin6oLkazSGcRywKnBf?from=from_copylink')
         }, {
             text: localize('menu.help.shortcuts'),
-            icon: 'E136',
+            icon: createSvg(menuKeyboard),
             onSelect: () => events.fire('show.shortcuts')
         }, {
             // separator
         }, {
             text: localize('menu.help.github-repo'),
-            icon: 'E259',
+            icon: createSvg(menuGithub),
             onSelect: () => openUrl('https://github.com/Re-qi/ReSplat_Editor')
         }, {
             text: localize('menu.help.log-issue'),
-            icon: 'E336',
+            icon: createSvg(menuDiscussion),
             onSelect: () => openUrl('https://github.com/Re-qi/ReSplat_Editor/discussions')
         }, {
             // separator
         }, {
             text: localize('menu.help.about'),
-            icon: 'E138',
+            icon: createSvg(menuInfo),
             onSelect: () => events.fire('show.about')
         }]);
 
