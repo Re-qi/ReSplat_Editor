@@ -1871,6 +1871,50 @@ const collectNodesAtDepth = (root: AdaptiveNode, targetDepth: number): AdaptiveN
     return result;
 };
 
+// Backfill depth-D nodes that received no splats from a coarser source LOD.
+// A source LOD's splat distribution does not always align with the adaptive
+// tree built on the finest LOD, leaving some cells empty. The LCC2 reader
+// (collectChunksByLevel) requires (a) every node to carry `data['3dgs']` and
+// (b) each chunk's node counts to sum exactly to the chunk's decoded splat
+// count. The old "borrow the first child's file" fallback cross-referenced a
+// finer level's chunk file and broke (b), so we instead duplicate the nearest
+// current-LOD splat into each empty node. This keeps the count invariant while
+// giving the node a representative splat for ComputeError.
+const backfillEmptyLodNodes = (
+    nodesAtD: AdaptiveNode[],
+    counts: number[],
+    nodeSubsets: (Uint32Array | null)[],
+    lodXs: Float32Array,
+    lodYs: Float32Array,
+    lodZs: Float32Array,
+    lodN: number
+): number => {
+    let added = 0;
+    for (let i = 0; i < nodesAtD.length; ++i) {
+        if (counts[i] > 0) continue;
+        const [mn0, mn1, mn2] = nodesAtD[i].aabb.min;
+        const [mx0, mx1, mx2] = nodesAtD[i].aabb.max;
+        const cx = (mn0 + mx0) * 0.5;
+        const cy = (mn1 + mx1) * 0.5;
+        const cz = (mn2 + mx2) * 0.5;
+        let best = -1;
+        let bestD = Infinity;
+        for (let j = 0; j < lodN; ++j) {
+            const dx = lodXs[j] - cx;
+            const dy = lodYs[j] - cy;
+            const dz = lodZs[j] - cz;
+            const d = dx * dx + dy * dy + dz * dz;
+            if (d < bestD) { bestD = d; best = j; }
+        }
+        if (best >= 0) {
+            nodeSubsets[i] = new Uint32Array([best]);
+            counts[i] = 1;
+            added++;
+        }
+    }
+    return added;
+};
+
 // Descend the adaptive tree to find the depth-`targetDepth` node whose AABB
 // contains the point (x,y,z). Used by serializeLcc2FromLodLog to bin coarser-
 // LOD splats (loaded from file) into the same tree that was built on the
@@ -3054,7 +3098,7 @@ const serializeLcc2FromLodLog = async (
     const treeLodForExport = (lodIndex: number): Promise<DataTable> => loadLodForExport(lodIndex, treeSettings);
 
     console.warn(`[LCC2] Building spatial tree from finest LOD (${lodCounts[0].toLocaleString()} splats, SH=0)`);
-    const treeDataTable = await treeLodForExport(0);
+    let treeDataTable = await treeLodForExport(0);
     // H4: treeLodForExport's file-load path holds rawDataTable (LOD 0) + the
     // SH=0 extractDataTable result simultaneously. Hint GC to release
     // rawDataTable/gsplatData before the export loop allocates coarser LODs.
@@ -3097,15 +3141,29 @@ const serializeLcc2FromLodLog = async (
     }
     let cumulativeSplats = 0;
 
-    const xs = treeDataTable.getColumnByName('x')!.data as Float32Array;
-    const ys = treeDataTable.getColumnByName('y')!.data as Float32Array;
-    const zs = treeDataTable.getColumnByName('z')!.data as Float32Array;
+    let xs = treeDataTable.getColumnByName('x')!.data as Float32Array;
+    let ys = treeDataTable.getColumnByName('y')!.data as Float32Array;
+    let zs = treeDataTable.getColumnByName('z')!.data as Float32Array;
 
     console.warn(`[LCC2] building adaptive tree: N=${treeN.toLocaleString()}, treeDepth=${treeDepth}`);
     const adaptiveRoot = buildAdaptiveLcc2Tree(xs, ys, zs, treeN, treeDepth, boundingBox, SPLIT_TARGET);
     assignAdaptiveNodeIds(adaptiveRoot);
     const depth1Count = adaptiveRoot.child?.length ?? 0;
     console.warn(`[LCC2] adaptive tree done: ${depth1Count} root children`);
+
+    // The SH=0 tree table is only reused below for the finest LOD when the
+    // export is portable (SH=0). For quality exports the finest LOD is reloaded
+    // with full SH so every .sog chunk shares the same SH layout; release the
+    // SH=0 table now so its column buffers don't coexist with the full-SH
+    // finest LOD (bounds peak memory).
+    if (maxSHBands > 0) {
+        treeDataTable = null as unknown as DataTable;
+        xs = null as unknown as Float32Array;
+        ys = null as unknown as Float32Array;
+        zs = null as unknown as Float32Array;
+        (globalThis as { gc?: () => void }).gc?.();
+    }
+
     events?.fire('progressUpdate', { text: `Writing ${treeDepth} LOD levels (${totalEstimatedSplats.toLocaleString()} splats total)…  —  5%`, progress: 5 });
 
     const splatFiles: string[] = [];
@@ -3128,24 +3186,7 @@ const serializeLcc2FromLodLog = async (
 
             // Resolve the LOD DataTable for this depth.
             let lodDataTable: DataTable;
-            if (actualLod === 0) {
-                // The finest LOD: use the tree-building DataTable directly.
-                // It already holds the finest-LOD data in LCC2 space, and
-                // its `finestIndices` are valid row indices into it (same
-                // extractDataTable path, same row order regardless of SH).
-                //
-                // The old code reloaded with full SH=3 settings when
-                // currentLodIndex===0, but for large datasets (e.g. 35.7M
-                // splats × 59 cols ≈ 8.4 GB) a single DataTable exceeds the
-                // browser's ~4 GB ArrayBuffer limit → "Array buffer
-                // allocation failed". The source file is typically
-                // "portable" (SH=0) anyway, so SH=3 columns would be zeros.
-                //
-                // If the tree was built with SH=0 but the source actually
-                // has SH data AND fits in memory, we could reload. For now,
-                // prefer correctness (no OOM) over hypothetical quality gain.
-                lodDataTable = treeDataTable;
-            } else if (actualLod === cachedLodIndex && cachedLodDataTable) {
+            if (actualLod === cachedLodIndex && cachedLodDataTable) {
                 lodDataTable = cachedLodDataTable;
             } else {
                 // Release the previous cached LOD before loading a new one.
@@ -3153,22 +3194,35 @@ const serializeLcc2FromLodLog = async (
                     cachedLodDataTable = null;
                     (globalThis as { gc?: () => void }).gc?.();
                 }
-                cachedLodDataTable = await loadLodForExport(actualLod);
-                // H4: loadLodForExport's file-load path leaves rawDataTable +
-                // gsplatData (the full source-LOD DataTable) GC-eligible but
-                // not yet collected. Hint GC before the chunk-prep loop
-                // allocates per-chunk Float32Array copies, so peak memory is
-                // lodDataTable + treeDataTable instead of + rawDataTable.
-                (globalThis as { gc?: () => void }).gc?.();
+                if (actualLod === 0 && maxSHBands === 0) {
+                    // Portable (SH=0) source: reuse the tree-building table
+                    // directly. It already holds the finest LOD in LCC2 space
+                    // with the same SH=0 layout as the coarser LODs, and its
+                    // `finestIndices` are valid row indices into it.
+                    lodDataTable = treeDataTable;
+                } else {
+                    // Load this LOD (including the finest) with the full SH
+                    // layout so every .sog chunk shares the same SH bands.
+                    // Reusing the SH=0 tree table for the finest LOD of a
+                    // quality source would mismatch the coarser LODs' SH bands
+                    // and break the LCC2 reader ("SH band mismatch").
+                    lodDataTable = await loadLodForExport(actualLod);
+                    // H4: loadLodForExport's file-load path leaves rawDataTable +
+                    // gsplatData (the full source-LOD DataTable) GC-eligible but
+                    // not yet collected. Hint GC before the chunk-prep loop
+                    // allocates per-chunk Float32Array copies, so peak memory is
+                    // lodDataTable + treeDataTable instead of + rawDataTable.
+                    (globalThis as { gc?: () => void }).gc?.();
+                }
                 cachedLodIndex = actualLod;
-                lodDataTable = cachedLodDataTable;
+                cachedLodDataTable = lodDataTable;
             }
 
-            // Convert to LCC2 space (in-place). Coarser LODs loaded from file
-            // arrive in PLY space and need transform. The finest LOD is either
-            // already in LCC2 space (treeDataTable, when currentLodIndex !== 0)
-            // or freshly loaded + transformed above (when currentLodIndex === 0).
-            if (actualLod !== 0) {
+            // Convert to LCC2 space (in-place). LODs loaded from file (coarser
+            // LODs and the full-SH finest LOD) arrive in PLY space and need the
+            // transform. The tree-building table (reused only for the SH=0
+            // finest LOD) is already in LCC2 space.
+            if (lodDataTable !== treeDataTable) {
                 applyLcc2CoordinateTransform(lodDataTable, maxSHBands);
             }
 
@@ -3232,6 +3286,7 @@ const serializeLcc2FromLodLog = async (
                         }
                     }
                 }
+                levelTotal += backfillEmptyLodNodes(nodesAtD, counts, nodeSubsets, lodXs, lodYs, lodZs, lodN);
             }
             console.warn(`[LCC2] LOD${k}/depth${D}: ${nodesAtD.length} nodes, ${levelTotal.toLocaleString()} splats`);
 
@@ -3619,6 +3674,7 @@ const serializeLcc2FromLodSplats = async (
                         }
                     }
                 }
+                levelTotal += backfillEmptyLodNodes(nodesAtD, counts, nodeSubsets, lodXs, lodYs, lodZs, lodN);
             }
             console.warn(`[LCC2] LOD${k}/depth${D}: ${nodesAtD.length} nodes, ${levelTotal.toLocaleString()} splats`);
 
