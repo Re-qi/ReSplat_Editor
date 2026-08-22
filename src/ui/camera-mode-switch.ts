@@ -80,7 +80,8 @@ class CameraModeSwitch extends Container {
         const speedSlider = new SliderInput({
             class: 'fly-speed-popup-slider',
             min: 0.1,
-            max: 30,
+            max: 100,
+            sliderMax: 100,
             precision: 1,
             value: 1
         });
@@ -167,6 +168,7 @@ class CameraModeSwitch extends Container {
         events.on('camera.flySpeed', (value: number) => {
             suppressChange = true;
             speedSlider.value = value;
+            speedSlider.step = value > 20 ? 10 : 1;
             setTimeout(() => {
                 suppressChange = false;
             }, 0);
@@ -174,8 +176,32 @@ class CameraModeSwitch extends Container {
             showSpeedPopup();
         });
 
+        // 拖拽跟踪：拖拽中自由移动，松手后才snap
+        let isDragging = false;
+        const sliderDom = (speedSlider as any)._domSlider;
+        if (sliderDom) {
+            sliderDom.addEventListener('pointerdown', () => {
+                isDragging = true;
+            });
+            sliderDom.addEventListener('pointerup', () => {
+                isDragging = false;
+            });
+        }
+
         speedSlider.on('change', (value: number) => {
             if (suppressChange) return;
+            // 拖拽中自由移动，不snap
+            if (!isDragging && value > 20) {
+                const snapped = Math.round(value / 10) * 10;
+                if (snapped !== value) {
+                    suppressChange = true;
+                    speedSlider.value = snapped;
+                    suppressChange = false;
+                    events.fire('camera.setFlySpeed', snapped);
+                    resetSpeedHideTimeout();
+                    return;
+                }
+            }
             events.fire('camera.setFlySpeed', value);
             resetSpeedHideTimeout();
         });

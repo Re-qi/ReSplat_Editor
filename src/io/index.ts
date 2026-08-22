@@ -5,7 +5,9 @@
 // Read operations
 export {
     BlobReadSource,
+    createElectronFileReadSource,
     DecompressingReadSource,
+    ElectronLccReadFileSystem,
     MappedReadFileSystem,
     TeeReadStream,
     defaultLodIndex,
@@ -14,6 +16,8 @@ export {
     loadLodDataTable,
     loadLodGSplatData,
     loadSogDecimated,
+    openLodSource,
+    gatherSourceRowsToDataTable,
     readLodMeta,
     readSogMeta,
     readPlyMeta,
@@ -26,6 +30,7 @@ export {
 // Write operations
 export {
     BrowserFileSystem,
+    ElectronFileSystem,
     GZipWriter,
     ZstdWriter,
     ProgressWriter,

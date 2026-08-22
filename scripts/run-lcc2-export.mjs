@@ -25,12 +25,13 @@ const inputPath = process.argv[2];
 const outputDir = process.argv[3];
 const simplifyMethod = process.argv[4] ?? 'nanogs';
 const lodLevels = parseInt(process.argv[5] ?? '6', 10);
+const iterations = parseInt(process.argv[6] ?? '0', 10);
 if (!inputPath || !outputDir || !fs.existsSync(inputPath)) {
-    console.error('usage: node scripts/run-lcc2-export.mjs <input.ply> <outputDir> [nanogs|uniform] [lodLevels]');
+    console.error('usage: node scripts/run-lcc2-export.mjs <input.ply> <outputDir> [nanogs|uniform] [lodLevels] [iterations]');
     process.exit(2);
 }
 
-const options = { name: 'test', lodLevels, shBands: 0, iterations: 0, simplifyMethod };
+const options = { name: 'test', lodLevels, shBands: 0, iterations, simplifyMethod };
 const t0 = Date.now();
 
 const timer = setInterval(() => {

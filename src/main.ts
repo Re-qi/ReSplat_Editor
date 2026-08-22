@@ -1,8 +1,8 @@
 import { Button, Container, NumericInput } from '@playcanvas/pcui';
-import { WebPCodec } from '@playcanvas/splat-transform';
-import { Asset, Color, createGraphicsDevice, GSplatResource, Mat4, Vec3, Quat } from 'playcanvas';
+import { WebPCodec, type Transform } from '@playcanvas/splat-transform';
+import { Asset, Color, createGraphicsDevice, GSplatResource, Mat4, Vec3, Quat, type GSplatData } from 'playcanvas';
 
-import { BackendClient } from './backend';
+import { BackendClient, lodNeedsBackend } from './backend';
 import { BlockingPlane } from './blocking-plane';
 import { registerCameraPosesEvents } from './camera-poses';
 import { CommandQueue } from './command-queue';
@@ -91,6 +91,25 @@ const getURLArgs = () => {
     return config;
 };
 
+// Route a LOD load through the backend when its worst-case quality table would
+// exceed the renderer heap (see lodNeedsBackend). The backend reads the
+// requested LOD with a seekable reader and compresses it to a compressed-ply
+// in SOURCE space (no bake); the new Splat inherits the old splat's rotation
+// via docDeserialize, so every level stays aligned. Returns null when the LOD
+// fits or no backend/path is available.
+const loadBigLodViaBackend = async (
+    backendFilePath: string,
+    lodCounts: number[],
+    targetLod: number
+): Promise<{ gsplatData: GSplatData; transform: Transform } | null> => {
+    if (!lodNeedsBackend(lodCounts[targetLod])) return null;
+    console.warn(`[LCC2] Routing LOD ${targetLod} (${lodCounts[targetLod].toLocaleString()} splats) through backend`);
+    const preview = await BackendClient.loadLodPreview(backendFilePath, targetLod);
+    if (!preview) return null;
+    // Rotation is restored from the old splat by docDeserialize below.
+    return { gsplatData: preview.gsplatData, transform: { rotation: new Quat() } as unknown as Transform };
+};
+
 // Register LOD switch events. When the user picks a different LOD for the
 // currently-selected multi-LOD splat, this streams the target LOD data from
 // the original LCC file, destroys the old Splat (preserving uid + lodEditLog),
@@ -125,8 +144,18 @@ const registerLodEvents = (events: Events, scene: Scene, editHistory: EditHistor
             scene.remove(oldSplat);
             oldSplat.destroy();
 
-            // Stream the target LOD from the original file.
-            const result = await loadLodGSplatData(lccFilePath, lccFileSystem, targetLod);
+            // Route oversized LODs through the backend (compressed-ply) so the
+            // renderer never parses the raw multi-GB LOD — mirrors the
+            // large-PLY import flow. The backend reads the requested LOD with a
+            // seekable reader and compresses it in SOURCE space (no bake); the
+            // new Splat inherits the old splat's rotation via docDeserialize,
+            // so every level stays aligned. Small LODs keep the direct path.
+            // originalFilePath holds the absolute container path (backend needs
+            // a real disk path, while lccFilePath is the container name).
+            let result = await loadBigLodViaBackend(originalFilePath || lccFilePath, lodCounts, targetLod);
+            if (!result) {
+                result = await loadLodGSplatData(lccFilePath, lccFileSystem, targetLod);
+            }
             const { gsplatData, transform } = result;
 
             // Construct a new Splat reusing the old uid so external references

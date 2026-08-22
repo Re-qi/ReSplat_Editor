@@ -17,3 +17,4 @@ native/build
 *.log
 Thumbs.db
 desktop.ini
+skills-lock.json

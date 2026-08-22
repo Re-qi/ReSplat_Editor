@@ -15,6 +15,10 @@
 //   2. Replaces the CPU k-means branch with a sample-based Lloyd loop
 //      (65536 points) plus a brute-force full assignment spread across
 //      worker_threads in Node (SharedArrayBuffer), keeping iterations intact.
+//   3. The parallel assignment is SLICED: the points are copied into one
+//      reusable 128 MB SharedArrayBuffer instead of one full pts copy (2.8 GB
+//      for 15M splats × 45 SH coeffs), so peak extra memory stays bounded and
+//      the export survives Electron memory pressure.
 import { readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
@@ -29,13 +33,181 @@ if (!existsSync(indexPath)) {
 
 let code = readFileSync(indexPath, 'utf8');
 
-// Idempotency marker: bail if already patched.
-if (code.includes('Sample-based Lloyd loop')) {
+// Eval workers inherit the nearest package `type`; in this ESM package that
+// means CommonJS `require(...)` is unavailable.  Keep the worker source ESM
+// and pin eval workers to module mode.  Keep this repair separate from the
+// optimization marker below so existing installations receive it on the next
+// postinstall.
+const workerRequireNeedle = "const { parentPort, workerData } = require('node:worker_threads');";
+const workerImportReplacement = "import { parentPort, workerData } from 'node:worker_threads';";
+if (code.includes(workerRequireNeedle)) {
+    code = code.replaceAll(workerRequireNeedle, workerImportReplacement);
+}
+// Reuse one bounded SAB for every assignment slice. Allocating a fresh
+// 512-MB backing store per slice lets terminated workers retain external
+// memory until a later GC, so a large scene eventually fails at the next SAB
+// allocation even though only one slice is live at a time.
+code = code.replaceAll('const SLICE_BYTES = 512 * 1048576;', 'const SLICE_BYTES = 128 * 1048576;');
+code = code.replaceAll('const SLICE_BYTES = 128 * 1048576; // 512 MB per slice SAB', 'const SLICE_BYTES = 128 * 1048576; // one reusable 128 MB slice SAB');
+code = code.replaceAll(
+    '            const SLICE_ROWS = Math.max(1, Math.floor(SLICE_BYTES / (nc * 4)));\n            const labelsSAB',
+    '            const SLICE_ROWS = Math.max(1, Math.floor(SLICE_BYTES / (nc * 4)));\n            const sliceSAB = new SharedArrayBuffer(SLICE_BYTES);\n            const sliceView = new Float32Array(sliceSAB);\n            const labelsSAB'
+);
+code = code.replaceAll(
+    '                const sliceSAB = new SharedArrayBuffer(slice.byteLength);\n                new Float32Array(sliceSAB).set(slice);',
+    '                sliceView.set(slice);'
+);
+code = code.replaceAll(
+    "worker.once('message', () => { worker.terminate(); resolve(); });",
+    "worker.once('message', async () => { try { await worker.terminate(); resolve(); } catch (error) { reject(error); } });"
+);
+const workerTypeNeedle = '                            eval: true,\n';
+const workerTypeReplacement = `${workerTypeNeedle}                            type: 'module',\n`;
+code = code.replaceAll("                            type: 'module',\n                            type: 'commonjs',\n", "                            type: 'module',\n");
+if (code.includes(workerTypeNeedle) && !code.includes("                            type: 'module',\n")) {
+    code = code.replaceAll(workerTypeNeedle, workerTypeReplacement);
+    writeFileSync(indexPath, code);
+    console.log('[patch-splat-transform] pinned eval workers to ESM');
+} else if (code.includes(workerImportReplacement)) {
+    // The source may have been converted above while the option was already
+    // present from an earlier version of this repair.
+    writeFileSync(indexPath, code);
+}
+
+// Idempotency marker (current version): the sliced-SAB assignment.
+if (code.includes('Slice-based brute assignment')) {
     console.log('[patch-splat-transform] already patched — skipping');
     process.exit(0);
 }
 
 const failures = [];
+
+// ---------------------------------------------------------------------------
+// Upgrade path: a dist already carrying the OLDER patch ('Sample-based Lloyd
+// loop' with the single full-SAB copy) is upgraded in place — the rest of the
+// old patch (palette cap + sample Lloyd) is still valid, only the assignment
+// function changes.
+// ---------------------------------------------------------------------------
+const OLD_ASSIGN = `        const assignBruteParallel = async (pts, n, lbl) => {
+            // Ensure points live in a SharedArrayBuffer so workers read them
+            // without copying (one-time up to 3.7 GB for 20M splats).
+            let pointsSAB = pts.buffer instanceof SharedArrayBuffer ? pts.buffer : null;
+            if (!pointsSAB) {
+                pointsSAB = new SharedArrayBuffer(pts.byteLength);
+                new Float32Array(pointsSAB).set(pts);
+            }
+            const labelsSAB = new SharedArrayBuffer(n * 4);
+            const labelsView = new Uint32Array(labelsSAB);
+            const chunkRows = Math.ceil(n / NUM_WORKERS);
+            const workerSrc = \`
+import { parentPort, workerData } from 'node:worker_threads';
+const { pointsSAB, labelsSAB, centroids, nc, k, start, count } = workerData;
+const points = new Float32Array(pointsSAB);
+const labels = new Uint32Array(labelsSAB);
+for (let r = 0; r < count; ++r) {
+    const base = (start + r) * nc;
+    let best = 0, bestD = Infinity;
+    for (let c = 0; c < k; ++c) {
+        const cb = c * nc;
+        let dist = 0;
+        for (let j = 0; j < nc; ++j) {
+            const v = points[base + j] - centroids[cb + j];
+            dist += v * v;
+        }
+        if (dist < bestD) { bestD = dist; best = c; }
+    }
+    labels[start + r] = best;
+}
+parentPort.postMessage('done');
+\`;
+            const tasks = [];
+            for (let w = 0; w < NUM_WORKERS; ++w) {
+                const start = w * chunkRows;
+                const count = Math.min(chunkRows, n - start);
+                if (count <= 0) break;
+                tasks.push(new Promise((resolve, reject) => {
+                    const worker = new WorkerCtor(workerSrc, {
+                        eval: true,
+                        type: 'module',
+                        workerData: { pointsSAB, labelsSAB, centroids, nc, k, start, count }
+                    });
+                    worker.once('message', async () => { try { await worker.terminate(); resolve(); } catch (error) { reject(error); } });
+                    worker.once('error', reject);
+                }));
+            }
+            await Promise.all(tasks);
+            lbl.set(labelsView.subarray(0, n));
+        };`;
+
+const NEW_ASSIGN = `        const assignBruteParallel = async (pts, n, lbl) => {
+            // Slice-based brute assignment: the points are processed in bounded
+            // SharedArrayBuffer slices so the peak extra allocation is one
+            // SLICE_BYTES block instead of a full pts copy (2.8 GB for 15M
+            // splats × 45 SH coeffs — fails under Electron memory pressure).
+            // The labels array is shared for the whole pass; workers write at
+            // absolute row offsets.
+            const SLICE_BYTES = 128 * 1048576; // one reusable 128 MB slice SAB
+            const SLICE_ROWS = Math.max(1, Math.floor(SLICE_BYTES / (nc * 4)));
+            const sliceSAB = new SharedArrayBuffer(SLICE_BYTES);
+            const sliceView = new Float32Array(sliceSAB);
+            const labelsSAB = new SharedArrayBuffer(n * 4);
+            const labelsView = new Uint32Array(labelsSAB);
+            const workerSrc = \`
+import { parentPort, workerData } from 'node:worker_threads';
+const { pointsSAB, labelsSAB, centroids, nc, k, start, count, offset } = workerData;
+const points = new Float32Array(pointsSAB);
+const labels = new Uint32Array(labelsSAB);
+for (let r = 0; r < count; ++r) {
+    const base = r * nc;
+    let best = 0, bestD = Infinity;
+    for (let c = 0; c < k; ++c) {
+        const cb = c * nc;
+        let dist = 0;
+        for (let j = 0; j < nc; ++j) {
+            const v = points[base + j] - centroids[cb + j];
+            dist += v * v;
+        }
+        if (dist < bestD) { bestD = dist; best = c; }
+    }
+    labels[offset + start + r] = best;
+}
+parentPort.postMessage('done');
+\`;
+            for (let offset = 0; offset < n; offset += SLICE_ROWS) {
+                const count = Math.min(SLICE_ROWS, n - offset);
+                const slice = pts.subarray(offset * nc, (offset + count) * nc);
+                sliceView.set(slice);
+                const chunkRows = Math.ceil(count / NUM_WORKERS);
+                const tasks = [];
+                for (let w = 0; w < NUM_WORKERS; ++w) {
+                    const start = w * chunkRows;
+                    const c = Math.min(chunkRows, count - start);
+                    if (c <= 0) break;
+                    tasks.push(new Promise((resolve, reject) => {
+                        const worker = new WorkerCtor(workerSrc, {
+                            eval: true,
+                            type: 'module',
+                            workerData: { pointsSAB: sliceSAB, labelsSAB, centroids, nc, k, start, count: c, offset }
+                        });
+                        worker.once('message', async () => { try { await worker.terminate(); resolve(); } catch (error) { reject(error); } });
+                        worker.once('error', reject);
+                    }));
+                }
+                await Promise.all(tasks);
+            }
+            lbl.set(labelsView.subarray(0, n));
+        };`;
+
+if (code.includes('Sample-based Lloyd loop')) {
+    if (code.includes(OLD_ASSIGN)) {
+        code = code.replace(OLD_ASSIGN, NEW_ASSIGN);
+        writeFileSync(indexPath, code);
+        console.log('[patch-splat-transform] upgraded k-means assignment to sliced SAB');
+        process.exit(0);
+    }
+    console.error('[patch-splat-transform] FAILED: old patch marker found but assignBruteParallel not located');
+    process.exit(1);
+}
 
 // ---- Patch 1: cap the shN palette ----
 const paletteOld = '                const paletteSize = Math.min(64, 2 ** Math.floor(Math.log2(numRows / 1024))) * 1024;';
@@ -99,55 +271,7 @@ if (startIdx >= 0 && endIdx > startIdx) {
                 lbl[r] = best;
             }
         };
-        const assignBruteParallel = async (pts, n, lbl) => {
-            // Ensure points live in a SharedArrayBuffer so workers read them
-            // without copying (one-time up to 3.7 GB for 20M splats).
-            let pointsSAB = pts.buffer instanceof SharedArrayBuffer ? pts.buffer : null;
-            if (!pointsSAB) {
-                pointsSAB = new SharedArrayBuffer(pts.byteLength);
-                new Float32Array(pointsSAB).set(pts);
-            }
-            const labelsSAB = new SharedArrayBuffer(n * 4);
-            const labelsView = new Uint32Array(labelsSAB);
-            const chunkRows = Math.ceil(n / NUM_WORKERS);
-            const workerSrc = \`
-const { parentPort, workerData } = require('node:worker_threads');
-const { pointsSAB, labelsSAB, centroids, nc, k, start, count } = workerData;
-const points = new Float32Array(pointsSAB);
-const labels = new Uint32Array(labelsSAB);
-for (let r = 0; r < count; ++r) {
-    const base = (start + r) * nc;
-    let best = 0, bestD = Infinity;
-    for (let c = 0; c < k; ++c) {
-        const cb = c * nc;
-        let dist = 0;
-        for (let j = 0; j < nc; ++j) {
-            const v = points[base + j] - centroids[cb + j];
-            dist += v * v;
-        }
-        if (dist < bestD) { bestD = dist; best = c; }
-    }
-    labels[start + r] = best;
-}
-parentPort.postMessage('done');
-\`;
-            const tasks = [];
-            for (let w = 0; w < NUM_WORKERS; ++w) {
-                const start = w * chunkRows;
-                const count = Math.min(chunkRows, n - start);
-                if (count <= 0) break;
-                tasks.push(new Promise((resolve, reject) => {
-                    const worker = new WorkerCtor(workerSrc, {
-                        eval: true,
-                        workerData: { pointsSAB, labelsSAB, centroids, nc, k, start, count }
-                    });
-                    worker.once('message', () => { worker.terminate(); resolve(); });
-                    worker.once('error', reject);
-                }));
-            }
-            await Promise.all(tasks);
-            lbl.set(labelsView.subarray(0, n));
-        };
+${NEW_ASSIGN}
         const assignFn = async (pts, n, lbl) => {
             if (useBrute) {
                 if (WorkerCtor && n >= PARALLEL_MIN) {
@@ -254,4 +378,4 @@ if (failures.length > 0) {
 }
 
 writeFileSync(indexPath, code);
-console.log('[patch-splat-transform] patched splat-transform (SH palette cap + sample k-means + parallel assignment)');
+console.log('[patch-splat-transform] patched splat-transform (SH palette cap + sample k-means + sliced parallel assignment)');

@@ -9,6 +9,7 @@
 const { app: electronApp, BrowserWindow, ipcMain, dialog, shell, Menu, protocol, net } = require('electron');
 const path = require('path');
 const crypto = require('crypto');
+const { extractGzipProjectEntry } = require('./project-extractor.cjs');
 
 // ---------------------------------------------------------------------------
 // Raise renderer V8 heap limit above the ~4 GB default
@@ -27,7 +28,12 @@ const crypto = require('crypto');
 // [4 GB, 16 GB], to avoid triggering swap on memory-constrained machines.
 const totalMemMB = Math.floor(require('os').totalmem() / 1024 / 1024);
 const rendererMaxOldSpace = Math.min(16384, Math.max(4096, Math.floor((totalMemMB - 2048) * 0.75)));
-electronApp.commandLine.appendSwitch('js-flags', `--max-old-space-size=${rendererMaxOldSpace}`);
+// --expose-gc enables global.gc() in the renderer. The LCC2/HTML export paths
+// call (globalThis).gc?.() to release multi-GB intermediate DataTables between
+// LOD loads (serializeLcc2FromLodLog, html export). Without the flag those
+// hints silently no-op and previous LOD tables stay resident until the next
+// multi-GB allocation throws "Array buffer allocation failed".
+electronApp.commandLine.appendSwitch('js-flags', `--expose-gc --max-old-space-size=${rendererMaxOldSpace}`);
 console.log(`[electron] Renderer V8 heap limit: ${rendererMaxOldSpace} MB (system RAM: ${totalMemMB} MB)`);
 
 // ---------------------------------------------------------------------------
@@ -173,6 +179,14 @@ async function createWindow() {
         console.log('[electron] WebGPU check failed:', e.message);
     }
 
+    // Forward renderer errors to the main-process terminal so export failures
+    // can be diagnosed without opening DevTools.
+    mainWindow.webContents.on('console-message', (_e, level, message, line, sourceId) => {
+        if (typeof message === 'string' && level >= 3) {
+            console.log(`[renderer] ${message}${sourceId ? ` (${sourceId}:${line})` : ''}`);
+        }
+    });
+
     mainWindow.on('closed', () => {
         mainWindow = null;
     });
@@ -236,6 +250,30 @@ ipcMain.handle('fs:readFile', async (_event, filePath) => {
     return fs.readFileSync(filePath);
 });
 
+// Read a byte range from a file by absolute path + position. Used by the LCC
+// reader to stream GB-scale sibling files (data.bin/shcoef.bin) on demand
+// WITHOUT going through Chromium's network stack — system proxies / flaky
+// localhost routing made fetch-based reads (HTTP Range) unreliable, and IPC
+// readFileSync of the whole file blows the renderer's ~4GB memory limit.
+ipcMain.handle('fs:readRange', async (_event, filePath, position, length) => {
+    const fs = require('fs');
+    const fd = fs.openSync(filePath, 'r');
+    try {
+        const buf = Buffer.allocUnsafe(length);
+        const bytesRead = fs.readSync(fd, buf, 0, length, position);
+        return buf.subarray(0, bytesRead);
+    } finally {
+        fs.closeSync(fd);
+    }
+});
+
+// Stat a file; returns { size } (bytes)
+ipcMain.handle('fs:stat', async (_event, filePath) => {
+    const fs = require('fs');
+    const s = fs.statSync(filePath);
+    return { size: s.size };
+});
+
 // Check if a file path exists
 ipcMain.handle('fs:exists', async (_event, filePath) => {
     const fs = require('fs');
@@ -250,9 +288,11 @@ ipcMain.handle('fs:readDir', async (_event, dirPath) => {
     return fs.readdirSync(dirPath).map(name => path.join(dirPath, name));
 });
 
-// Recursively walk a directory tree. Returns [{ path, rel }] for every regular
-// file, where `path` is absolute and `rel` is the path relative to `dirPath`
-// using forward slashes (so it matches web FileSystemEntry fullPath conventions).
+// Recursively walk a directory tree. Returns [{ path, rel, size }] for every
+// regular file, where `path` is absolute, `rel` is the path relative to `dirPath`
+// using forward slashes (so it matches web FileSystemEntry fullPath conventions),
+// and `size` is the file size in bytes. The size lets the renderer skip
+// GB-scale LCC siblings (data.bin/shcoef.bin) instead of shipping them over IPC.
 // Used to auto-resolve LCC2 chunk siblings (.sog/.spz) that live in subdirectories
 // next to a dropped .lcc2 meta file.
 ipcMain.handle('fs:walk', async (_event, dirPath) => {
@@ -271,7 +311,7 @@ ipcMain.handle('fs:walk', async (_event, dirPath) => {
             if (stat.isDirectory()) {
                 walk(full, rel);
             } else if (stat.isFile()) {
-                result.push({ path: full, rel });
+                result.push({ path: full, rel, size: stat.size });
             }
         }
     };
@@ -354,6 +394,16 @@ ipcMain.handle('fs:unlink', async (_event, p) => {
     } catch (_err) {
         return false;
     }
+});
+
+// Expand a .respproj PLY into a temporary file in the main process. Sending a
+// multi-GB project payload to the renderer first creates avoidable heap copies.
+ipcMain.handle('project:extractGzipEntry', async (_event, projectPath, entryName) => {
+    if (typeof projectPath !== 'string' || typeof entryName !== 'string' || !/^splat_\d+\.ply\.gz$/.test(entryName)) {
+        throw new Error('Invalid project extraction request');
+    }
+    const tempDir = path.join(electronApp.getPath('temp'), 'ReSplat-projects');
+    return extractGzipProjectEntry(projectPath, entryName, tempDir);
 });
 
 // Open URL in system default browser

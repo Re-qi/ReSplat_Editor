@@ -246,6 +246,31 @@ class Scene {
         this.app.start();
     }
 
+    /**
+     * Pause the PlayCanvas render loop (cancel the RAF tick). The GPU stops
+     * per-frame sort/rasterize work during long backend exports; DOM overlays
+     * (progress UI) keep updating. Resume with resumeRendering(). Note: this
+     * releases per-frame CPU/GPU work only — GPU texture memory is NOT freed
+     * (PlayCanvas has no safe "release streams + restore" API).
+     */
+    suspendRendering() {
+        const app = this.app as unknown as { frameRequestId: number | null; tick: (() => void) | null };
+        if (app.frameRequestId != null) {
+            cancelAnimationFrame(app.frameRequestId);
+            app.frameRequestId = null;
+        }
+    }
+
+    /**
+     * Restart the PlayCanvas render loop after suspendRendering().
+     */
+    resumeRendering() {
+        const app = this.app as unknown as { frameRequestId: number | null; requestAnimationFrame: () => void };
+        if (app.frameRequestId == null) {
+            app.requestAnimationFrame();
+        }
+    }
+
     clear() {
         const splats = this.getElementsByType(ElementType.splat);
         splats.forEach((splat) => {

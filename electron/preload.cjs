@@ -16,6 +16,27 @@ const { contextBridge, ipcRenderer, webUtils } = require('electron');
 // 'drop' events in the preload context (capture phase) and extract paths
 // using the original File objects BEFORE they enter the renderer world.
 const _dropFilePaths = new Map();
+const _inputFilePaths = new Map();
+
+// Chromium no longer exposes File.path to the isolated renderer. Capture
+// native paths while the FileList is still in the preload world, then let the
+// renderer resolve the path by the stable name+size pair. This is needed for
+// path-based backend exports of large .respproj files.
+const rememberInputFilePaths = (files) => {
+    for (const file of files || []) {
+        try {
+            const path = webUtils.getPathForFile(file);
+            if (path) _inputFilePaths.set(`${file.name}|${file.size}`, path);
+        } catch (_err) {
+            // ignore — file has no accessible path
+        }
+    }
+};
+
+document.addEventListener('change', (event) => {
+    const files = event.target?.files;
+    if (files) rememberInputFilePaths(files);
+}, true);
 
 document.addEventListener('drop', (e) => {
     _dropFilePaths.clear();
@@ -94,6 +115,14 @@ contextBridge.exposeInMainWorld('electronAPI', {
     /** Read a file from disk (by absolute path) */
     readFile: (filePath) => ipcRenderer.invoke('fs:readFile', filePath),
 
+    /** Read a byte range [position, position+length) from a file (by absolute path).
+     *  Used by the LCC reader to stream GB-scale siblings on demand over IPC —
+     *  avoids Chromium's proxy/network stack AND renderer OOM. */
+    readRange: (filePath, position, length) => ipcRenderer.invoke('fs:readRange', filePath, position, length),
+
+    /** Stat a file; resolves to { size } (bytes) */
+    fileSize: (filePath) => ipcRenderer.invoke('fs:stat', filePath),
+
     /** Check if a file exists */
     fileExists: (filePath) => ipcRenderer.invoke('fs:exists', filePath),
 
@@ -117,6 +146,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
     /** Best-effort delete a file (used by writer abort cleanup); resolves to true on success */
     unlink: (filePath) => ipcRenderer.invoke('fs:unlink', filePath),
+
+    /** Extract a gzip PLY entry from a .respproj archive to a temporary file. */
+    extractProjectGzipEntry: (projectPath, entryName) => ipcRenderer.invoke('project:extractGzipEntry', projectPath, entryName),
 
     /** Get the current browser zoom factor */
     getZoomFactor: () => ipcRenderer.invoke('zoom:get'),
@@ -147,6 +179,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
             return undefined;
         }
     },
+
+    /** Resolve a file-input path captured in preload before context cloning. */
+    getInputFilePath: (name, size) => _inputFilePaths.get(`${name}|${size}`),
 
     /**
      * Retrieve the filesystem path of a drag-dropped file.

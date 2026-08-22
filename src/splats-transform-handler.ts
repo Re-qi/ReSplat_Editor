@@ -30,19 +30,19 @@ class SplatsTransformHandler implements TransformHandler {
         this.events = events;
 
         events.on('pivot.started', (_pivot: Pivot) => {
-            if (this.splat) {
+            if (this.splat && !events.invoke('pivot.detached')) {
                 this.start();
             }
         });
 
         events.on('pivot.moved', (pivot: Pivot) => {
-            if (this.splat) {
+            if (this.splat && !events.invoke('pivot.detached')) {
                 this.update(pivot.transform);
             }
         });
 
         events.on('pivot.ended', (_pivot: Pivot) => {
-            if (this.splat) {
+            if (this.splat && !events.invoke('pivot.detached')) {
                 this.end();
             }
         });

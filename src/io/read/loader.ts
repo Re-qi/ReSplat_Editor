@@ -14,6 +14,9 @@ import {
     DataTable,
     Options,
     ChunkSource,
+    ChunkLayer,
+    ChunkData,
+    ChunkDataPool,
     ReadFileSystem,
     Transform,
     WebPCodec,
@@ -586,6 +589,158 @@ const loadLodDataTable = async (
 };
 
 /**
+ * Open a specific LOD of a multi-LOD file as a lazy ChunkSource WITHOUT
+ * materializing any gaussian data. The caller owns the returned source and
+ * must call `close()` when done (closes the parent sources; `selectLod` views
+ * close is a no-op).
+ *
+ * Used by the LCC2 export's streaming finest-LOD path, which gathers only the
+ * rows each output .sog chunk needs instead of materializing the whole
+ * N×59-column table (~9.7 GB at 43M splats → "Array buffer allocation failed").
+ */
+const openLodSource = async (
+    filename: string,
+    fileSystem: ReadFileSystem,
+    lodIndex: number
+): Promise<{ source: ChunkSource; close: () => Promise<void> }> => {
+    const { sources, zipFs } = await readSources(filename, fileSystem);
+    try {
+        const source = sources[0];
+        const single = source.meta.numLods > 1 ?
+            selectLod(source, lodIndex) :
+            source;
+        return {
+            source: single,
+            close: async () => {
+                for (const s of sources) await s.close();
+                if (zipFs) zipFs.close();
+            }
+        };
+    } catch (e) {
+        for (const s of sources) await s.close();
+        if (zipFs) zipFs.close();
+        throw e;
+    }
+};
+
+// f_rest column count per SH band count (mirrors splat-transform's
+// SH_REST_COUNTS: 3 DC + {0,9,24,45} SH coefficients across RGB).
+const SH_BAND_REST_COUNTS = [0, 9, 24, 45];
+
+/**
+ * Gather an arbitrary set of rows from a single-LOD ChunkSource into a
+ * DataTable with the same column layout `materializeToDataTable` would produce
+ * for those rows (source space, source SH layout, `other`-layer extras).
+ * Rows are emitted in `indices` order; each row appears exactly once.
+ *
+ * Uses one gather `read` — the LCC reader range-reads only the requested
+ * gaussians' records, so peak memory is bounded by `indices.length` instead of
+ * the whole LOD. The pool must be created with `chunkSize >= indices.length`.
+ */
+const gatherSourceRowsToDataTable = async (
+    src: ChunkSource,
+    pool: ChunkDataPool,
+    indices: Uint32Array
+): Promise<DataTable> => {
+    const { meta } = src;
+    const N = indices.length;
+    const want = (layer: ChunkLayer): boolean => meta.availableLayers.has(layer);
+    const wantsPosition = want('position');
+    const wantsGeometric = want('geometric');
+    const wantsColor = want('color');
+    const wantsOther = want('other') && meta.extraColumns.length > 0;
+    const numRest = SH_BAND_REST_COUNTS[meta.shBands] ?? 0;
+    const layouts = meta.layouts;
+
+    const req: {
+        lod: number; indices: Uint32Array; indexOffset: number; count: number;
+        position?: ChunkData; geometric?: ChunkData; color?: ChunkData; other?: ChunkData;
+    } = { lod: 0, indices, indexOffset: 0, count: N };
+    const acquired: ChunkData[] = [];
+    if (wantsPosition) {
+        const c = pool.acquire('position', layouts.position!, N);
+        req.position = c;
+        acquired.push(c);
+    }
+    if (wantsGeometric) {
+        const c = pool.acquire('geometric', layouts.geometric!, N);
+        req.geometric = c;
+        acquired.push(c);
+    }
+    if (wantsColor) {
+        const c = pool.acquire('color', layouts.color!, N);
+        req.color = c;
+        acquired.push(c);
+    }
+    if (wantsOther) {
+        const c = pool.acquire('other', layouts.other!, N);
+        req.other = c;
+        acquired.push(c);
+    }
+
+    try {
+        await src.read(req);
+
+        const columns: Column[] = [];
+        if (wantsPosition) {
+            const x = new Float32Array(N), y = new Float32Array(N), z = new Float32Array(N);
+            const f32 = new Float32Array(req.position!.data, 0, N * 3);
+            for (let i = 0; i < N; i++) {
+                const s = i * 3;
+                x[i] = f32[s]; y[i] = f32[s + 1]; z[i] = f32[s + 2];
+            }
+            columns.push(new Column('x', x), new Column('y', y), new Column('z', z));
+        }
+        if (wantsGeometric) {
+            const rot0 = new Float32Array(N), rot1 = new Float32Array(N);
+            const rot2 = new Float32Array(N), rot3 = new Float32Array(N);
+            const scale0 = new Float32Array(N), scale1 = new Float32Array(N), scale2 = new Float32Array(N);
+            const opacity = new Float32Array(N);
+            const f32 = new Float32Array(req.geometric!.data, 0, N * 8);
+            for (let i = 0; i < N; i++) {
+                const s = i * 8;
+                rot0[i] = f32[s]; rot1[i] = f32[s + 1]; rot2[i] = f32[s + 2]; rot3[i] = f32[s + 3];
+                scale0[i] = f32[s + 4]; scale1[i] = f32[s + 5]; scale2[i] = f32[s + 6]; opacity[i] = f32[s + 7];
+            }
+            columns.push(
+                new Column('rot_0', rot0), new Column('rot_1', rot1),
+                new Column('rot_2', rot2), new Column('rot_3', rot3),
+                new Column('scale_0', scale0), new Column('scale_1', scale1),
+                new Column('scale_2', scale2), new Column('opacity', opacity)
+            );
+        }
+        if (wantsColor) {
+            const dc0 = new Float32Array(N), dc1 = new Float32Array(N), dc2 = new Float32Array(N);
+            const restArrays: Float32Array[] = Array.from({ length: numRest }, () => new Float32Array(N));
+            const stride = 3 + numRest;
+            const f32 = new Float32Array(req.color!.data, 0, N * stride);
+            for (let i = 0; i < N; i++) {
+                const s = i * stride;
+                dc0[i] = f32[s]; dc1[i] = f32[s + 1]; dc2[i] = f32[s + 2];
+                for (let r = 0; r < numRest; r++) restArrays[r][i] = f32[s + 3 + r];
+            }
+            columns.push(new Column('f_dc_0', dc0), new Column('f_dc_1', dc1), new Column('f_dc_2', dc2));
+            for (let r = 0; r < numRest; r++) columns.push(new Column(`f_rest_${r}`, restArrays[r]));
+        }
+        if (wantsOther) {
+            const nExtras = meta.extraColumns.length;
+            const f32 = new Float32Array(req.other!.data, 0, N * nExtras);
+            const u32 = new Uint32Array(req.other!.data, 0, N * nExtras);
+            for (let e = 0; e < nExtras; e++) {
+                const extra = meta.extraColumns[e];
+                const data = extra.type === 'float32' ? new Float32Array(N) : new Uint32Array(N);
+                const src = extra.type === 'float32' ? f32 : u32;
+                for (let i = 0; i < N; i++) data[i] = src[i * nExtras + e] as never;
+                columns.push(new Column(extra.name, data));
+            }
+        }
+        return new DataTable(columns, meta.transform);
+    } finally {
+        for (const c of acquired) c.release();
+    }
+};
+
+/**
  * Stream-load a specific LOD from a multi-LOD file as a GSplatData ready for
  * editing, applying Morton reorder to match the initial import behavior.
  * Used by the LOD switcher (events.invoke('lod.switch')) to replace the
@@ -648,6 +803,8 @@ export {
     loadLodDataTable,
     loadLodGSplatData,
     loadSogDecimated,
+    openLodSource,
+    gatherSourceRowsToDataTable,
     readLodMeta,
     readSogMeta,
     readPlyMeta,

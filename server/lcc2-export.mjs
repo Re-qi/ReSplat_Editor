@@ -342,7 +342,12 @@ const emitAdaptiveTreeJson = (root, nodeRefs) => {
  */
 export async function lcc2ExportToPath(inputPath, outputDir, options, splatLib, nativeAddon, onProgress = null) {
     const { name, lodLevels = 1, shBands = 0, iterations = 10, simplifyMethod = 'nanogs' } = options;
-    const SOG_CHUNK_TARGET = 3_000_000;
+    // SOG chunk target. Lowered to 1M (from 3M): each flushChunk preallocates
+    // chunkCols (59 cols × count × 4B) plus writeSog's gather/texture buffers.
+    // On 1542 万-point scenes a 3M chunk alone was ~0.7 GB + ~0.7 GB gather;
+    // 1M cuts the write-phase peak roughly in half. Node size is unaffected
+    // (SPLIT_TARGET below), only the .sog file granularity.
+    const SOG_CHUNK_TARGET = 1_000_000;
     // Per-cell spatial split threshold: cells below this size chain (LOD link)
     // instead of splitting. Mirrors src/splat-serialize.ts SPLIT_TARGET (~500K,
     // matching the XGRIDS reference ~400K max per cell). A smaller threshold
@@ -359,25 +364,95 @@ export async function lcc2ExportToPath(inputPath, outputDir, options, splatLib, 
     // --- Configure splat-transform for Node.js ---
     WorkerQueue.maxWorkers = 0; // inline mode (no worker_threads for now)
 
-    // --- Stage 1: Read PLY ---
-    report(1, '读取 PLY…');
-    console.log(`\n[lcc2] Reading PLY: ${inputPath}`);
+    // --- Stage 1: Read source ---
+    // Plain PLY goes through the C++ native reader (mmap+scatter, ~4x faster).
+    // Everything else (.sog/.splat/.spz/.ksplat/…) is decoded by splat-transform:
+    // readFile + bakeTransform(→ PLY space) + materializeToDataTable produce the
+    // same columnar form readPlyFast returns, so the rest of the pipeline is
+    // format-agnostic. Previously non-PLY sources routed here always failed
+    // ("sog无法导出lcc2").
+    const lowerInput = inputPath.toLowerCase();
+    const isPlainPly = lowerInput.endsWith('.ply') && !lowerInput.endsWith('.compressed.ply');
+    report(1, '读取源文件…');
     let columns, numRows;
-    if (nativeAddon) {
+    if (isPlainPly && nativeAddon) {
+        console.log(`\n[lcc2] Reading PLY (native): ${inputPath}`);
         const result = nativeAddon.readPlyFast(inputPath);
         columns = result.columns;
         numRows = result.numRows;
     } else {
-        // JS fallback using splat-transform's PlyReader + NodeFileReadSystem
-        // For simplicity, require native addon
-        throw new Error('LCC2 export requires native PLY reader addon');
+        console.log(`\n[lcc2] Reading ${path.extname(inputPath) || 'source'} (splat-transform): ${inputPath}`);
+        const {
+            readFile, getInputFormat, MemoryReadFileSystem, ZipReadFileSystem,
+            bakeTransform, materializeToDataTable, createChunkDataPool, selectLod
+        } = splatLib;
+        const bytes = fs.readFileSync(inputPath);
+        const base = path.basename(inputPath);
+        const inputFormat = getInputFormat(base);
+        const memFs = new MemoryReadFileSystem();
+        memFs.set(base, bytes);
+        let readFs = memFs;
+        let readFilename = base;
+        if (inputFormat === 'sog' && lowerInput.endsWith('.sog')) {
+            // Bundled .sog is a zip container; the sog reader expects the inner
+            // meta.json as the entry point (mirrors the browser loader).
+            readFs = new ZipReadFileSystem(await memFs.createSource(base));
+            readFilename = 'meta.json';
+        }
+        let dataTableFallback;
+        try {
+            const sources = await readFile({ filename: readFilename, inputFormat, fileSystem: readFs });
+            let source = sources[0];
+            // Multi-LOD containers (lcc/lcc2/lod) would otherwise be FLATTENED
+            // (all LODs concatenated) by materializeToDataTable — select LOD 0.
+            if (source.meta.numLods > 1) source = selectLod(source, 0);
+            const pool = createChunkDataPool({ chunkSize: source.meta.chunkSize });
+            try {
+                // bakeTransform applies the source's tagged transform so the
+                // columns come out in PLY space — matching the native path.
+                const baked = bakeTransform(source, Transform.PLY);
+                dataTableFallback = await materializeToDataTable(baked, pool);
+            } finally {
+                pool.destroy();
+                for (const s of sources) s.close();
+            }
+        } finally {
+            readFs.close?.();
+            // Release the raw file bytes (may be 100s of MB) before the
+            // pipeline allocates its per-column Float32Arrays.
+            memFs.set(base, new Uint8Array(0));
+        }
+        columns = dataTableFallback.columns.map(c => ({ name: c.name, data: c.data }));
+        numRows = dataTableFallback.numRows;
     }
     console.log(`[lcc2] Read complete: ${numRows.toLocaleString()} Gaussians, ${((performance.now() - t0) / 1000).toFixed(1)}s`);
+
+    // Cap SH bands to the source's actual bands and trim surplus f_rest
+    // columns (mirrors the browser path's extractDataTable memberNames logic).
+    // Without the cap an SH=0 source (most SOG files) exported with a quality
+    // request would claim fileType='quality' with no SH data; surplus SH=3
+    // columns on a portable request would ship unrotated (the LCC2 coordinate
+    // transform below only rotates the requested band count).
+    let sourceShBands = 0;
+    for (const c of columns) {
+        if (c.name.startsWith('f_rest_')) {
+            const idx = parseInt(c.name.slice(7), 10);
+            sourceShBands = Math.max(sourceShBands, idx < 9 ? 1 : idx < 24 ? 2 : 3);
+        }
+    }
+    const effShBands = Math.min(shBands, sourceShBands);
+    if (effShBands !== shBands) {
+        console.log(`[lcc2] SH capped ${shBands}→${effShBands} (source bands=${sourceShBands})`);
+    }
+    const keepRest = [0, 9, 24, 45][effShBands];
+    if (keepRest < 45) {
+        columns = columns.filter(c => !c.name.startsWith('f_rest_') || parseInt(c.name.slice(7), 10) < keepRest);
+    }
 
     // --- Stage 2: Build DataTable + LCC2 transform ---
     const cols = columns.map(c => new Column(c.name, c.data));
     const dataTable = new DataTable(cols, Transform.PLY);
-    const sceneAabb = applyLcc2CoordinateTransform(dataTable, shBands);
+    const sceneAabb = applyLcc2CoordinateTransform(dataTable, effShBands);
 
     const xs = dataTable.getColumnByName('x').data;
     const ys = dataTable.getColumnByName('y').data;
@@ -537,7 +612,17 @@ export async function lcc2ExportToPath(inputPath, outputDir, options, splatLib, 
 
         // --- Parallel pool v2 (sub-workers write their own spill files) ---
         let poolWorked = false;
-        const usePool = cellPlan.length > 1 && typeof SharedArrayBuffer !== 'undefined';
+        // Budget ~2.5 GB per sub-worker (SAB view + NanoGS working set) and cap
+        // the pool by AVAILABLE RAM — on memory-constrained machines (Electron
+        // renderer already resident) 8 workers pushed past physical RAM → OOM.
+        // When even ONE worker doesn't fit (free RAM < 2.5 GB) skip the pool
+        // entirely: the serial path reads colSrc in place and avoids the ~3.5 GB
+        // SAB copy + column dump/restore, which is the only variant that fits.
+        const MEM_PER_WORKER_GB = 2.5;
+        const freeGb = os.freemem() / 1024 ** 3;
+        const numWorkers = Math.max(1, Math.min(8, Math.floor(freeGb / MEM_PER_WORKER_GB)));
+        const usePool = cellPlan.length > 1 && typeof SharedArrayBuffer !== 'undefined' && numWorkers > 1;
+        console.log(`[lcc2] simplify: ${usePool ? `pool ${numWorkers} worker(s)` : 'serial'} (free RAM ${freeGb.toFixed(1)} GB)`);
         if (usePool) {
             let colDumpPath = null;
             let sab = null; // declared here so the finally can restore columns AFTER it is freed
@@ -563,13 +648,12 @@ export async function lcc2ExportToPath(inputPath, outputDir, options, splatLib, 
                     dataTable.columns.length = 0; // release backing stores
                 }
                 // 3. Spawn pool + greedy dispatch (biggest cells first).
-                const numWorkers = Math.min(os.cpus().length, 8);
                 const layout = { colNames, shColNames, columns };
                 const workerUrl = new URL('./lcc2-simplify-worker.mjs', import.meta.url);
                 const workers = [];
                 for (let i = 0; i < numWorkers; ++i) {
                     workers.push(new Worker(workerUrl, {
-                        resourceLimits: { maxOldGenerationSizeMb: 8192, maxYoungGenerationSizeMb: 1024 }
+                        resourceLimits: { maxOldGenerationSizeMb: 4096, maxYoungGenerationSizeMb: 512 }
                     }));
                 }
                 const planById = new Map(cellPlan.map(c => [c.top.id, c]));
@@ -927,7 +1011,7 @@ export async function lcc2ExportToPath(inputPath, outputDir, options, splatLib, 
         offset: [0, 0, 0],
         shift: [0, 0, 0],
         scale: [1, 1, 1],
-        fileType: shBands > 0 ? 'quality' : 'portable',
+        fileType: effShBands > 0 ? 'quality' : 'portable',
         totalSplats: lodCounts.reduce((a, b) => a + b, 0),
         lodSplats: lodCounts.slice().reverse(), // coarsest-first in meta
         totalLevels: treeDepth,

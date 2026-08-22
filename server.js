@@ -195,6 +195,26 @@ class NodeFileReadFileSystem {
     }
 }
 
+// Directory-backed seekable file system for container formats (.lcc/.lcc2):
+// the reader resolves sibling payload files (index.bin/data.bin/shcoef.bin for
+// LCC, data/3dgs/*.sog for LCC2) against the same root directory.
+class NodeDirReadFileSystem {
+    constructor(rootDir) {
+        this._root = rootDir;
+    }
+
+    async createSource(filename, _progress) {
+        const filePath = path.join(this._root, filename);
+        const fd = fs.openSync(filePath, 'r');
+        const stat = fs.fstatSync(fd);
+        return new NodeFileReadSource(filePath, fd, stat.size);
+    }
+
+    close() {
+        // Sources close their own fds
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Express setup
 // ---------------------------------------------------------------------------
@@ -709,14 +729,14 @@ app.post('/api/lod-convert', upload.single('file'), async (req, res) => {
 // Levels: [5%, 25%, 100%] by default — preview loaded first, higher LOD in background
 // ---------------------------------------------------------------------------
 app.post('/api/lod-convert-path', express.json(), async (req, res) => {
-    const { filePath, levels = [5, 25, 100] } = req.body;
+    const { filePath, levels = [5, 25, 100], lodIndex = 0 } = req.body;
     if (!filePath || !fs.existsSync(filePath)) {
         res.status(400).json({ error: 'Invalid file path' });
         return;
     }
     const originalName = path.basename(filePath);
     try {
-        const result = await lodConvert(filePath, originalName, levels);
+        const result = await lodConvert(filePath, originalName, levels, lodIndex);
         res.json(result);
     } catch (error) {
         console.error('[lod-path] Error:', error);
@@ -727,46 +747,91 @@ app.post('/api/lod-convert-path', express.json(), async (req, res) => {
 // ---------------------------------------------------------------------------
 // LOD Convert (core) — shared by upload and path-based endpoints
 // ---------------------------------------------------------------------------
-async function lodConvert(inputPath, originalName, levels = [100]) {
+async function lodConvert(inputPath, originalName, levels = [100], lodIndex = 0) {
     const t0 = performance.now();
     const lowerName = originalName.toLowerCase();
     const isPly = lowerName.endsWith('.ply') && !lowerName.endsWith('.compressed.ply');
-    if (!isPly) throw new Error('LOD convert currently only supports standard PLY');
 
     const fileSizeMB = fs.existsSync(inputPath) ? fs.statSync(inputPath).size / (1024 * 1024) : 0;
-    console.log(`\n[lod] Received: ${originalName} (${fileSizeMB.toFixed(1)} MB), levels: [${levels.join(', ')}%]`);
+    console.log(`\n[lod] Received: ${originalName} (${fileSizeMB.toFixed(1)} MB), levels: [${levels.join(', ')}%], lodIndex: ${lodIndex}`);
 
     const splatLib = await loadSplatTransform();
     const { Column, DataTable, Transform } = splatLib;
 
-    console.log('[lod] Stage 1/3: Reading PLY...');
-    const result = readPlyFast(inputPath);
-        console.log(`[lod] Read complete (${((performance.now() - t0) / 1000).toFixed(1)}s), ${result.numRows.toLocaleString()} Gaussians`);
-
-        const pristineColumns = result.columns;
-        const sortedLevels = [...levels].sort((a, b) => b - a); // 100% first, then descending
-
-        // — Helper: generate a single LOD level (sampling + compress + serve) —
-        const generateLevel = async (lvl) => {
-            const tLvl = performance.now();
-            console.log(`[lod] Generating ${lvl}% LOD...`);
-
-            let lvlDataTable;
-            if (lvl < 100) {
-                const sampleRatio = lvl / 100;
-                const sampleCount = Math.max(1, Math.floor(result.numRows * sampleRatio));
-                const step = Math.max(1, Math.floor(result.numRows / sampleCount));
-                const sampledColumns = pristineColumns.map(c => {
-                    const src = c.data;
-                    const dst = new Float32Array(sampleCount);
-                    for (let i = 0; i < sampleCount; i++) dst[i] = src[i * step];
-                    return new Column(c.name, dst);
-                });
-                lvlDataTable = new DataTable(sampledColumns, Transform.PLY.clone());
-            } else {
-                const lvlColumns = pristineColumns.map(c => new Column(c.name, c.data));
-                lvlDataTable = new DataTable(lvlColumns, Transform.PLY.clone());
+    // Stage 1: read source → columns in the app's native load space:
+    //   * Standard PLY → C++ fast reader (PLY space, as the app loads PLY).
+    //   * LCC/LCC2/SOG/… → splat-transform lazy reader over a seekable
+    //     directory fs; the requested LOD (default 0 = finest) is materialized
+    //     WITHOUT baking — the LOD switcher preserves the splat's entity
+    //     rotation across levels (docDeserialize), so the data must stay in
+    //     the same source space loadLodDataTable returns, or the level would
+    //     render rotated relative to the others.
+    let columns, numRows;
+    let transformRotation = null; // source-space rotation (non-PLY), for the import path
+    if (isPly) {
+        console.log('[lod] Stage 1/3: Reading PLY...');
+        const result = readPlyFast(inputPath);
+        columns = result.columns;
+        numRows = result.numRows;
+    } else {
+        const ext = path.extname(originalName) || originalName;
+        console.log(`[lod] Stage 1/3: Reading ${ext} (LOD ${lodIndex})...`);
+        const {
+            readFile, getInputFormat, selectLod,
+            materializeToDataTable, createChunkDataPool
+        } = splatLib;
+        const dirFs = new NodeDirReadFileSystem(path.dirname(inputPath));
+        try {
+            const sources = await readFile({
+                filename: originalName,
+                inputFormat: getInputFormat(originalName),
+                options: {},
+                params: [],
+                fileSystem: dirFs
+            });
+            const source = sources[0];
+            const srcRot = source.meta.transform?.rotation;
+            if (srcRot) transformRotation = [srcRot.x, srcRot.y, srcRot.z, srcRot.w];
+            const single = source.meta.numLods > 1 ? selectLod(source, lodIndex) : source;
+            const pool = createChunkDataPool({ chunkSize: single.meta.chunkSize });
+            try {
+                const dataTable = await materializeToDataTable(single, pool);
+                columns = dataTable.columns.map((c) => ({ name: c.name, data: c.data }));
+                numRows = dataTable.numRows;
+            } finally {
+                pool.destroy();
+                for (const s of sources) await s.close();
             }
+        } finally {
+            dirFs.close();
+        }
+    }
+    console.log(`[lod] Read complete (${((performance.now() - t0) / 1000).toFixed(1)}s), ${numRows.toLocaleString()} Gaussians`);
+
+    const pristineColumns = columns;
+    const sortedLevels = [...levels].sort((a, b) => b - a); // 100% first, then descending
+
+    // — Helper: generate a single LOD level (sampling + compress + serve) —
+    const generateLevel = async (lvl) => {
+        const tLvl = performance.now();
+        console.log(`[lod] Generating ${lvl}% LOD...`);
+
+        let lvlDataTable;
+        if (lvl < 100) {
+            const sampleRatio = lvl / 100;
+            const sampleCount = Math.max(1, Math.floor(numRows * sampleRatio));
+            const step = Math.max(1, Math.floor(numRows / sampleCount));
+            const sampledColumns = pristineColumns.map(c => {
+                const src = c.data;
+                const dst = new Float32Array(sampleCount);
+                for (let i = 0; i < sampleCount; i++) dst[i] = src[i * step];
+                return new Column(c.name, dst);
+            });
+            lvlDataTable = new DataTable(sampledColumns, Transform.PLY.clone());
+        } else {
+            const lvlColumns = pristineColumns.map(c => new Column(c.name, c.data));
+            lvlDataTable = new DataTable(lvlColumns, Transform.PLY.clone());
+        }
 
             const writeFilename = originalName.replace(/\.\w+$/, `.lod${lvl}.compressed.ply`);
             let resultData;
@@ -846,7 +911,7 @@ async function lodConvert(inputPath, originalName, levels = [100]) {
 
         const totalSec = ((performance.now() - t0) / 1000).toFixed(1);
         console.log(`[lod] Done! Total: ${totalSec}s`);
-        return { levels: lodResults, totalSeconds: parseFloat(totalSec) };
+        return { levels: lodResults, totalSeconds: parseFloat(totalSec), transformRotation };
 }
 
 // ---------------------------------------------------------------------------
@@ -1064,12 +1129,13 @@ app.post('/api/lcc2-export-path', express.json(), async (req, res) => {
         // Worker threads do NOT inherit --max-old-space-size from the parent
         // (js-flags apply to the main isolate only). The export worker holds
         // the full column set + SharedArrayBuffer copy + stitched NanoGS
-        // snapshots — up to ~11 GB on a 10.5M×59-col scene. resourceLimits
-        // raises the per-isolate heap (execArgv V8 flags are rejected by
-        // Electron: ERR_WORKER_INVALID_EXEC_ARGV).
+        // snapshots. 16 GB let V8 postpone GC until physical RAM is exhausted
+        // on 32 GB machines (Electron renderer already resident) → "JS heap
+        // out of memory while saving file". 8 GB forces earlier, more frequent
+        // GC so the write phase stays within physical RAM.
         resourceLimits: {
-            maxOldGenerationSizeMb: 16384,
-            maxYoungGenerationSizeMb: 2048
+            maxOldGenerationSizeMb: 8192,
+            maxYoungGenerationSizeMb: 1024
         }
     });
     job.worker = worker;
@@ -1107,6 +1173,105 @@ app.post('/api/lcc2-export-path', express.json(), async (req, res) => {
 
 app.get('/api/lcc2-export-status', (req, res) => {
     const job = lcc2Jobs.get(req.query.jobId);
+    if (!job) {
+        res.status(404).json({ error: 'Unknown job id' });
+        return;
+    }
+    res.json({
+        status: job.status,
+        progress: job.progress,
+        text: job.text,
+        result: job.result,
+        error: job.error
+    });
+});
+
+// ---------------------------------------------------------------------------
+// API: HTML Viewer Export (path) — bundled-HTML export for scenes too large
+// for the renderer (scene + extract columns + writeSog repack ≈ 12 GB for a
+// 15.4M×59-col scene → renderer OOM). Same job/worker/progress pattern as
+// the LCC2 export above.
+// ---------------------------------------------------------------------------
+const htmlJobs = new Map(); // jobId → { status, progress, text, result, error, worker }
+let nextHtmlJobId = 1;
+
+app.post('/api/html-export-path', express.json(), async (req, res) => {
+    const { filePath, outputPath, shBands, iterations, viewerSettings } = req.body;
+    if (!filePath || !fs.existsSync(filePath)) {
+        res.status(400).json({ error: 'Invalid file path' });
+        return;
+    }
+    if (!outputPath) {
+        res.status(400).json({ error: 'Invalid output path' });
+        return;
+    }
+    if (!fs.existsSync(path.dirname(outputPath))) {
+        res.status(400).json({ error: 'Invalid output directory' });
+        return;
+    }
+
+    console.log(`\n[html-export] Request: ${path.basename(filePath)} → ${outputPath}`);
+
+    const jobId = String(nextHtmlJobId++);
+    const job = { status: 'running', progress: 0, text: '正在启动…', result: null, error: null, worker: null };
+    htmlJobs.set(jobId, job);
+
+    const workerPath = path.join(__dirname, 'server', 'html-export-worker.mjs');
+    const worker = new Worker(workerPath, {
+        workerData: {
+            filePath,
+            outputPath,
+            options: {
+                shBands: shBands ?? 3,
+                iterations: iterations ?? 0,
+                viewerSettings
+            }
+        },
+        // A 6 GB cap (not 8 GB) keeps V8 collecting aggressively. ArrayBuffer
+        // backing stores are external and not bounded by this, but a smaller
+        // old-gen cap makes the post-spill collection fire sooner. (--expose-gc
+        // is not a valid worker execArgv; the worker enables gc() itself via
+        // v8.setFlagsFromString.)
+        resourceLimits: {
+            maxOldGenerationSizeMb: 6144,
+            maxYoungGenerationSizeMb: 1024
+        }
+    });
+    job.worker = worker;
+
+    worker.on('message', (msg) => {
+        if (msg.type === 'progress') {
+            job.progress = msg.progress;
+            job.text = msg.text;
+        } else if (msg.type === 'done') {
+            job.status = 'done';
+            job.result = msg.result;
+            job.progress = 100;
+            job.text = '导出完成';
+        } else if (msg.type === 'error') {
+            job.status = 'error';
+            job.error = msg.error;
+        }
+    });
+    worker.on('error', (err) => {
+        job.status = 'error';
+        job.error = err.message || 'HTML export worker error';
+    });
+    worker.on('exit', (code) => {
+        if (job.status === 'running') {
+            job.status = 'error';
+            job.error = `HTML export worker exited with code ${code}`;
+        }
+        job.worker = null;
+        // Keep the result readable for a while, then drop the job.
+        setTimeout(() => htmlJobs.delete(jobId), 10 * 60 * 1000);
+    });
+
+    res.json({ jobId });
+});
+
+app.get('/api/html-export-status', (req, res) => {
+    const job = htmlJobs.get(req.query.jobId);
     if (!job) {
         res.status(404).json({ error: 'Unknown job id' });
         return;

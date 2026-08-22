@@ -28,13 +28,13 @@
     margin-left: 5px;
 }
 
-// 位置和旋转行标签保持70px宽度
-#transform > div:nth-child(1) > .transform-label,
+// 旋转行标签保持70px宽度（无额外按钮）
 #transform > div:nth-child(2) > .transform-label {
     width: 70px;
 }
 
-// 缩放行标签右侧间距
+// 位置行和缩放行标签：窄标签 + 右侧按钮，按钮同列对齐
+#transform > div:nth-child(1) > .transform-label,
 #transform > div:nth-child(3) > .transform-label {
     margin-right: 6px;
 }
@@ -59,6 +59,36 @@
     &:hover {
         background-color: $bcg-dark;
     }
+
+    // 「仅控制原点」模式激活时高亮
+    &.active {
+        background-color: $bcg-dark;
+        color: #f60;
+    }
+
+    & > svg {
+        width: 16px;
+        height: 16px;
+        fill: currentColor;
+    }
+}
+
+// 拖拽控制原点按钮时跟随鼠标的图标副本
+.transform-drag-ghost {
+    position: fixed;
+    left: 0;
+    top: 0;
+    width: 22px;
+    height: 22px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    pointer-events: none;
+    z-index: 9999;
+    opacity: 0.9;
+    color: $text-primary;
+    // 以光标为中心（translate 百分比相对自身尺寸，不受 UI 缩放影响）
+    transform: translate(-50%, -50%);
 
     & > svg {
         width: 16px;

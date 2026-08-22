@@ -700,9 +700,14 @@ class Camera extends Element {
         // Convert normalized depth to linear depth
         const linearDepth = closestDepth * (this.far - this.near) + this.near;
 
-        // Convert normalized coordinates to screen pixels for getRay
-        const screenX = x * scene.canvas.clientWidth;
-        const screenY = y * scene.canvas.clientHeight;
+        // Convert normalized coordinates to screen pixels for getRay.
+        // Use getBoundingClientRect (visible size) to match PlayCanvas's
+        // CameraComponent.screenToWorld, which uses device.clientRect.
+        // zoom-manager applies style.zoom to <canvas>, making clientWidth
+        // differ from the visible size (see splat-pick.ts).
+        const canvasRect = scene.canvas.getBoundingClientRect();
+        const screenX = x * canvasRect.width;
+        const screenY = y * canvasRect.height;
 
         // Calculate world position from ray and depth
         this.getRay(screenX, screenY, ray);

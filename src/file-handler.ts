@@ -5,7 +5,7 @@ import { BackendClient } from './backend';
 import { CreateDropHandler } from './drop-handler';
 import { ElementType } from './element';
 import { Events } from './events';
-import { BrowserFileSystem, loadGSplatData, MappedReadFileSystem, readSogMeta, readPlyMeta, validateGSplatData } from './io';
+import { BrowserFileSystem, ElectronFileSystem, ElectronLccReadFileSystem, loadGSplatData, MappedReadFileSystem, readSogMeta, readPlyMeta, validateGSplatData } from './io';
 import { createDirectoryFileSystem, DirectoryFileSystem } from './io/write';
 import { Scene } from './scene';
 import { Splat } from './splat';
@@ -15,6 +15,16 @@ import { localize } from './ui/localization';
 
 // ts compiler and vscode find this type, but eslint does not
 type FilePickerAcceptType = unknown;
+
+// Resolve a native path before a File crosses the context-isolation boundary.
+// The preload fallback handles Chromium versions where File.path and
+// webUtils.getPathForFile() are unavailable in the renderer.
+const electronFilePath = (file: File): string | undefined => {
+    const api = (window as any).electronAPI;
+    return (file as any).path ||
+        api?.getFilePathForFile?.(file) ||
+        api?.getInputFilePath?.(file.name, file.size);
+};
 
 // Export completion sound effects. Files live in static/audio/ and are copied
 // to dist/static/audio by rollup (copy-and-watch). Audio failures are always
@@ -140,6 +150,15 @@ const allImportTypes = {
     }
 };
 
+// Convert a FilePickerAcceptType entry to an Electron dialog filter
+// ({ name, extensions }) for the native save dialog.
+const electronFiltersFor = (fileType: string) => {
+    const picker = filePickerTypes[fileType] as { description?: string; accept?: Record<string, string[]> } | undefined;
+    if (!picker?.accept) return undefined;
+    const extensions = Object.values(picker.accept).flat().map(ext => ext.replace(/^\./, ''));
+    return [{ name: picker.description ?? fileType, extensions }];
+};
+
 // determine if all files share a common filename prefix followed by
 // a frame number, e.g. "frame0001.ply", "frame0002.ply", etc.
 const isPlySequence = (filenames: string[]) => {
@@ -186,6 +205,22 @@ type ImportFile = {
     handle?: FileSystemFileHandle;
     filePath?: string;  // Electron: absolute path from File.path extension
 };
+
+// Keep the file-picker and drag/drop seams identical after the browser has
+// produced a File.  In Electron the path must be resolved while the original
+// File is still available; this is what lets container imports discover their
+// sibling files without loading the whole container into renderer memory.
+const toImportFile = (
+    file: File,
+    filename = file.name,
+    handle?: FileSystemFileHandle,
+    pathOverride?: string
+): ImportFile => ({
+    filename,
+    contents: file,
+    handle,
+    filePath: pathOverride ?? electronFilePath(file)
+});
 
 const SOG_LARGE_COUNT = 15_000_000;
 const PLY_MAX_MEMORY_MB = 6_000;    // ~6 GB peak memory; browser V8 heap ~4GB but splat-transform streams
@@ -302,6 +337,11 @@ const loadImagesTxt = async (file: ImportFile, events: Events) => {
 // textures nested under 0_0/, 0_1/, … We walk the whole tree and add each
 // sibling under its path relative to the container's directory (forward
 // slashes) so the loader can resolve it the same way as a folder drop.
+// Siblings above SIBLING_MAX_BYTES are NOT read into renderer memory — they
+// stream through the backend's /api/read-file endpoint instead (see the
+// resolveUrl wiring in importSplatModel), avoiding multi-GB IPC transfers.
+const SIBLING_MAX_BYTES = 64 * 1024 * 1024;
+
 const resolveContainerSiblings = async (files: ImportFile[], events: Events): Promise<ImportFile[]> => {
     const electronAPI = (window as any).electronAPI;
     if (!electronAPI?.isElectron) return files;
@@ -329,7 +369,7 @@ const resolveContainerSiblings = async (files: ImportFile[], events: Events): Pr
     events.fire('startSpinner');
     events.fire('spinnerText', localize('popup.lcc-resolving-siblings'));
     try {
-        let entries: Array<{ path: string, rel: string }> = [];
+        let entries: Array<{ path: string, rel: string, size?: number }> = [];
         try {
             entries = await electronAPI.walkDir(dirPath);
         } catch (err) {
@@ -345,6 +385,9 @@ const resolveContainerSiblings = async (files: ImportFile[], events: Events): Pr
             if (lower.endsWith('lod-meta.json')) continue;
             if (lower.endsWith('.lcc') || lower.endsWith('.lcc2')) continue;
             if (!lower.endsWith('.json') && !lower.endsWith('.webp') && !lower.endsWith('.bin') && !lower.endsWith('.sog') && !lower.endsWith('.spz')) continue;
+            // GB-scale files (LCC data.bin/shcoef.bin) stay on disk — read on
+            // demand through the backend's Range-capable /api/read-file endpoint.
+            if ((e.size ?? 0) > SIBLING_MAX_BYTES) continue;
             try {
                 const data: Uint8Array = await electronAPI.readFile(e.path);
                 // key by relative path so nested ssog/LCC2 chunks resolve the
@@ -404,16 +447,29 @@ const initFileHandler = (scene: Scene, events: Events, dropTarget: HTMLElement) 
             const mainFile = files[mainIndex];
             const baseUrl = mainFile.url ? new URL('.', new URL(mainFile.url, window.location.href)).href : undefined;
 
-            // Create file system with all local files, falling back to URL loading
-            const fileSystem = new MappedReadFileSystem(baseUrl);
-            files.forEach((f) => {
-                if (f.contents) fileSystem.addFile(f.filename, f.contents);
-            });
-
             // Multi-file container formats must load by their relative name so the
             // library resolves sibling files against the file system's baseUrl
             const lowerMainFilename = mainFile.filename.toLowerCase();
             const isContainer = lowerMainFilename === 'meta.json' || lowerMainFilename === 'lod-meta.json' || lowerMainFilename.endsWith('.lcc') || lowerMainFilename.endsWith('.lcc2');
+
+            // Create file system with all local files, falling back to URL loading.
+            // Electron + local container file (LCC/LCC2/SSOG): sibling payload
+            // files stream from disk over IPC byte-range reads
+            // (ElectronLccReadFileSystem). This avoids shipping GB-scale
+            // data.bin/shcoef.bin over IPC AND Chromium's proxy-sensitive
+            // network stack — fetch to localhost can fail behind a system proxy.
+            let fileSystem: MappedReadFileSystem | ElectronLccReadFileSystem;
+            const isElectron = !!(window as any).electronAPI?.isElectron;
+            if (isContainer && mainFile.filePath && isElectron) {
+                const lastSep = Math.max(mainFile.filePath.lastIndexOf('/'), mainFile.filePath.lastIndexOf('\\'));
+                const dir = mainFile.filePath.substring(0, lastSep + 1).replace(/\\/g, '/');
+                fileSystem = new ElectronLccReadFileSystem(dir);
+            } else {
+                fileSystem = new MappedReadFileSystem(baseUrl);
+            }
+            files.forEach((f) => {
+                if (f.contents) fileSystem.addFile(f.filename, f.contents);
+            });
 
             // For URL-only single file, use full URL as filename
             const filename = (files.length === 1 && !mainFile.contents && mainFile.url && !isContainer) ?
@@ -455,48 +511,47 @@ const initFileHandler = (scene: Scene, events: Events, dropTarget: HTMLElement) 
                             console.log('[import] No local file/path, falling through to direct load');
                         } else if (filePath) {
                             // Electron: use path-based API to avoid 6GB+ HTTP upload
-                            console.log(`[auto-lod] Large PLY detected: ${meta.count.toLocaleString()} Gaussians, ~${meta.estMemMB} MB → compressing (path)`);
+                            console.log(`[preprocess] Large PLY detected: ${meta.count.toLocaleString()} Gaussians, ~${meta.estMemMB} MB → compressing (path)`);
                             events.fire('startSpinner');
                             const fileSizeMB = file?.size ? (file.size / (1024 * 1024)).toFixed(0) : '?';
                             events.fire('spinnerText', `正在压缩 (${fileSizeMB} MB)...`);
                             try {
                                 const tLod = performance.now();
                                 const lodResult = await BackendClient.lodConvertPath(filePath, [100]);
-                                console.log(`[auto-lod] Server processing: ${((performance.now() - tLod) / 1000).toFixed(1)}s`);
+                                console.log(`[preprocess] Server processing: ${((performance.now() - tLod) / 1000).toFixed(1)}s`);
                                 events.fire('spinnerText', '正在加载预览...');
-                                await loadLODLevels(lodResult, importFiles, events, mainFile.filename);
+                                await loadPreprocessedPly(lodResult, importFiles, events, mainFile.filename, filePath);
                                 return;
                             } catch (err) {
-                                console.error('[auto-lod] Failed:', err);
+                                console.error('[preprocess] Failed:', err);
                                 await events.invoke('showPopup', {
                                     type: 'error',
-                                    header: 'LOD 处理失败',
-                                    message: `自动分级加载失败: ${err.message || err}`
+                                    header: '大文件预处理失败',
+                                    message: `大文件预处理失败: ${err.message || err}`
                                 });
                                 return;
                             } finally {
                                 events.fire('stopSpinner');
                             }
                         } else {
-                            // Auto LOD progressive loading — no user prompt.
                             // Upload mode: entire file sent as FormData (slow for large files).
-                            console.log(`[auto-lod] Large PLY detected: ${meta.count.toLocaleString()} Gaussians, ~${meta.estMemMB} MB → uploading (${((file?.size ?? 0) / (1024 * 1024)).toFixed(1)} MB)...`);
+                            console.log(`[preprocess] Large PLY detected: ${meta.count.toLocaleString()} Gaussians, ~${meta.estMemMB} MB → uploading (${((file?.size ?? 0) / (1024 * 1024)).toFixed(1)} MB)...`);
                             events.fire('startSpinner');
                             const uploadSizeMB = ((file?.size ?? 0) / (1024 * 1024)).toFixed(0);
                             events.fire('spinnerText', `正在上传 (${uploadSizeMB} MB)...`);
                             try {
                                 const tLod = performance.now();
                                 const lodResult = await BackendClient.lodConvert(file, [100]);
-                                console.log(`[auto-lod] Upload + server: ${((performance.now() - tLod) / 1000).toFixed(1)}s`);
+                                console.log(`[preprocess] Upload + server: ${((performance.now() - tLod) / 1000).toFixed(1)}s`);
                                 events.fire('spinnerText', '正在加载预览...');
-                                await loadLODLevels(lodResult, importFiles, events, mainFile.filename);
-                                return; // LOD loading handles its own scene.add
+                                await loadPreprocessedPly(lodResult, importFiles, events, mainFile.filename);
+                                return; // preprocessing handles its own scene.add
                             } catch (err) {
-                                console.error('[auto-lod] Failed:', err);
+                                console.error('[preprocess] Failed:', err);
                                 await events.invoke('showPopup', {
                                     type: 'error',
-                                    header: 'LOD 处理失败',
-                                    message: `自动分级加载失败: ${err.message || err}`
+                                    header: '大文件预处理失败',
+                                    message: `大文件预处理失败: ${err.message || err}`
                                 });
                                 return;
                             } finally {
@@ -513,7 +568,8 @@ const initFileHandler = (scene: Scene, events: Events, dropTarget: HTMLElement) 
 
             const tLoad = performance.now();
             const model = await scene.assetLoader.load(
-                filename, fileSystem, animationFrame, false, undefined
+                filename, fileSystem, animationFrame, false, undefined,
+                isContainer ? mainFile.filePath : undefined
             );
             console.log(`[import] assetLoader.load: ${((performance.now() - tLoad) / 1000).toFixed(1)}s`);
             if (!model) {
@@ -566,7 +622,7 @@ const initFileHandler = (scene: Scene, events: Events, dropTarget: HTMLElement) 
 
                 if (filename.endsWith('.respproj')) {
                     // load respproj document
-                    await events.invoke('doc.load', files[i].contents ?? (await fetch(files[i].url)).arrayBuffer(), files[i].handle);
+                    await events.invoke('doc.load', files[i].contents ?? (await fetch(files[i].url)).arrayBuffer(), files[i].handle, files[i].filePath);
                 } else if (['.ply', '.splat', '.sog', '.ksplat', '.spz'].some(ext => filename.endsWith(ext))) {
                     // load gaussian splat model
                     const model = await importSplatModel([files[i]], animationFrame);
@@ -605,17 +661,14 @@ const initFileHandler = (scene: Scene, events: Events, dropTarget: HTMLElement) 
         fileSelector.setAttribute('multiple', 'true');
 
         fileSelector.onchange = () => {
-            const files = [];
-            for (let i = 0; i < fileSelector.files.length; i++) {
-                const file = fileSelector.files[i];
-                const fp = (file as any).path || (window as any).electronAPI?.getFilePathForFile?.(file);
-                console.log(`[import] file picker: ${file.name}, path=${fp ?? 'none'}, sizeMB=${(file.size / (1024 * 1024)).toFixed(1)}`);
-                files.push({
-                    filename: file.name,
-                    contents: file,
-                    filePath: fp  // Electron: absolute path via webUtils or File.path
-                });
+            const files: ImportFile[] = [];
+            for (const file of Array.from(fileSelector.files ?? [])) {
+                const imported = toImportFile(file);
+                console.log(`[import] file picker: ${imported.filename}, path=${imported.filePath ?? 'none'}, sizeMB=${(file.size / (1024 * 1024)).toFixed(1)}`);
+                files.push(imported);
             }
+            // Use the same batch import path as drag/drop. This is important
+            // for multi-file containers and PLY sequences.
             importFiles(files);
             fileSelector.value = '';
         };
@@ -627,14 +680,9 @@ const initFileHandler = (scene: Scene, events: Events, dropTarget: HTMLElement) 
         importFiles(entries.map((e) => {
             const fp = (e.file as any).path ||
                 (window as any).electronAPI?.getDropFilePath?.(e.filename, e.file.size) ||
-                (window as any).electronAPI?.getFilePathForFile?.(e.file);
+                electronFilePath(e.file);
             console.log(`[import] drop entry: ${e.filename}, path=${fp ?? 'none'}, sizeMB=${(e.file.size / (1024 * 1024)).toFixed(1)}`);
-            return {
-                filename: e.filename,
-                contents: e.file,
-                handle: e.handle,
-                filePath: fp  // Electron: absolute path via webUtils or File.path
-            };
+            return toImportFile(e.file, e.filename, e.handle, fp);
         }));
     });
 
@@ -712,15 +760,22 @@ const initFileHandler = (scene: Scene, events: Events, dropTarget: HTMLElement) 
         events.fire('startSpinner');
         events.fire('spinnerText', localize('popup.lcc-resolving-siblings'));
         try {
-            const entries: Array<{ path: string, rel: string }> = await electronAPI.walkDir(folderPath);
+            const entries: Array<{ path: string, rel: string, size?: number }> = await electronAPI.walkDir(folderPath);
             const files: ImportFile[] = [];
             for (const e of entries) {
                 const lower = e.rel.toLowerCase();
                 // Only splat-container payload files — skips license.txt etc.
-                if (!lower.endsWith('.json') && !lower.endsWith('.webp') && !lower.endsWith('.bin') && !lower.endsWith('.sog') && !lower.endsWith('.spz')) continue;
+                if (!lower.endsWith('.json') && !lower.endsWith('.webp') && !lower.endsWith('.bin') && !lower.endsWith('.sog') && !lower.endsWith('.spz') && !lower.endsWith('.lcc') && !lower.endsWith('.lcc2')) continue;
+                // GB-scale LCC payload files stay on disk and stream through the
+                // backend /api/read-file endpoint (see resolveUrl in importSplatModel).
+                if ((e.size ?? 0) > SIBLING_MAX_BYTES) continue;
                 try {
                     const data: Uint8Array = await electronAPI.readFile(e.path);
-                    files.push({ filename: e.rel, contents: new Blob([data as BlobPart]) });
+                    // key by relative path so nested ssog/LCC2 chunks resolve the
+                    // same way as a folder drop. Containers (LCC meta) keep their
+                    // absolute path so sibling resolution can use the backend.
+                    const isContainer = lower.endsWith('.lcc') || lower.endsWith('.lcc2') || lower === 'meta.json' || lower === 'lod-meta.json';
+                    files.push({ filename: e.rel, contents: new Blob([data as BlobPart]), filePath: isContainer ? e.path : undefined });
                 } catch (err) {
                     console.warn(`[import] importFolder: readFile failed for ${e.rel}`, err);
                 }
@@ -863,15 +918,20 @@ const initFileHandler = (scene: Scene, events: Events, dropTarget: HTMLElement) 
         }
     });
 
-    // Progressive LOD loader: load lowest level first, then replace with higher levels
-    const loadLODLevels = async (
+    // Load a large PLY preprocessed by the backend into a single compressed-ply
+    // model. The backend reads the raw file with the C++ fast reader and
+    // compresses it (GPU layout, ~16 bytes/splat) so the renderer never holds
+    // the raw multi-GB parse — this is the only path that can open very large
+    // PLY files (estMemMB > PLY_MAX_MEMORY_MB) without OOM.
+    const loadPreprocessedPly = async (
         lodResult: { levels: Array<{ level: number; count: number; url: string; sizeBytes: number }> },
         importFn: (files: ImportFile[], animFrame: boolean) => Promise<Splat[]>,
         evts: Events,
-        originalFilename: string
+        originalFilename: string,
+        srcFilePath?: string
     ) => {
-        const levels = lodResult.levels.sort((a, b) => a.level - b.level);
-        if (levels.length === 0) return;
+        const level = lodResult.levels[0];
+        if (!level) return;
 
         // Download helper: XHR with progress callback (blob avoids double download)
         const downloadWithProgress = (url: string, textFn: (pct: number) => string): Promise<Blob> => {
@@ -893,56 +953,27 @@ const initFileHandler = (scene: Scene, events: Events, dropTarget: HTMLElement) 
             });
         };
 
-        // Load lowest LOD first — this is the fast preview that makes the
-        // model interactive. Stop the spinner once the model is visible.
-        const preview = levels[0];
-        const tPreviewStart = performance.now();
-        const previewSizeMB = (preview.sizeBytes / (1024 * 1024)).toFixed(1);
-        console.log(`[LOD] Loading preview: ${preview.level}% (${preview.count.toLocaleString()} Gaussians, ${previewSizeMB} MB)`);
+        const sizeMB = (level.sizeBytes / (1024 * 1024)).toFixed(1);
+        console.log(`[preprocess] Loading backend compressed-ply: ${level.count.toLocaleString()} Gaussians, ${sizeMB} MB`);
 
-        // Download with progress → pass as blob to skip redundant HTTP fetch in loader
-        const previewBlob = await downloadWithProgress(
-            preview.url,
-            pct => `正在加载预览 ${pct}% (${previewSizeMB} MB)`
-        );
-        console.log(`[LOD] Preview downloaded: ${((performance.now() - tPreviewStart) / 1000).toFixed(1)}s`);
+        const tStart = performance.now();
+        const blob = await downloadWithProgress(level.url, pct => `正在加载预览 ${pct}% (${sizeMB} MB)`);
+        console.log(`[preprocess] Downloaded: ${((performance.now() - tStart) / 1000).toFixed(1)}s`);
+
         const tParse = performance.now();
+        const models = await importFn([{ filename: `lod_${level.level}.compressed.ply`, contents: blob }], false);
+        console.log(`[preprocess] Parsed: ${((performance.now() - tParse) / 1000).toFixed(1)}s`);
 
-        const models = await importFn([{ filename: `lod_${preview.level}.compressed.ply`, contents: previewBlob }], false);
-        console.log(`[LOD] Preview parsed: ${((performance.now() - tParse) / 1000).toFixed(1)}s`);
-        let currentModel = models[0];
-        if (currentModel) currentModel.name = originalFilename;
-        evts.fire('stopSpinner');
-
-        // Load remaining levels in background, replacing each time
-        for (let i = 1; i < levels.length; i++) {
-            const nextLevel = levels[i];
-            const nextSizeMB = (nextLevel.sizeBytes / (1024 * 1024)).toFixed(1);
-            const tUpgrade = performance.now();
-            console.log(`[LOD] Upgrading to ${nextLevel.level}% (${nextLevel.count.toLocaleString()} Gaussians, ${nextSizeMB} MB)`);
-            try {
-                const upgradeBlob = await downloadWithProgress(
-                    nextLevel.url,
-                    pct => `正在下载 ${nextLevel.level}% ${pct}% (${nextSizeMB} MB)`
-                );
-                const tUpgradeParse = performance.now();
-                const nextModels = await importFn([{ filename: `lod_${nextLevel.level}.compressed.ply`, contents: upgradeBlob }], false);
-                console.log(`[LOD] Upgrade parsed: ${((performance.now() - tUpgradeParse) / 1000).toFixed(1)}s`);
-                const nextModel = nextModels[0];
-                if (nextModel) nextModel.name = originalFilename;
-                if (nextModel && currentModel) {
-                    scene.remove(currentModel);
-                    currentModel.destroy();
-                    await scene.add(nextModel);
-                    currentModel = nextModel;
-                }
-            } catch (err) {
-                console.warn(`[LOD] Failed to load level ${nextLevel.level}%:`, err);
-            }
-            console.log(`[LOD] Upgrade total: ${((performance.now() - tUpgrade) / 1000).toFixed(1)}s`);
+        const model = models[0];
+        if (model) {
+            model.name = originalFilename;
+            // Keep the ORIGINAL source path so later exports (LCC2 backend
+            // routing, re-export) can resolve the raw file, not the temp
+            // compressed-ply blob.
+            if (srcFilePath) model.originalFilePath = srcFilePath;
         }
-        const totalClient = ((performance.now() - tPreviewStart) / 1000).toFixed(1);
-        console.log(`[LOD] All levels loaded (total client: ${totalClient}s)`);
+        evts.fire('stopSpinner');
+        return model;
     };
 
     // open a folder
@@ -1056,7 +1087,25 @@ const initFileHandler = (scene: Scene, events: Events, dropTarget: HTMLElement) 
                     (exportType === 'standardPly') ? 'standardPly' :
                         (exportType === 'sog') ? 'sog' : 'splat';
 
-        if (hasFilePicker) {
+        if (window.electronAPI?.saveFileDialog) {
+            // Electron: native save dialog FIRST (before showSaveFilePicker).
+            // Electron's Chromium exposes showSaveFilePicker, but its
+            // FileSystemWritableFileStream routes through BrowserDownloadWriter
+            // which accumulates the whole file in renderer memory → OOM on
+            // GB-scale single-file exports. The native dialog returns a disk
+            // path, which enables both the streaming IPC writer and, for large
+            // scenes, backend export (which needs a real file path).
+            try {
+                const filePath = await window.electronAPI.saveFileDialog({
+                    defaultPath: options.filename,
+                    filters: electronFiltersFor(fileType)
+                });
+                if (!filePath) return;  // user cancelled
+                await events.invoke('scene.write', fileType, options, filePath);
+            } catch (error) {
+                console.error(error);
+            }
+        } else if (hasFilePicker) {
             try {
                 const fileHandle = await window.showSaveFilePicker({
                     id: 'ReSplatFileExport',
@@ -1074,7 +1123,7 @@ const initFileHandler = (scene: Scene, events: Events, dropTarget: HTMLElement) 
         }
     });
 
-    events.function('scene.write', async (fileType: FileType, options: SceneExportOptions, stream?: FileSystemWritableFileStream | FileSystem) => {
+    events.function('scene.write', async (fileType: FileType, options: SceneExportOptions, stream?: FileSystemWritableFileStream | FileSystem | string) => {
         // SOG, viewer, and LCC2 exports have their own progress UI, other formats use spinner
         const useSpinner = fileType !== 'sog' && fileType !== 'htmlViewer' && fileType !== 'packageViewer' && fileType !== 'lcc2';
 
@@ -1091,11 +1140,15 @@ const initFileHandler = (scene: Scene, events: Events, dropTarget: HTMLElement) 
             const { filename, splatIdx, serializeSettings, viewerExportSettings } = options;
 
             // LCC2 receives a directory-capable FileSystem (DirectoryFileSystem or
-            // MemoryFileSystem fallback) directly from scene.export; other formats
-            // wrap the single-file picker stream in a BrowserFileSystem.
+            // MemoryFileSystem fallback) directly from scene.export. Electron
+            // single-file exports receive an absolute path (string) from the
+            // native save dialog and stream through the write IPC. Other
+            // formats wrap the single-file picker stream in a BrowserFileSystem.
             const fs: FileSystem = fileType === 'lcc2' ?
                 stream as FileSystem :
-                new BrowserFileSystem(filename, stream as FileSystemWritableFileStream | undefined);
+                typeof stream === 'string' ?
+                    new ElectronFileSystem(stream) :
+                    new BrowserFileSystem(filename, stream as FileSystemWritableFileStream | undefined);
 
             const splats = splatIdx === 'all' ? getSplats() : [getSplats()[splatIdx]];
 
@@ -1134,15 +1187,27 @@ const initFileHandler = (scene: Scene, events: Events, dropTarget: HTMLElement) 
                     const totalSplats = splats.reduce((sum, s) => sum + s.numSplats, 0);
                     const outputRoot = (fs as DirectoryFileSystem).getRootPath?.();
 
-                    // Route to backend for large datasets (>10M splats) when a
-                    // PLY file path and output directory are available (Electron).
-                    // The backend re-simplifies the whole dataset from a single
-                    // PLY and cannot merge a multi-LOD LCC file's own LOD levels
-                    // — keep scenes containing such splats on the browser path,
-                    // where serializeLcc2 merges each output level with the LCC
+                    // Route to backend for large datasets (>10M splats; >2M for
+                    // nanogs) when a source file path and output directory are
+                    // available (Electron). The backend re-simplifies the whole
+                    // dataset from a single source file and cannot merge a
+                    // multi-LOD LCC file's own LOD levels — keep scenes
+                    // containing such splats on the browser path, where
+                    // serializeLcc2 merges each output level with the LCC
                     // source's corresponding LOD.
                     const hasLccPreserve = splats.some(s => !!s.lccFilePath && s.lodCounts.length >= 2 && !!s.lodEditLog);
-                    const plyPath = splats[0]?.originalFilePath;
+                    const srcPath = splats[0]?.originalFilePath;
+                    // Backend-readable single-file formats. Plain .ply uses the
+                    // native C++ reader; .sog/.splat/.spz/.ksplat are decoded by
+                    // splat-transform in the backend worker. NOT included:
+                    // .compressed.ply (custom chunked layout only the editor
+                    // understands) and directory containers (.lcc/.lcc2/
+                    // lod-meta.json need their sibling data files) — those stay
+                    // on the browser path.
+                    const lowerSrc = (srcPath ?? '').toLowerCase();
+                    const backendReadable =
+                        (lowerSrc.endsWith('.ply') && !lowerSrc.endsWith('.compressed.ply')) ||
+                        ['.sog', '.splat', '.spz', '.ksplat'].some(ext => lowerSrc.endsWith(ext));
                     // Desktop build: the backend worker runs NanoGS off the
                     // main thread with no splat cap, so intelligent (nanogs)
                     // requests above the browser main-thread cap (2M, mirrors
@@ -1151,19 +1216,27 @@ const initFileHandler = (scene: Scene, events: Events, dropTarget: HTMLElement) 
                     const wantNanogs = options.simplifyMethod === 'nanogs';
                     const nanogsBrowserCap = 2_000_000;
                     const backendThreshold = wantNanogs ? nanogsBrowserCap : 10_000_000;
-                    if (totalSplats > backendThreshold && plyPath && outputRoot && await BackendClient.isAvailable() && !hasLccPreserve) {
-                        console.warn(`[LCC2] Routing ${totalSplats.toLocaleString()} splats to backend (${plyPath})`);
+                    if (totalSplats > backendThreshold && srcPath && backendReadable && outputRoot && await BackendClient.isAvailable() && !hasLccPreserve) {
+                        console.warn(`[LCC2] Routing ${totalSplats.toLocaleString()} splats to backend (${srcPath})`);
                         events.fire('progressStart', 'Exporting LCC2');
                         events.fire('progressUpdate', { text: 'Exporting via backend…', progress: 0 });
-                        await BackendClient.lcc2ExportPath(plyPath, outputRoot, {
-                            name: baseName,
-                            lodLevels: options.lodLevels ?? 1,
-                            shBands: serializeSettings.maxSHBands ?? 0,
-                            iterations: options.sogIterations ?? 10,
-                            simplifyMethod: options.simplifyMethod ?? 'nanogs'
-                        }, ({ progress, text }) => {
-                            events.fire('progressUpdate', { text, progress });
-                        });
+                        // Long backend export: pause the render loop so the GPU
+                        // stops per-frame sort/rasterize work while the worker
+                        // consumes RAM/disk. DOM progress UI is unaffected.
+                        scene.suspendRendering();
+                        try {
+                            await BackendClient.lcc2ExportPath(srcPath, outputRoot, {
+                                name: baseName,
+                                lodLevels: options.lodLevels ?? 1,
+                                shBands: serializeSettings.maxSHBands ?? 0,
+                                iterations: options.sogIterations ?? 10,
+                                simplifyMethod: options.simplifyMethod ?? 'nanogs'
+                            }, ({ progress, text }) => {
+                                events.fire('progressUpdate', { text, progress });
+                            });
+                        } finally {
+                            scene.resumeRendering();
+                        }
                         events.fire('progressEnd');
                         break;
                     }
@@ -1215,7 +1288,84 @@ const initFileHandler = (scene: Scene, events: Events, dropTarget: HTMLElement) 
                     }
                     break;
                 }
-                case 'htmlViewer':
+                case 'htmlViewer': {
+                    // Route large scenes to the backend: the browser path
+                    // needs scene data + extractDataTable columns +
+                    // writeSog's repack in one process (~4x scene size),
+                    // which breaches the renderer's ~4GB V8 cap. For a clean
+                    // scene the backend reads the original source directly.
+                    // When edits/selection are present, first stream the
+                    // current runtime state to a temporary PLY so deletions,
+                    // transforms, grading, and selected-only export remain
+                    // correct without materializing a DataTable.
+                    const totalSplats = splats.reduce((sum, s) => sum + s.numSplats, 0);
+                    const hasEdits = splats.some(s => s.numDeleted > 0);
+                    const srcPath = splats.length === 1 ? splats[0]?.originalFilePath : undefined;
+                    const lowerSrc = (srcPath ?? '').toLowerCase();
+                    const backendReadable =
+                        (lowerSrc.endsWith('.ply') && !lowerSrc.endsWith('.compressed.ply')) ||
+                        lowerSrc.endsWith('.respproj') ||
+                        ['.sog', '.splat', '.spz', '.ksplat'].some(ext => lowerSrc.endsWith(ext));
+                    const htmlBackendThreshold = 4_000_000;
+                    const backendAvailable = totalSplats > htmlBackendThreshold &&
+                        typeof stream === 'string' && await BackendClient.isAvailable();
+                    if (backendAvailable) {
+                        let backendSource = srcPath && backendReadable ? srcPath : null;
+                        let temporarySource: string | null = null;
+                        // Long backend export: pause the render loop so the GPU
+                        // stops per-frame work while the renderer streams any
+                        // edited source and the backend consumes RAM.
+                        scene.suspendRendering();
+                        try {
+                            // The backend cannot see renderer-only edit state.
+                            // A streamed PLY bridge preserves it while keeping
+                            // peak memory bounded by the PLY writer's 1 MB
+                            // buffer.
+                            if (!backendSource || hasEdits || serializeSettings.selected) {
+                                temporarySource = `${stream}.resplat-export-source.ply`;
+                                console.warn(`[html-export] Materializing edited scene to temporary PLY (${totalSplats.toLocaleString()} splats)`);
+                                await serializePly(splats, {
+                                    ...serializeSettings,
+                                    maxSHBands: serializeSettings.maxSHBands ?? 3,
+                                    keepStateData: false,
+                                    preserveDeleted: false,
+                                    removeInvalid: true
+                                }, new ElectronFileSystem(temporarySource), 'source.ply');
+                                backendSource = temporarySource;
+                            }
+                            console.warn(`[html-export] Routing ${totalSplats.toLocaleString()} splats to backend (${backendSource})`);
+                            events.fire('progressStart', 'Exporting HTML');
+                            events.fire('progressUpdate', { text: 'Exporting via backend…', progress: 0 });
+                            await BackendClient.htmlExportPath(backendSource, stream, {
+                                shBands: serializeSettings.maxSHBands ?? 3,
+                                iterations: 0,
+                                viewerSettings: viewerExportSettings?.experienceSettings
+                            }, ({ progress, text }) => {
+                                events.fire('progressUpdate', { text, progress });
+                            });
+                            events.fire('progressEnd');
+                        } finally {
+                            scene.resumeRendering();
+                            if (temporarySource) {
+                                await window.electronAPI?.unlink?.(temporarySource);
+                            }
+                        }
+                        break;
+                    }
+                    if (totalSplats > htmlBackendThreshold) {
+                        console.warn('[html-export] Backend route skipped', {
+                            totalSplats,
+                            hasEdits,
+                            selected: !!serializeSettings.selected,
+                            streamType: typeof stream,
+                            srcPath: srcPath ?? null,
+                            backendReadable,
+                            electron: !!(window as any).electronAPI?.isElectron
+                        });
+                    }
+                    await serializeViewer(splats, serializeSettings, { ...viewerExportSettings!, events }, fs);
+                    break;
+                }
                 case 'packageViewer':
                     await serializeViewer(splats, serializeSettings, { ...viewerExportSettings!, events }, fs);
                     break;
@@ -1224,6 +1374,7 @@ const initFileHandler = (scene: Scene, events: Events, dropTarget: HTMLElement) 
             playExportSound('complet');
 
         } catch (error) {
+            console.error(`[export] failed (${fileType}):`, error);
             await events.invoke('showPopup', {
                 type: 'error',
                 header: localize('popup.error-loading'),

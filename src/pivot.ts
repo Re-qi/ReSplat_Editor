@@ -64,6 +64,17 @@ const registerPivotEvents = (events: Events) => {
     let origin: PivotOrigin = 'center';
     let originLocked = false;
 
+    // detached mode: pivot (gizmo) transforms are NOT applied to the selection
+    let detached = false;
+
+    events.function('pivot.detached', () => {
+        return detached;
+    });
+
+    events.on('pivot.setDetached', (v: boolean) => {
+        detached = v;
+    });
+
     const setOrigin = (o: PivotOrigin) => {
         if (o !== origin) {
             origin = o;

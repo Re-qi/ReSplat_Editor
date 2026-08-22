@@ -5,7 +5,7 @@ import { BoxShape } from './box-shape';
 import { EditHistory } from './edit-history';
 import { Element } from './element';
 import { Events } from './events';
-import { BrowserFileSystem, BlobReadSource, MappedReadFileSystem, ZstdWriter, GZipWriter, isZstdSupported } from './io';
+import { BrowserFileSystem, BlobReadSource, createElectronFileReadSource, MappedReadFileSystem, ZstdWriter, GZipWriter, isZstdSupported } from './io';
 import { recentFiles } from './recent-files';
 import { Scene } from './scene';
 import { SphereShape } from './sphere-shape';
@@ -200,13 +200,20 @@ const registerDocEvents = (scene: Scene, events: Events, editHistory: EditHistor
     };
 
     // load the document from the given file
-    const loadDocument = async (file: File) => {
+    const loadDocument = async (file: File, filePath?: string) => {
         events.fire('startSpinner');
         events.fire('spinnerText', '正在打开工程...');
 
-        // Create streaming ZIP reader from the file
-        const blobSource = new BlobReadSource(file);
-        const zipFs = new ZipReadFileSystem(blobSource);
+        // Electron gives us the original local path. Read the archive by range
+        // over IPC so a multi-GB File is never copied into renderer memory.
+        const electronApi = (window as any).electronAPI;
+        const electronProjectPath = filePath ??
+            electronApi?.getFilePathForFile?.(file) ??
+            electronApi?.getInputFilePath?.(file.name, file.size);
+        const projectSource = electronProjectPath && electronApi?.isElectron ?
+            await createElectronFileReadSource(electronProjectPath) :
+            new BlobReadSource(file);
+        const zipFs = new ZipReadFileSystem(projectSource);
 
         try {
             // reset the scene
@@ -222,61 +229,99 @@ const registerDocEvents = (scene: Scene, events: Events, editHistory: EditHistor
             // Also cache raw compressed PLY bytes for instant first-save optimization
             const loadingCache = new Map<number, Uint8Array[]>();
 
+            const zipEntries = await zipFs.list();
             for (let i = 0; i < document.splats.length; ++i) {
                 const splatSettings = document.splats[i];
 
-                // load compressed PLY from ZIP
-                const ext = isZstdSupported() ? '.ply.zst' : '.ply.gz';
-                const algo = isZstdSupported() ? 'zstd' : 'gzip';
-                const compressedSource = await zipFs.createSource(`splat_${i}${ext}`);
-
-                // Read compressed data fully and cache for instant first-save
-                const compressedData = await compressedSource.read().readAll();
-                compressedSource.close();
-                loadingCache.set(i, [compressedData]);
-
-                // Decompress PLY fully into memory — readPly requires a seekable source,
-                // so streaming decompression is not possible.
-                const ds = new DecompressionStream(algo as any);
-                const writer = ds.writable.getWriter();
-                writer.write(compressedData as any);
-                writer.close();
-
-                const reader = ds.readable.getReader();
-                const decompressedChunks: Uint8Array[] = [];
-                while (true) {
-                    const { done, value } = await reader.read();
-                    if (done) break;
-                    decompressedChunks.push(value);
+                // Select the format stored in the project instead of assuming
+                // the runtime's currently supported compressor matches it.
+                const zstdEntry = `splat_${i}.ply.zst`;
+                const gzipEntry = `splat_${i}.ply.gz`;
+                const entryName = zipEntries.includes(zstdEntry) ? zstdEntry : gzipEntry;
+                if (!zipEntries.includes(entryName)) {
+                    throw new Error(`Project is missing compressed splat ${i}`);
                 }
 
-                // Merge decompressed chunks into a single buffer
-                let totalLen = 0;
-                for (const c of decompressedChunks) totalLen += c.length;
-                const decompressed = new Uint8Array(totalLen);
-                let offset = 0;
-                for (const c of decompressedChunks) {
-                    decompressed.set(c, offset);
-                    offset += c.length;
-                }
-
-                // Create seekable source from decompressed PLY data
-                const plyBlob = new Blob([decompressed]);
-                const plyFs: ReadFileSystem = {
-                    createSource: (filename: string) => {
-                        if (filename === `splat_${i}.ply`) {
-                            return Promise.resolve(new BlobReadSource(plyBlob));
-                        }
-                        return Promise.reject(new Error(`File not found: ${filename}`));
+                let splat: Splat;
+                // For local Electron gzip projects, stream extraction to disk
+                // in the main process, then let the PLY reader seek the temp
+                // file. The old route keeps compressed data + decompressed
+                // chunks + a merged buffer alive simultaneously, which makes
+                // large projects exceed the renderer heap.
+                if (electronProjectPath && electronApi?.isElectron && entryName === gzipEntry) {
+                    const extracted = await electronApi.extractProjectGzipEntry(electronProjectPath, entryName);
+                    try {
+                        const plyFs: ReadFileSystem = {
+                            createSource: (filename: string) => {
+                                if (filename === `splat_${i}.ply`) {
+                                    return createElectronFileReadSource(extracted.path);
+                                }
+                                return Promise.reject(new Error(`File not found: ${filename}`));
+                            }
+                        };
+                        splat = await scene.assetLoader.load(`splat_${i}.ply`, plyFs, false, true);
+                    } finally {
+                        await electronApi.unlink(extracted.path);
                     }
-                };
+                } else {
+                    const algo = entryName.endsWith('.zst') ? 'zstd' : 'gzip';
+                    const compressedSource = await zipFs.createSource(entryName);
 
-                const splat = await scene.assetLoader.load(`splat_${i}.ply`, plyFs, false, true);
+                    // Read compressed data fully and cache for instant first-save
+                    const compressedData = await compressedSource.read().readAll();
+                    compressedSource.close();
+                    loadingCache.set(i, [compressedData]);
+
+                    // Decompress PLY fully into memory — readPly requires a seekable source,
+                    // so streaming decompression is not possible in the browser fallback.
+                    const ds = new DecompressionStream(algo as any);
+                    const writer = ds.writable.getWriter();
+                    writer.write(compressedData as any);
+                    writer.close();
+
+                    const reader = ds.readable.getReader();
+                    const decompressedChunks: Uint8Array[] = [];
+                    while (true) {
+                        const { done, value } = await reader.read();
+                        if (done) break;
+                        decompressedChunks.push(value);
+                    }
+
+                    // Merge decompressed chunks into a single buffer
+                    let totalLen = 0;
+                    for (const c of decompressedChunks) totalLen += c.length;
+                    const decompressed = new Uint8Array(totalLen);
+                    let offset = 0;
+                    for (const c of decompressedChunks) {
+                        decompressed.set(c, offset);
+                        offset += c.length;
+                    }
+
+                    // Create seekable source from decompressed PLY data
+                    const plyBlob = new Blob([decompressed]);
+                    const plyFs: ReadFileSystem = {
+                        createSource: (filename: string) => {
+                            if (filename === `splat_${i}.ply`) {
+                                return Promise.resolve(new BlobReadSource(plyBlob));
+                            }
+                            return Promise.reject(new Error(`File not found: ${filename}`));
+                        }
+                    };
+
+                    splat = await scene.assetLoader.load(`splat_${i}.ply`, plyFs, false, true);
+                }
                 await scene.add(splat);
 
                 // Restore entity transform from doc.json (no longer baked into PLY).
                 // editHistory replay will handle intermediate transform states.
                 splat.docDeserialize(splatSettings);
+                // When the project is opened from a local Electron path, use
+                // the project itself as the backend export source. The path
+                // serialized inside document.json may point to the machine
+                // that originally created the project and is not portable.
+                if (electronProjectPath) {
+                    splat.originalFilePath = electronProjectPath;
+                }
 
                 // LCC multi-LOD: rebuild the runtime lccFileSystem so cross-LOD
                 // editing (LOD switch, LCC2 export) can stream other LODs. The
@@ -505,12 +550,12 @@ const registerDocEvents = (scene: Scene, events: Events, editHistory: EditHistor
     // NOTE: on chrome it's possible to get the FileSystemFileHandle from the DataTransferItem
     // (which would result in more seamless user experience), but this is not yet supported in
     // other browsers.
-    events.function('doc.load', async (file: File, handle?: FileSystemFileHandle) => {
+    events.function('doc.load', async (file: File, handle?: FileSystemFileHandle, filePath?: string) => {
         if (!events.invoke('scene.empty') && !await getResetConfirmation()) {
             return false;
         }
 
-        await loadDocument(file);
+        await loadDocument(file, filePath);
 
         events.fire('doc.setName', file.name);
 

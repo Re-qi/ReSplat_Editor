@@ -269,7 +269,8 @@ class ViewPanel extends Container {
         const cameraFlySpeedSlider = new SliderInput({
             class: 'view-panel-row-slider',
             min: 0.1,
-            max: 30,
+            max: 100,
+            sliderMax: 100,
             precision: 1,
             value: 1
         });
@@ -541,11 +542,17 @@ class ViewPanel extends Container {
 
         // camera speed
 
+        let suppressChange = false;
+
         events.on('camera.flySpeed', (value: number) => {
+            suppressChange = true;
             cameraFlySpeedSlider.value = value;
+            cameraFlySpeedSlider.step = value > 20 ? 10 : 1;
+            suppressChange = false;
         });
 
         cameraFlySpeedSlider.on('change', (value: number) => {
+            if (suppressChange) return;
             events.fire('camera.setFlySpeed', value);
         });
 

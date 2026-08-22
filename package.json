@@ -1,6 +1,6 @@
 {
     "name": "ReSplat",
-    "version": "1.2.8",
+    "version": "1.2.9",
     "main": "electron/main.cjs",
     "author": "Re祁",
     "homepage": "https://playcanvas.com/ReSplat/editor",
@@ -78,6 +78,7 @@
         "directories": {
             "output": "dist-release"
         },
+        "artifactName": "ReSplat Setup ${version}.${ext}",
         "files": [
             "dist/**/*",
             "electron/**/*",

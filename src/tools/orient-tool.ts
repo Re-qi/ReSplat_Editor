@@ -8,6 +8,7 @@ import { Scene } from '../scene';
 import { Splat } from '../splat';
 import { pickSplatSurfacePoint } from '../splat-pick';
 import { Transform } from '../transform';
+import { projectLine, projectPoint } from './screen-projection';
 import { localize } from '../ui/localization';
 
 // snap the picked plane normal to a splat-local axis within this angle so
@@ -22,6 +23,9 @@ const p = new Vec3();
 const p0 = new Vec3();
 const p1 = new Vec3();
 const p2 = new Vec3();
+const screen0 = new Vec3();
+const screen1 = new Vec3();
+const screen2 = new Vec3();
 const e0 = new Vec3();
 const e1 = new Vec3();
 const n = new Vec3();
@@ -466,8 +470,10 @@ class OrientTool {
 
             for (let i = 0; i < 3; i++) {
                 const dotEl = dots[i];
-                if (i < count) {
-                    getPoint2d(i, v, svgW, svgH);
+                getPoint(i, v);
+                if (i < count && projectPoint(scene.camera, v, v)) {
+                    v.x *= svgW;
+                    v.y *= svgH;
                     dotEl.setAttribute('x', v.x.toString());
                     dotEl.setAttribute('y', v.y.toString());
                     dotEl.setAttribute('visibility', 'visible');
@@ -493,22 +499,36 @@ class OrientTool {
             };
 
             if (count > 1) {
-                getPoint2d(0, p0, svgW, svgH);
-                getPoint2d(1, p1, svgW, svgH);
-                setLine(0, p0.x.toString(), p0.y.toString(), p1.x.toString(), p1.y.toString(), true);
+                getPoint(0, p0);
+                getPoint(1, p1);
+                const line01Visible = projectLine(scene.camera, p0, p1, screen0, screen1);
+                let line12Visible = false;
+                let line20Visible = false;
+                if (count === 3) {
+                    getPoint(2, p2);
+                    line12Visible = projectLine(scene.camera, p1, p2, screen1, screen2);
+                    line20Visible = projectLine(scene.camera, p2, p0, screen2, screen0);
+                }
+
+                screen0.x *= svgW;
+                screen0.y *= svgH;
+                screen1.x *= svgW;
+                screen1.y *= svgH;
+                setLine(0, screen0.x.toString(), screen0.y.toString(), screen1.x.toString(), screen1.y.toString(), line01Visible);
+
+                if (count === 3) {
+                    screen2.x *= svgW;
+                    screen2.y *= svgH;
+                    setLine(1, screen1.x.toString(), screen1.y.toString(), screen2.x.toString(), screen2.y.toString(), line12Visible);
+                    setLine(2, screen2.x.toString(), screen2.y.toString(), screen0.x.toString(), screen0.y.toString(), line20Visible);
+                    polygon.setAttribute('points', `${screen0.x},${screen0.y} ${screen1.x},${screen1.y} ${screen2.x},${screen2.y}`);
+                    polygon.setAttribute('visibility', line12Visible && line20Visible ? 'visible' : 'hidden');
+                }
             } else {
                 setLine(0, '', '', '', '', false);
             }
 
-            if (count === 3) {
-                getPoint2d(1, p1, svgW, svgH);
-                getPoint2d(2, p2, svgW, svgH);
-                setLine(1, p1.x.toString(), p1.y.toString(), p2.x.toString(), p2.y.toString(), true);
-                setLine(2, p2.x.toString(), p2.y.toString(), p0.x.toString(), p0.y.toString(), true);
-
-                polygon.setAttribute('points', `${p0.x},${p0.y} ${p1.x},${p1.y} ${p2.x},${p2.y}`);
-                polygon.setAttribute('visibility', 'visible');
-            } else {
+            if (count !== 3) {
                 setLine(1, '', '', '', '', false);
                 setLine(2, '', '', '', '', false);
                 polygon.setAttribute('visibility', 'hidden');

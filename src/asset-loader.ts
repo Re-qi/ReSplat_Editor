@@ -1,6 +1,7 @@
 import { ReadFileSystem } from '@playcanvas/splat-transform';
-import { AppBase, Asset, GSplatResource } from 'playcanvas';
+import { AppBase, Asset, GSplatResource, Quat } from 'playcanvas';
 
+import { BackendClient, lodNeedsBackend } from './backend';
 import { Events } from './events';
 import { defaultLodIndex, loadGSplatData, loadSogDecimated, validateGSplatData } from './io';
 import { LodEditLog } from './lod-edit-log';
@@ -22,7 +23,8 @@ class AssetLoader {
         fileSystem: ReadFileSystem,
         animationFrame?: boolean,
         skipReorder?: boolean,
-        decimatePercent?: number
+        decimatePercent?: number,
+        containerFilePath?: string
     ) {
         if (!animationFrame) {
             this.events.fire('startSpinner');
@@ -37,8 +39,13 @@ class AssetLoader {
         // is loaded standalone and no cross-LOD metadata is attached (no LOD
         // switching, no edit propagation, no multi-LOD LCC2 export).
         let singleLodMode = false;
+        // When >= 0, the user picked a LOD whose quality table exceeds the
+        // renderer heap — it is loaded through the backend instead of
+        // materializing the raw multi-GB container in the renderer.
+        let backendLod = -1;
 
         try {
+            console.log(`[asset-loader] load: filename=${filename}, containerFilePath=${containerFilePath ?? 'undefined'}`);
             // ask the user which LOD to load when the file contains multiple,
             // pausing the spinner while the popup is up
             const pickLod = async (lodCounts: readonly number[]) => {
@@ -84,6 +91,17 @@ class AssetLoader {
                     });
                     if (result.action === 'ok') {
                         pickedLod = parseInt(result.value, 10);
+                        console.log(`[asset-loader] pickLod: pickedLod=${pickedLod}, containerFilePath=${containerFilePath ?? 'undefined'}, lodNeedsBackend=${lodNeedsBackend(lodCounts[pickedLod])}`);
+                        // Oversized LOD: route through the backend (compressed-ply
+                        // preview) like the LOD switcher — the renderer cannot
+                        // materialize its quality table within the V8 heap.
+                        // Return null to cancel the direct load — the outer code
+                        // checks backendLod and routes through the backend instead.
+                        if (containerFilePath && lodNeedsBackend(lodCounts[pickedLod])) {
+                            console.warn(`[import] Routing LOD ${pickedLod} (${lodCounts[pickedLod].toLocaleString()} splats) through backend`);
+                            backendLod = pickedLod;
+                            return null;
+                        }
                         return pickedLod;
                     }
                     return null;
@@ -93,9 +111,27 @@ class AssetLoader {
             };
 
             // Use stride-sampled loading when decimatePercent is specified
-            const result = decimatePercent != null ?
-                await loadSogDecimated(filename, fileSystem, decimatePercent).then(r => ({ gsplatData: r.gsplatData, transform: r.transform })) :
-                await loadGSplatData(filename, fileSystem, skipReorder || animationFrame, animationFrame ? undefined : pickLod);
+            let result;
+            if (!result) {
+                result = decimatePercent != null ?
+                    await loadSogDecimated(filename, fileSystem, decimatePercent).then(r => ({ gsplatData: r.gsplatData, transform: r.transform })) :
+                    await loadGSplatData(filename, fileSystem, skipReorder || animationFrame, animationFrame ? undefined : pickLod);
+            }
+            // If loadGSplatData returned null but backendLod was set by pickLod,
+            // route through the backend (compressed-ply preview).
+            if (!result && backendLod >= 0) {
+                const preview = await BackendClient.loadLodPreview(containerFilePath, backendLod);
+                if (preview) {
+                    result = {
+                        gsplatData: preview.gsplatData,
+                        // Import has no old splat to inherit a rotation from, so
+                        // use the source transform rotation reported by the backend
+                        // (the compressed-ply reader tags PLY, which differs from
+                        // the LCC/LCC2 space the other levels render in).
+                        transform: { rotation: preview.rotation ?? new Quat() }
+                    };
+                }
+            }
             if (!result) {
                 // user cancelled LOD selection
                 return null;

@@ -7,6 +7,7 @@ import { localize } from './localization';
 import { Pivot } from '../pivot';
 import { Tooltips } from './tooltips';
 import { Transform as TRSTransform } from '../transform';
+import cameraResetSvg from './svg/camera-reset.svg';
 import cornerUpLeftSvg from './svg/corner-up-left.svg';
 import lockOpenSvg from './svg/lock-keyhole-open.svg';
 import lockSvg from './svg/lock-keyhole.svg';
@@ -47,6 +48,13 @@ class Transform extends Container {
             text: localize('panel.scene-manager.transform.position')
         });
 
+        // 控制原点：拖拽到场景高斯文件上，移动其 gizmo 到对应位置
+        const controlOrigin = new Button({
+            class: 'transform-lock-btn',
+            enabled: true
+        });
+        controlOrigin.dom.appendChild(createSvg(cameraResetSvg));
+
         const positionVector = new VectorInput({
             class: 'transform-expand',
             precision: 3,
@@ -57,13 +65,23 @@ class Transform extends Container {
         });
 
         position.append(positionLabel);
+        position.append(controlOrigin);
         position.append(positionVector);
 
         // 撤回：恢复位置到选中时的初始值
         const positionRevert = createRevertBtn(() => {
             if (!positionVector.enabled) return;
             const pivot = events.invoke('pivot') as Pivot;
-            if (pivot && initialTransform) {
+            if (!pivot) return;
+
+            // 「仅控制原点」模式：把 gizmo 恢复到文件默认位置
+            if (events.invoke('pivot.detached') && originBase) {
+                pivot.moveTRS(originBase.position, pivot.transform.rotation, pivot.transform.scale);
+                updateUI(pivot);
+                return;
+            }
+
+            if (initialTransform) {
                 pivot.start();
                 pivot.moveTRS(initialTransform.position, pivot.transform.rotation, pivot.transform.scale);
                 pivot.end();
@@ -71,6 +89,60 @@ class Transform extends Container {
         });
         tooltips.register(positionRevert, '恢复默认位置', 'bottom');
         position.append(positionRevert);
+
+        tooltips.register(controlOrigin, '控制原点', 'bottom');
+        // 拖拽控制原点按钮到场景高斯文件上，移动其 gizmo 到对应位置（复用双击拾取逻辑）
+        controlOrigin.dom.addEventListener('mousedown', (e: MouseEvent) => {
+            if (e.button !== 0) return;
+            e.preventDefault();
+
+            // 拖拽时创建一个跟随鼠标的图标副本（首次移动才创建，避免单击闪烁）
+            let ghost: HTMLDivElement | null = null;
+
+            const onMouseMove = (ev: MouseEvent) => {
+                if (!ghost) {
+                    ghost = document.createElement('div');
+                    ghost.className = 'transform-drag-ghost';
+                    ghost.appendChild(createSvg(cameraResetSvg));
+                    document.body.appendChild(ghost);
+                }
+                ghost.style.left = `${ev.clientX}px`;
+                ghost.style.top = `${ev.clientY}px`;
+            };
+
+            const onMouseUp = (ev: MouseEvent) => {
+                document.removeEventListener('mouseup', onMouseUp);
+                document.removeEventListener('mousemove', onMouseMove);
+                ghost?.remove();
+                // 与双击聚焦（controllers.ts dblclick）完全一致的坐标系：
+                // 以 #canvas-container 为基准归一化。不能用 #tools-container，
+                // 它在没有选择工具激活时是 display:none（rect 为 0）。
+                const container = document.getElementById('canvas-container');
+                if (!container) return;
+                const rect = container.getBoundingClientRect();
+                if (rect.width <= 0 || rect.height <= 0) return;
+                const x = ev.clientX - rect.left;
+                const y = ev.clientY - rect.top;
+                if (x < 0 || y < 0 || x >= rect.width || y >= rect.height) return;
+                window.scene.camera.pickFocalPoint(x / rect.width, y / rect.height);
+            };
+
+            document.addEventListener('mousemove', onMouseMove);
+            document.addEventListener('mouseup', onMouseUp);
+        });
+
+        // 点击切换「仅控制原点」模式：高亮时 gizmo 拖拽与面板参数只调整
+        // pivot（gizmo 本身），不作用于选中物体
+        controlOrigin.on('click', () => {
+            const detached = !events.invoke('pivot.detached');
+            events.fire('pivot.setDetached', detached);
+            controlOrigin.dom.classList.toggle('active', detached);
+            // 立即刷新显示（切换坐标基准：绝对 <-> 相对）
+            if (detached) {
+                computeDefaultOrigin();
+            }
+            updateUI(events.invoke('pivot') as Pivot);
+        });
 
         // rotation
         const rotation = new Container({
@@ -186,7 +258,18 @@ class Transform extends Container {
             uiUpdating = true;
             const transform = pivot.transform;
             transform.rotation.getEulerAngles(v);
-            positionVector.value = toArray(transform.position);
+
+            if (events.invoke('pivot.detached') && originBase) {
+                // 「仅控制原点」模式：显示相对文件默认 gizmo 位置的偏移
+                positionVector.value = [
+                    transform.position.x - originBase.position.x,
+                    transform.position.y - originBase.position.y,
+                    transform.position.z - originBase.position.z
+                ];
+            } else {
+                positionVector.value = toArray(transform.position);
+            }
+
             rotationVector.value = toArray(v);
             scaleVector.value = toArray(transform.scale);
             (scaleVector as any)._lastValue = [...scaleVector.value];
@@ -204,7 +287,17 @@ class Transform extends Container {
                 q.mulScalar(-1);
             }
 
-            pivot.moveTRS(new Vec3(p[0], p[1], p[2]), q, new Vec3(s[0], s[1], s[2]));
+            // 「仅控制原点」模式：面板输入的是相对偏移，加回基准位置
+            let pos = new Vec3(p[0], p[1], p[2]);
+            if (events.invoke('pivot.detached') && originBase) {
+                pos = new Vec3(
+                    originBase.position.x + p[0],
+                    originBase.position.y + p[1],
+                    originBase.position.z + p[2]
+                );
+            }
+
+            pivot.moveTRS(pos, q, new Vec3(s[0], s[1], s[2]));
         };
 
         // handle pos/rot change
@@ -283,6 +376,26 @@ class Transform extends Container {
         // 记录选中物体的初始 transform（用于撤回按钮恢复）
         let initialTransform: TRSTransform | null = null;
 
+        // 「仅控制原点」模式的基准：文件默认 gizmo 位置（动态计算，
+        // 跟随文件本身的移动 —— 与 placePivot 同源的 getPivot 结果）
+        const defaultPivotT = new TRSTransform();
+        let originBase: TRSTransform | null = null;
+
+        const computeDefaultOrigin = () => {
+            const selection = events.invoke('selection') as any;
+            if (selection && (selection as any).getPivot) {
+                const mode = events.invoke('pivot.origin') === 'center' ? 'center' : 'boundCenter';
+                selection.getPivot(mode, false, defaultPivotT);
+                originBase = new TRSTransform(
+                    defaultPivotT.position.clone(),
+                    defaultPivotT.rotation.clone(),
+                    defaultPivotT.scale.clone()
+                );
+            } else {
+                originBase = null;
+            }
+        };
+
         const captureInitialTransform = (selection: any) => {
             if (selection && (selection as any).entity) {
                 const entity = (selection as any).entity;
@@ -310,24 +423,35 @@ class Transform extends Container {
         events.on('selection.changed', (selection) => {
             positionVector.enabled = rotationVector.enabled = scaleVector.enabled = !!selection;
             captureInitialTransform(selection);
+            computeDefaultOrigin();
         });
 
         events.on('selection.shapeChanged', (selection) => {
             positionVector.enabled = rotationVector.enabled = scaleVector.enabled = !!selection;
             captureInitialTransform(selection);
+            computeDefaultOrigin();
         });
 
         events.on('pivot.placed', (pivot: Pivot) => {
+            computeDefaultOrigin();
             updateUI(pivot);
         });
 
         events.on('pivot.moved', (pivot: Pivot) => {
             if (!mouseUpdating) {
+                // 非控制原点模式下，文件本体随 gizmo 移动，默认位置需要跟随刷新；
+                // 控制原点模式下文件不动，基准保持不变
+                if (!events.invoke('pivot.detached')) {
+                    computeDefaultOrigin();
+                }
                 updateUI(pivot);
             }
         });
 
         events.on('pivot.ended', (pivot: Pivot) => {
+            if (!events.invoke('pivot.detached')) {
+                computeDefaultOrigin();
+            }
             updateUI(pivot);
         });
     }

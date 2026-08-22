@@ -5,7 +5,9 @@
 // File system implementations
 export {
     BlobReadSource,
+    createElectronFileReadSource,
     DecompressingReadSource,
+    ElectronLccReadFileSystem,
     MappedReadFileSystem,
     TeeReadStream
 } from './file-systems';
@@ -18,6 +20,8 @@ export {
     loadLodDataTable,
     loadLodGSplatData,
     loadSogDecimated,
+    openLodSource,
+    gatherSourceRowsToDataTable,
     readLodMeta,
     readSogMeta,
     readPlyMeta,

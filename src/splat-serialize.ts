@@ -1,6 +1,7 @@
 import {
     Column,
     DataTable,
+    createChunkDataPool,
     logger as splatTransformLogger,
     MemoryFileSystem,
     Transform,
@@ -28,7 +29,7 @@ import {
 import { version } from '../package.json';
 import { ColorGrade, dcDecode, dcEncode, sigmoid } from './color-grade';
 import { Events } from './events';
-import { BrowserFileSystem, dataTableToGSplatData, loadLodDataTable, ProgressWriter } from './io';
+import { BrowserFileSystem, dataTableToGSplatData, gatherSourceRowsToDataTable, loadLodDataTable, openLodSource, ProgressWriter } from './io';
 import {
     NANOGS_NODE_CAP,
     NANOGS_NODE_MIN,
@@ -1412,7 +1413,6 @@ const extractDataTable = (splats: Splat[], settings: SerializeSettings): DataTab
             idx++;
         }
     }
-
     return dataTable;
 };
 
@@ -1461,6 +1461,154 @@ const createProgressRenderer = (header: string, events?: Events): Renderer => ({
     }
 });
 
+// Marker the bundled viewer uses to fetch the embedded scene. The streamed
+// export writes its base64 payload between DATA_URL_PREFIX and the closing
+// quote+paren that follows it.
+const DATA_URL_PREFIX = 'fetch("data:application/octet-stream;base64,';
+
+// Base64 sub-chunk size (bytes). Must be a multiple of 3 so intermediate
+// btoa calls emit no '=' padding, and small enough to stay under the
+// Function.apply argument limit of String.fromCharCode.
+const BASE64_CHUNK = 24 * 1024;
+
+// Writer that base64-encodes its byte stream on the fly and forwards the
+// encoded chunks to a target writer. Incoming chunk sizes are arbitrary
+// (zip entries streamed by writeSog), so 0-2 remainder bytes are buffered
+// between writes to preserve 3-byte group alignment — the concatenated
+// output is byte-identical to whole-buffer btoa.
+class Base64Writer implements Writer {
+    target: Writer;
+    sourceBytes = 0;
+    private encoder = new TextEncoder();
+    private remainder = new Uint8Array(3);
+    private remainderLength = 0;
+    // serialize encodes: the remainder must not be read by the next write
+    // before the previous encode updated it (encode awaits target writes)
+    private queue: Promise<void> = Promise.resolve();
+
+    constructor(target: Writer) {
+        this.target = target;
+    }
+
+    get bytesWritten(): number {
+        return this.sourceBytes;
+    }
+
+    private encode(data: Uint8Array, flush: boolean): Promise<void> {
+        this.queue = this.queue.then(async () => {
+            let bytes = data;
+            if (this.remainderLength > 0) {
+                bytes = new Uint8Array(this.remainderLength + data.byteLength);
+                bytes.set(this.remainder.subarray(0, this.remainderLength), 0);
+                bytes.set(data, this.remainderLength);
+                this.remainderLength = 0;
+            }
+
+            // bytes not forming a full 3-byte group carry over to the next
+            // write (or are padded by btoa at close)
+            const aligned = flush ? bytes.byteLength : Math.floor(bytes.byteLength / 3) * 3;
+            for (let i = 0; i < aligned; i += BASE64_CHUNK) {
+                const chunk = bytes.subarray(i, Math.min(i + BASE64_CHUNK, aligned));
+                await this.target.write(this.encoder.encode(btoa(String.fromCharCode(...chunk))));
+            }
+            if (!flush) {
+                this.remainder.set(bytes.subarray(aligned), 0);
+                this.remainderLength = bytes.byteLength - aligned;
+            }
+        });
+        return this.queue;
+    }
+
+    write(data: Uint8Array): Promise<void> {
+        this.sourceBytes += data.byteLength;
+        return this.encode(data, false);
+    }
+
+    // Flushes the buffered tail (with base64 padding). Does NOT close the
+    // target writer — the HTML suffix is appended after the sog stream.
+    close(): Promise<void> {
+        return this.encode(new Uint8Array(0), true);
+    }
+
+    async abort(): Promise<void> {
+        this.queue = Promise.resolve();
+        await this.target.abort();
+    }
+}
+
+// Render the bundled-viewer HTML shell by exporting a 1-row stub scene
+// through writeHtml. The stub's embedded data URL is tiny, so the returned
+// prefix/suffix surround the placeholder where the real (arbitrarily
+// large) base64 payload is streamed. Building the shell via the library
+// keeps it in sync with the installed splat-transform version instead of
+// hardcoding a template copy here.
+const buildViewerHtmlShell = async (viewerSettings: ExperienceSettings): Promise<{ prefix: Uint8Array; suffix: Uint8Array }> => {
+    const memberNames = [
+        'x', 'y', 'z',
+        'scale_0', 'scale_1', 'scale_2',
+        'f_dc_0', 'f_dc_1', 'f_dc_2', 'opacity',
+        'rot_0', 'rot_1', 'rot_2', 'rot_3'
+    ];
+    const dataTable = new DataTable(memberNames.map(name => new Column(name, new Float32Array([0]))), Transform.PLY);
+    const memFs = new MemoryFileSystem();
+    await writeHtml({
+        filename: 'shell.html',
+        dataTable,
+        viewerSettingsJson: viewerSettings,
+        bundle: true,
+        iterations: 0,
+        createDevice: createGpuDevice
+    }, memFs);
+
+    const shell = new TextDecoder().decode(memFs.results.get('shell.html') ?? new Uint8Array(0));
+    const dataStart = shell.indexOf(DATA_URL_PREFIX);
+    const dataEnd = dataStart !== -1 ? shell.indexOf('")', dataStart + DATA_URL_PREFIX.length) : -1;
+    if (dataStart === -1 || dataEnd === -1) {
+        throw new Error('Failed to locate embedded data URL in viewer HTML shell');
+    }
+
+    const encoder = new TextEncoder();
+    return {
+        prefix: encoder.encode(shell.slice(0, dataStart + DATA_URL_PREFIX.length)),
+        suffix: encoder.encode(shell.slice(dataEnd))
+    };
+};
+
+// Bundled-HTML export, streamed. splat-transform's bundled writeHtml
+// materializes the whole sog, its base64 string and the final HTML string
+// in memory (≈4x the sog size on top of the scene — OOM for large scenes).
+// Instead the sog zip byte stream is piped through Base64Writer straight
+// into the HTML output writer — the same chunked-streaming approach the
+// PLY writer uses. Peak extra memory is one base64 chunk (~32KB).
+const serializeViewerHtml = async (dataTable: DataTable, viewerSettings: ExperienceSettings, fs: FileSystem): Promise<void> => {
+    const { prefix, suffix } = await buildViewerHtmlShell(viewerSettings);
+
+    const htmlWriter = await fs.createWriter('output.html');
+    try {
+        await htmlWriter.write(prefix);
+
+        // writeSog streams its zip output through the writer returned by
+        // fs.createWriter — this tee filesystem routes those bytes through
+        // Base64Writer into the HTML between prefix and suffix.
+        const base64Writer = new Base64Writer(htmlWriter);
+        const sogFs: FileSystem = {
+            createWriter: () => base64Writer,
+            mkdir: () => Promise.resolve()
+        };
+
+        await writeSogInternal({
+            filename: 'temp.sog',
+            dataTable,
+            bundle: true,
+            iterations: 0,
+            createDevice: createGpuDevice
+        }, sogFs);
+        await htmlWriter.write(suffix);
+    } finally {
+        await htmlWriter.close();
+    }
+};
+
 const serializeViewer = async (splats: Splat[], serializeSettings: SerializeSettings, options: ViewerExportSettings, fs: FileSystem): Promise<void> => {
     const { experienceSettings, events } = options;
 
@@ -1477,15 +1625,8 @@ const serializeViewer = async (splats: Splat[], serializeSettings: SerializeSett
     // any error popup is shown.
     try {
         if (options.type === 'html') {
-            // Bundled HTML - writeHtml handles everything
-            await writeHtml({
-                filename: 'output.html',
-                dataTable,
-                viewerSettingsJson: experienceSettings,
-                bundle: true,
-                iterations: 0,
-                createDevice: createGpuDevice
-            }, fs);
+            // Bundled HTML — streamed assembly (memory-safe for large scenes)
+            await serializeViewerHtml(dataTable, experienceSettings, fs);
         } else {
             // Package - use unbundled mode into a MemoryFileSystem, then ZIP
             const memFs = new MemoryFileSystem();
@@ -1904,7 +2045,10 @@ const backfillEmptyLodNodes = (
             const dy = lodYs[j] - cy;
             const dz = lodZs[j] - cz;
             const d = dx * dx + dy * dy + dz * dz;
-            if (d < bestD) { bestD = d; best = j; }
+            if (d < bestD) {
+                bestD = d;
+                best = j;
+            }
         }
         if (best >= 0) {
             nodeSubsets[i] = new Uint32Array([best]);
@@ -3047,14 +3191,7 @@ const serializeLcc2FromLodLog = async (
         const gsplatData = dataTableToGSplatData(rawDataTable);
 
         // Add 'state' property (all 0) for GaussianFilter's deleted/selected checks.
-        if (!gsplatData.getProp('state')) {
-            gsplatData.getElement('vertex').properties.push({
-                type: 'uchar',
-                name: 'state',
-                storage: new Uint8Array(gsplatData.numSplats),
-                byteSize: 1
-            });
-        }
+        ensureStateProp(gsplatData);
 
         // Apply deletions from LodEditLog: mark deleted rows in the state array
         // so GaussianFilter (inside extractDataTable) filters them out.
@@ -3064,27 +3201,43 @@ const serializeLcc2FromLodLog = async (
         const zs = gsplatData.getProp('z') as Float32Array;
         lodEditLog.applyDeletionsToState(state, xs, ys, zs, splat.worldTransform);
 
-        // Mock Splat: reuse the current Splat's entity (world transform), color
-        // grade properties, and provide a transformTexture whose getSource()
-        // returns null so SplatTransformCache treats all splats as untransformed
-        // (transformIndex = 0 → identity per-splat transform).
-        const mockSplat = {
-            splatData: gsplatData,
-            numSplats: gsplatData.numSplats,
-            transformTexture: { getSource: (): null => null },
-            transformPalette: null,
-            entity: splat.entity,
-            tintClr: splat.tintClr,
-            temperature: splat.temperature,
-            saturation: splat.saturation,
-            brightness: splat.brightness,
-            blackPoint: splat.blackPoint,
-            whitePoint: splat.whitePoint,
-            transparency: splat.transparency
-        } as unknown as Splat;
-
-        return extractDataTable([mockSplat], settings);
+        return extractDataTable([makeMockSplat(gsplatData)], settings);
     };
+
+    // Add a zeroed 'state' property (deleted/selected markers) to a GSplatData
+    // built from a raw file DataTable, so GaussianFilter can read it.
+    const ensureStateProp = (gsplatData: GSplatData): Uint8Array => {
+        let state = gsplatData.getProp('state') as Uint8Array | undefined;
+        if (!state) {
+            state = new Uint8Array(gsplatData.numSplats);
+            gsplatData.getElement('vertex').properties.push({
+                type: 'uchar',
+                name: 'state',
+                storage: state,
+                byteSize: 1
+            });
+        }
+        return state;
+    };
+
+    // Mock Splat: reuse the current Splat's entity (world transform), color
+    // grade properties, and provide a transformTexture whose getSource()
+    // returns null so SplatTransformCache treats all splats as untransformed
+    // (transformIndex = 0 → identity per-splat transform).
+    const makeMockSplat = (gsplatData: GSplatData): Splat => ({
+        splatData: gsplatData,
+        numSplats: gsplatData.numSplats,
+        transformTexture: { getSource: (): null => null },
+        transformPalette: null,
+        entity: splat.entity,
+        tintClr: splat.tintClr,
+        temperature: splat.temperature,
+        saturation: splat.saturation,
+        brightness: splat.brightness,
+        blackPoint: splat.blackPoint,
+        whitePoint: splat.whitePoint,
+        transparency: splat.transparency
+    } as unknown as Splat);
 
     // ---- Build spatial tree from the finest LOD (LOD 0) ----
     // Tree building only needs positions, not SH/color/opacity. Loading the
@@ -3177,12 +3330,175 @@ const serializeLcc2FromLodLog = async (
     let cachedLodIndex = -1;
     let cachedLodDataTable: DataTable | null = null;
 
+    // ---- Streaming finest LOD (multi-LOD source, quality export) ----
+    // Materializing the full 59-column LOD 0 (43.4M × 59 × 4B ≈ 9.7 GB) plus
+    // extractDataTable's copy (~9.7 GB) blows past renderer RAM on large scenes
+    // ("Array buffer allocation failed" — see the 石油小镇.lcc 43M export log).
+    // Instead, open the source as a lazy ChunkSource and gather ONLY the rows
+    // each output .sog chunk needs (the LCC reader range-reads the requested
+    // records from data.bin/shcoef.bin on demand). Peak memory drops to ~one
+    // output chunk + one gathered chunk, independent of LOD-0 size.
+    //
+    // The tree's finestIndices index the FILTERED LOD-0 table (rows surviving
+    // deletions + minOpacity + removeInvalid in the tree-build extract), so:
+    //   Pass 1 streams the source chunk-by-chunk through the same
+    //     GaussianFilter and records the filtered→raw index map (N×4B).
+    //   Pass 2 packs nodes into ≤SOG_CHUNK_TARGET chunks, gathers their raw
+    //     rows, runs the same mock-splat extract as the coarser LODs (identical
+    //     SH layout / color grade / PLY space), transforms to LCC2 space, and
+    //     writes the .sog — row order preserved by the identity indices.
+    const writeFinestLodStreamed = async (D: number): Promise<number> => {
+        // Drop the previous coarser LOD's table before gathering (frees ~4.9 GB
+        // at LOD 1) so the mapping pass runs on a near-empty heap.
+        if (cachedLodDataTable) {
+            cachedLodDataTable = null;
+            (globalThis as { gc?: () => void }).gc?.();
+        }
+        cachedLodIndex = -1;
+
+        const { source: src0, close: closeSrc } = await openLodSource(lccFilePath, lccFileSystem, 0);
+        const pool = createChunkDataPool({ chunkSize: Math.max(src0.meta.chunkSize, SOG_CHUNK_TARGET) });
+        try {
+            const { meta } = src0;
+            const lodN = meta.lodCounts[0];
+            const nodesAtD = collectNodesAtDepth(adaptiveRoot, D);
+            const filter = new GaussianFilter(exportSettings);
+
+            // --- Pass 1: filtered→raw index map ---
+            const filteredToRaw = new Uint32Array(treeN);
+            let g = 0;
+            const numChunks = meta.numChunks[0] ?? Math.ceil(lodN / meta.chunkSize);
+            for (let c = 0; c < numChunks; ++c) {
+                const cnt = Math.min(meta.chunkSize, lodN - c * meta.chunkSize);
+                const rawBase = c * meta.chunkSize;
+                const range = new Uint32Array(cnt);
+                for (let i = 0; i < cnt; ++i) range[i] = rawBase + i;
+                const chunkTable = await gatherSourceRowsToDataTable(src0, pool, range);
+                const gsplat = dataTableToGSplatData(chunkTable);
+                const state = ensureStateProp(gsplat);
+                const x = gsplat.getProp('x') as Float32Array;
+                const y = gsplat.getProp('y') as Float32Array;
+                const z = gsplat.getProp('z') as Float32Array;
+                lodEditLog.applyDeletionsToState(state, x, y, z, splat.worldTransform);
+                filter.set(makeMockSplat(gsplat));
+                for (let i = 0; i < cnt; ++i) {
+                    if (filter.test(i)) filteredToRaw[g++] = rawBase + i;
+                }
+                (globalThis as { gc?: () => void }).gc?.();
+            }
+            if (g !== treeN) {
+                throw new Error(
+                    `[LCC2] streaming LOD 0: filter kept ${g.toLocaleString()} rows, tree built on ${treeN.toLocaleString()} — aborting`
+                );
+            }
+            (globalThis as { gc?: () => void }).gc?.();
+
+            // --- Pass 2: pack nodes into output chunks, gather + write ---
+            currentExportLod = -1; // k=0 → pristine source, no LOD label
+            let levelTotal = 0;
+            let chunkNodeStart = 0;
+            while (chunkNodeStart < nodesAtD.length) {
+                // Pack nodes until the chunk would exceed SOG_CHUNK_TARGET
+                // (mirrors prepareChunk's packing in the non-streaming path).
+                let chunkSplatCount = 0;
+                let chunkNodeEnd = chunkNodeStart;
+                while (chunkNodeEnd < nodesAtD.length) {
+                    const nxt = chunkSplatCount + nodesAtD[chunkNodeEnd].finestIndices.length;
+                    if (nxt > 0 && nxt > SOG_CHUNK_TARGET) break;
+                    chunkSplatCount = nxt;
+                    chunkNodeEnd++;
+                }
+                if (chunkSplatCount === 0) { // a single node larger than the target
+                    chunkSplatCount = nodesAtD[chunkNodeStart].finestIndices.length;
+                    chunkNodeEnd = chunkNodeStart + 1;
+                }
+
+                // Map the nodes' filtered indices to raw source rows.
+                const rawIndices = new Uint32Array(chunkSplatCount);
+                let wi = 0;
+                for (let n = chunkNodeStart; n < chunkNodeEnd; ++n) {
+                    const sub = nodesAtD[n].finestIndices;
+                    for (let i = 0; i < sub.length; ++i) rawIndices[wi++] = filteredToRaw[sub[i]];
+                }
+
+                // Gather exactly these rows (source space, source SH layout).
+                const gathered = await gatherSourceRowsToDataTable(src0, pool, rawIndices);
+                const gsplat = dataTableToGSplatData(gathered);
+                ensureStateProp(gsplat); // all 0 — rows already passed the filter
+                // Same mock-splat extract as the coarser LODs → identical SH
+                // layout, color grade and PLY-space output across all .sog files.
+                const outTable = extractDataTable([makeMockSplat(gsplat)], exportSettings);
+                applyLcc2CoordinateTransform(outTable, maxSHBands);
+
+                const chunkIdx = chunkIdxByLevel[0]++;
+                const firstNode = nodesAtD[chunkNodeStart];
+                const lodFileName = `${firstNode.id}.sog`;
+                const chunkPath = `${name}/data/3dgs/${lodFileName}`;
+                console.warn(`[LCC2] LOD0/chunk${chunkIdx}: nodes[${chunkNodeStart}..${chunkNodeEnd - 1}] ${chunkSplatCount.toLocaleString()} splats → ${chunkPath} (streamed)`);
+
+                // CRITICAL: identity indices keep the chunk's row order (the
+                // writeSog Morton sort would scramble nodeRefs start/count).
+                const identity = new Uint32Array(chunkSplatCount);
+                for (let i = 0; i < chunkSplatCount; ++i) identity[i] = i;
+                await writeSogInternal({
+                    filename: chunkPath,
+                    dataTable: outTable,
+                    bundle: true,
+                    iterations,
+                    createDevice: createGpuDevice,
+                    indices: identity
+                }, fs);
+
+                const fileIdx = splatFiles.length;
+                splatFiles.push(`data/3dgs/${lodFileName}`);
+                let nodeOffset = 0;
+                for (let n = chunkNodeStart; n < chunkNodeEnd; ++n) {
+                    const cnt = nodesAtD[n].finestIndices.length;
+                    if (cnt > 0) {
+                        nodeRefs.set(nodesAtD[n], { name: fileIdx, start: nodeOffset, count: cnt });
+                        lodSplatsByLevel[0] += cnt;
+                    }
+                    nodeOffset += cnt;
+                }
+                levelTotal += chunkSplatCount;
+                chunkNodeStart = chunkNodeEnd;
+
+                const progressPercent = 5 + Math.round(95 * (cumulativeSplats + levelTotal) / totalEstimatedSplats);
+                events?.fire('progressUpdate', {
+                    text: `LOD 0 (${D}/${treeDepth}): ${levelTotal.toLocaleString()} splats  —  ${progressPercent}%`,
+                    progress: progressPercent
+                });
+                lodExportProgress = progressPercent;
+                (globalThis as { gc?: () => void }).gc?.();
+            }
+            return levelTotal;
+        } finally {
+            pool.destroy();
+            await closeSrc();
+        }
+    };
+
     try {
         // ---- Per-depth chunk writing ----
         // Encode coarsest (depth 1) → finest (depth treeDepth).
         for (let D = 1; D <= treeDepth; ++D) {
             const k = treeDepth - D;          // LOD level index (0=finest)
             const actualLod = Math.min(k, numLods - 1);
+
+            // Streaming finest LOD: multi-LOD source + quality export + the
+            // finest LOD is not the in-memory current LOD (the in-memory path
+            // applies per-splat transforms, which file-loaded rows don't carry).
+            if (actualLod === 0 && maxSHBands > 0 && currentLodIndex !== 0) {
+                const levelTotal = await writeFinestLodStreamed(D);
+                cumulativeSplats += levelTotal;
+                const progressPercent = 5 + Math.round(95 * cumulativeSplats / totalEstimatedSplats);
+                events?.fire('progressUpdate', {
+                    text: `LOD 0 (${D}/${treeDepth}): ${levelTotal.toLocaleString()} splats  —  ${progressPercent}%`,
+                    progress: progressPercent
+                });
+                lodExportProgress = progressPercent;
+                continue;
+            }
 
             // Resolve the LOD DataTable for this depth.
             let lodDataTable: DataTable;

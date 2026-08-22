@@ -22,19 +22,19 @@ class EntityTransformHandler implements TransformHandler {
         this.events = events;
 
         events.on('pivot.started', (pivot: Pivot) => {
-            if (this.element) {
+            if (this.element && !events.invoke('pivot.detached')) {
                 this.start();
             }
         });
 
         events.on('pivot.moved', (pivot: Pivot) => {
-            if (this.element) {
+            if (this.element && !events.invoke('pivot.detached')) {
                 this.update(pivot.transform);
             }
         });
 
         events.on('pivot.ended', (pivot: Pivot) => {
-            if (this.element) {
+            if (this.element && !events.invoke('pivot.detached')) {
                 this.end();
             }
         });

@@ -27,6 +27,8 @@ interface ElectronAPI {
     openFolderDialog: () => Promise<string | null>;
     saveFileDialog: (options?: { title?: string; defaultPath?: string; filters?: Array<{ name: string; extensions: string[] }> }) => Promise<string | null>;
     readFile: (filePath: string) => Promise<Uint8Array>;
+    readRange: (filePath: string, position: number, length: number) => Promise<Uint8Array>;
+    fileSize: (filePath: string) => Promise<{ size: number }>;
     fileExists: (filePath: string) => Promise<boolean>;
     readDir: (dirPath: string) => Promise<string[]>;
     /** Create a directory (recursive when opts.recursive is true) */
@@ -39,6 +41,7 @@ interface ElectronAPI {
     writeStreamClose: (id: number) => Promise<void>;
     /** Best-effort delete a file (used by writer abort cleanup) */
     unlink: (filePath: string) => Promise<boolean>;
+    extractProjectGzipEntry: (projectPath: string, entryName: string) => Promise<{ path: string, size: number }>;
     /** Register a callback returning { dirty, docName } for close-time save prompt */
     registerDirtyChecker: (fn: () => Promise<{ dirty: boolean; docName: string | null }>) => void;
     /** Register a callback that saves the current doc; resolves true on success */

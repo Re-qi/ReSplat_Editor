@@ -326,8 +326,21 @@ class PointerController {
                 // otherwise, behave like orbit camera (zoom/pan/orbit)
                 const leftOrRightHeld = (event.buttons & 3) !== 0; // 1=left, 2=right
                 if (leftOrRightHeld) {
-                    const delta = -wheelDelta * 0.005;
-                    const newSpeed = Math.max(0.1, Math.min(30, camera.flySpeed + delta));
+                    const wheelDir = wheelDelta > 0 ? -1 : (wheelDelta < 0 ? 1 : 0);
+                    let newSpeed;
+                    // Treat an upward adjustment from exactly 20 as entering
+                    // the high-speed mode, so the value can cross 20.
+                    if (camera.flySpeed > 20 || (camera.flySpeed === 20 && wheelDir > 0)) {
+                        // 速度超过20时，每次滚轮步进10
+                        newSpeed = Math.max(0.1, Math.min(100, camera.flySpeed + wheelDir * 10));
+                    } else {
+                        const delta = -wheelDelta * 0.005;
+                        newSpeed = Math.max(0.1, Math.min(100, camera.flySpeed + delta));
+                        // 从小于20滚过20时，取整到10
+                        if (newSpeed > 20) {
+                            newSpeed = 30;
+                        }
+                    }
                     camera.scene.events.fire('camera.setFlySpeed', newSpeed);
                 } else if (burstIsWheel) {
                     zoom(wheelDelta * -0.002);

@@ -7,6 +7,7 @@ import { Scene } from '../scene';
 import { Splat } from '../splat';
 import { pickSplatSurfacePoint } from '../splat-pick';
 import { Transform } from '../transform';
+import { projectLine, projectPoint } from './screen-projection';
 import { localize } from '../ui/localization';
 
 // pointer movement below this many pixels still counts as a click
@@ -19,6 +20,8 @@ const mat3 = new Mat4();
 const p = new Vec3();
 const p0 = new Vec3();
 const p1 = new Vec3();
+const screen0 = new Vec3();
+const screen1 = new Vec3();
 const v = new Vec3();
 const r = new Quat();
 const s = new Vec3();
@@ -396,8 +399,10 @@ class MeasureTool {
 
             for (let i = 0; i < 2; i++) {
                 const dotEl = dots[i];
-                if (i < count) {
-                    getPoint2d(i, v, svgW, svgH);
+                getPoint(i, v);
+                if (i < count && projectPoint(scene.camera, v, v)) {
+                    v.x *= svgW;
+                    v.y *= svgH;
                     dotEl.setAttribute('x', v.x.toString());
                     dotEl.setAttribute('y', v.y.toString());
                     dotEl.setAttribute('visibility', 'visible');
@@ -408,13 +413,21 @@ class MeasureTool {
             }
 
             if (count > 1) {
-                getPoint2d(0, p0, svgW, svgH);
-                getPoint2d(1, p1, svgW, svgH);
-                line.setAttribute('x1', p0.x.toString());
-                line.setAttribute('y1', p0.y.toString());
-                line.setAttribute('x2', p1.x.toString());
-                line.setAttribute('y2', p1.y.toString());
-                line.setAttribute('visibility', 'visible');
+                getPoint(0, p0);
+                getPoint(1, p1);
+                if (projectLine(scene.camera, p0, p1, screen0, screen1)) {
+                    screen0.x *= svgW;
+                    screen0.y *= svgH;
+                    screen1.x *= svgW;
+                    screen1.y *= svgH;
+                    line.setAttribute('x1', screen0.x.toString());
+                    line.setAttribute('y1', screen0.y.toString());
+                    line.setAttribute('x2', screen1.x.toString());
+                    line.setAttribute('y2', screen1.y.toString());
+                    line.setAttribute('visibility', 'visible');
+                } else {
+                    line.setAttribute('visibility', 'hidden');
+                }
             } else {
                 line.setAttribute('visibility', 'hidden');
             }

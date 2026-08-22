@@ -292,9 +292,140 @@ class MappedReadFileSystem implements ReadFileSystem {
     }
 }
 
+// Maximum bytes fetched per fs:readRange IPC call. Keeps single-transfer
+// buffers small while streaming GB-scale LCC files on demand.
+const IPC_READ_CHUNK = 8 * 1024 * 1024;
+
+/**
+ * ReadStream that pulls byte ranges from a local file over Electron IPC
+ * (fs:readRange) instead of HTTP fetch — immune to system proxy / network
+ * stack issues that break UrlReadFileSystem on localhost.
+ */
+class ElectronFileReadStream extends ReadStream {
+    private pos: number;
+    private closed = false;
+    constructor(
+        private api: { readRange: (filePath: string, pos: number, len: number) => Promise<Uint8Array> },
+        private filePath: string,
+        private start: number,
+        private end: number
+    ) {
+        super(end - start);
+        this.pos = start;
+    }
+
+    async pull(target: Uint8Array): Promise<number> {
+        if (this.closed || this.pos >= this.end) return 0;
+        const maxBytes = Math.min(target.length, this.end - this.pos, IPC_READ_CHUNK);
+        if (maxBytes <= 0) return 0;
+        const data = await this.api.readRange(this.filePath, this.pos, maxBytes);
+        if (!data || data.byteLength === 0) return 0;
+        const n = Math.min(data.byteLength, target.length);
+        target.set(data.subarray(0, n), 0);
+        this.pos += n;
+        this.bytesRead += n;
+        return n;
+    }
+
+    async readAll(): Promise<Uint8Array> {
+        const out = new Uint8Array(this.end - this.start);
+        let off = 0;
+        while (off < out.length) {
+            const n = await this.pull(out.subarray(off));
+            if (n === 0) break;
+            off += n;
+        }
+        return out.subarray(0, off);
+    }
+
+    close(): void {
+        this.closed = true;
+    }
+}
+
+/**
+ * ReadSource backed by Electron IPC byte-range reads of a local file.
+ * Size comes from fs:stat; seeks are serviced by fs:readRange.
+ */
+class ElectronFileReadSource implements ReadSource {
+    size: number;
+    seekable = true;
+    private closed = false;
+
+    constructor(private api: { readRange: (filePath: string, pos: number, len: number) => Promise<Uint8Array> }, private filePath: string, size: number) {
+        this.size = size;
+    }
+
+    read(start?: number, end?: number): ReadStream {
+        if (this.closed) {
+            throw new Error('Source has been closed');
+        }
+        const s = start ?? 0;
+        const e = end ?? this.size;
+        return new ElectronFileReadStream(this.api, this.filePath, s, e);
+    }
+
+    close(): void {
+        this.closed = true;
+    }
+}
+
+// Create a seekable source for an arbitrary Electron-local file. Project
+// loading uses this for a temporary decompressed PLY, avoiding multi-GB Blob
+// and ArrayBuffer copies in the renderer.
+const createElectronFileReadSource = async (filePath: string): Promise<ReadSource> => {
+    const api = (window as any).electronAPI;
+    if (!api?.isElectron) {
+        throw new Error('Electron local file source is unavailable outside Electron');
+    }
+    const stat = await api.fileSize(filePath);
+    if (!stat || typeof stat.size !== 'number') {
+        throw new Error(`File not found: ${filePath}`);
+    }
+    return new ElectronFileReadSource(api, filePath, stat.size);
+};
+
+/**
+ * ReadFileSystem for Electron local LCC/LCC2/SSOG containers: sibling payload
+ * files are read from disk via IPC byte-range requests, keeping GB-scale
+ * data.bin/shcoef.bin out of renderer memory AND out of Chromium's network
+ * stack (which system proxies can break for localhost fetch).
+ */
+class ElectronLccReadFileSystem implements ReadFileSystem {
+    private blobFs: BlobReadFileSystem;
+    private api: { readRange: (filePath: string, pos: number, len: number) => Promise<Uint8Array>; fileSize: (filePath: string) => Promise<{ size: number }> };
+
+    constructor(private dirPath: string) {
+        this.blobFs = new BlobReadFileSystem();
+        this.api = (window as any).electronAPI;
+    }
+
+    addFile(name: string, blob: Blob): void {
+        this.blobFs.set(name, blob);
+    }
+
+    async createSource(filename: string): Promise<ReadSource> {
+        const blob = this.blobFs.get(filename);
+        if (blob) {
+            return new BlobReadSource(blob);
+        }
+        const rel = filename.replace(/^[\\/]+/, '');
+        const abs = `${this.dirPath.replace(/[\\/]+$/, '')}/${rel}`;
+        const stat = await this.api.fileSize(abs);
+        if (!stat || typeof stat.size !== 'number') {
+            throw new Error(`File not found: ${abs}`);
+        }
+        return new ElectronFileReadSource(this.api, abs, stat.size);
+    }
+
+    close(): void { }
+}
+
 export {
     BlobReadSource,
+    createElectronFileReadSource,
     DecompressingReadSource,
+    ElectronLccReadFileSystem,
     MappedReadFileSystem,
     TeeReadStream
 };
