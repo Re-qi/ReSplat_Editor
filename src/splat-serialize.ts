@@ -38,6 +38,7 @@ import {
     type ColumnLookup,
     type SimplifyOpts
 } from './nanogs';
+import type { PagedLodEditSession } from './paged-lod-edit';
 import { SHRotation } from './sh-utils';
 import { Splat } from './splat';
 import { State } from './splat-state';
@@ -624,6 +625,121 @@ const serializePly = async (splats: Splat[], serializeSettings: SerializeSetting
     const writer = await fs.createWriter(filename);
     await serializePlyToWriter(splats, serializeSettings, writer, progress);
     await writer.close();
+};
+
+// Stream an edited LOD0 from a paged proxy session as a regular PLY. The
+// session pages are loaded twice: the first pass counts surviving rows for a
+// correct PLY header, and the second pass writes one page's payload at a time.
+// No full LOD0 GSplat is created in the renderer.
+const serializePagedLod0Ply = async (
+    splat: Splat,
+    session: PagedLodEditSession,
+    serializeSettings: SerializeSettings,
+    fs: FileSystem,
+    filename = 'output.ply'
+): Promise<void> => {
+    const preparePageSplat = (loaded: Awaited<ReturnType<PagedLodEditSession['loadPage']>>): Splat => {
+        const data = loaded.gsplatData;
+        const element = data.getElement('vertex');
+        element.properties = element.properties.filter((property: any) => property.name !== 'source_index');
+        let state = data.getProp('state') as Uint8Array | undefined;
+        if (!state) {
+            state = new Uint8Array(data.numSplats);
+            element.properties.push({ type: 'uchar', name: 'state', storage: state, byteSize: 1 });
+        }
+        for (let i = 0; i < loaded.sourceIndices.length; i++) {
+            if (session.isSourceDeleted(loaded.sourceIndices[i])) state[i] |= State.deleted;
+        }
+        return {
+            splatData: data,
+            numSplats: data.numSplats,
+            transformTexture: { getSource: (): null => null },
+            transformPalette: null,
+            entity: splat.entity,
+            tintClr: splat.tintClr,
+            temperature: splat.temperature,
+            saturation: splat.saturation,
+            brightness: splat.brightness,
+            blackPoint: splat.blackPoint,
+            whitePoint: splat.whitePoint,
+            transparency: splat.transparency
+        } as unknown as Splat;
+    };
+
+    const filter = new GaussianFilter(serializeSettings);
+    let total = 0;
+    for (const page of session.manifest.pages) {
+        const loaded = await session.loadPage(page);
+        try {
+            const pageSplat = preparePageSplat(loaded);
+            filter.set(pageSplat);
+            for (let i = 0; i < pageSplat.splatData.numSplats; i++) {
+                if (filter.test(i)) total++;
+            }
+        } finally {
+            session.releasePages([page.id]);
+        }
+    }
+    if (total === 0) return;
+
+    const writer = await fs.createWriter(filename);
+    try {
+        let wroteHeader = false;
+        const encoder = new TextEncoder();
+        for (const page of session.manifest.pages) {
+            const loaded = await session.loadPage(page);
+            try {
+                const pageSplat = preparePageSplat(loaded);
+                const chunks: Uint8Array[] = [];
+                const memoryWriter = {
+                    bytesWritten: 0,
+                    write(data: Uint8Array) {
+                        chunks.push(data);
+                        this.bytesWritten += data.length;
+                        return Promise.resolve();
+                    },
+                    close() {
+                        return Promise.resolve();
+                    },
+                    abort() {}
+                };
+                await serializePlyToWriter([pageSplat], serializeSettings, memoryWriter);
+                const pageBytes = new Uint8Array(chunks.reduce((sum, chunk) => sum + chunk.length, 0));
+                let offset = 0;
+                for (const chunk of chunks) {
+                    pageBytes.set(chunk, offset);
+                    offset += chunk.length;
+                }
+                const headerMarker = encoder.encode('end_header\n');
+                let headerEnd = -1;
+                for (let i = 0; i <= pageBytes.length - headerMarker.length; i++) {
+                    let match = true;
+                    for (let j = 0; j < headerMarker.length; j++) {
+                        if (pageBytes[i + j] !== headerMarker[j]) {
+                            match = false;
+                            break;
+                        }
+                    }
+                    if (match) {
+                        headerEnd = i + headerMarker.length;
+                        break;
+                    }
+                }
+                if (headerEnd < 0) throw new Error('Paged PLY page has no header');
+                if (!wroteHeader) {
+                    const pageHeader = new TextDecoder().decode(pageBytes.subarray(0, headerEnd));
+                    const header = pageHeader.replace(/element vertex \d+/, `element vertex ${total}`);
+                    await writer.write(encoder.encode(header));
+                    wroteHeader = true;
+                }
+                await writer.write(pageBytes.subarray(headerEnd));
+            } finally {
+                session.releasePages([page.id]);
+            }
+        }
+    } finally {
+        await writer.close();
+    }
 };
 
 // Standard PLY format: 62 properties in a specific order
@@ -2235,6 +2351,12 @@ const loadLccLodForExport = async (lccSplat: Splat, lodIndex: number, settings: 
         gsplatData.getProp('z') as Float32Array,
         lccSplat.worldTransform
     );
+    if (lodIndex === 0 && lccSplat.pagedLodEditSession) {
+        const state = gsplatData.getProp('state') as Uint8Array;
+        for (let i = 0; i < state.length; i++) {
+            if (lccSplat.pagedLodEditSession.isSourceDeleted(i)) state[i] |= State.deleted;
+        }
+    }
 
     // Mock Splat: reuse the current splat's entity/world transform and color
     // grade; a null transformTexture source → identity per-splat transform.
@@ -3173,13 +3295,13 @@ const serializeLcc2FromLodLog = async (
     });
 
     // Load a LOD as a PLY-space DataTable (matching extractDataTable's output).
-    // For the current LOD, reuse the Splat's data directly (deletions/transforms
-    // already applied via EditHistory). For other LODs, stream-load from the
-    // source file, apply deletions from LodEditLog, then extract via a mock Splat
-    // that reuses the current Splat's entity/world-transform/color-grade.
+    // For the current LOD, reuse the Splat's data directly only in ordinary
+    // multi-LOD mode. In paged proxy mode the resident Splat is merely the
+    // display proxy and must never become the source for another exported LOD.
+    // Paged exports always stream every level from the original container.
     // Does NOT apply applyLcc2CoordinateTransform — the caller does that.
     const loadLodForExport = async (lodIndex: number, settings: SerializeSettings = exportSettings): Promise<DataTable> => {
-        if (lodIndex === currentLodIndex) {
+        if (lodIndex === currentLodIndex && !splat.pagedLodEditSession) {
             return extractDataTable([splat], settings);
         }
 
@@ -3199,7 +3321,14 @@ const serializeLcc2FromLodLog = async (
         const xs = gsplatData.getProp('x') as Float32Array;
         const ys = gsplatData.getProp('y') as Float32Array;
         const zs = gsplatData.getProp('z') as Float32Array;
-        lodEditLog.applyDeletionsToState(state, xs, ys, zs, splat.worldTransform);
+        if (!(lodIndex === 0 && splat.pagedLodEditSession)) {
+            lodEditLog.applyDeletionsToState(state, xs, ys, zs, splat.worldTransform);
+        }
+        if (lodIndex === 0 && splat.pagedLodEditSession) {
+            for (let i = 0; i < state.length; i++) {
+                if (splat.pagedLodEditSession.isSourceDeleted(i)) state[i] |= State.deleted;
+            }
+        }
 
         return extractDataTable([makeMockSplat(gsplatData)], settings);
     };
@@ -3224,12 +3353,18 @@ const serializeLcc2FromLodLog = async (
     // grade properties, and provide a transformTexture whose getSource()
     // returns null so SplatTransformCache treats all splats as untransformed
     // (transformIndex = 0 → identity per-splat transform).
-    const makeMockSplat = (gsplatData: GSplatData): Splat => ({
+    // A temporary page is decoded from a PLY and can have a different source
+    // basis from the resident proxy.  Most export paths use the resident
+    // entity transform, but paged LOD0 tree construction must use the page's
+    // own transform; otherwise the tree is rotated once too many times before
+    // applyLcc2CoordinateTransform and all coarse LOD points are binned against
+    // the wrong AABB.
+    const makeMockSplat = (gsplatData: GSplatData, worldTransform?: Mat4): Splat => ({
         splatData: gsplatData,
         numSplats: gsplatData.numSplats,
         transformTexture: { getSource: (): null => null },
         transformPalette: null,
-        entity: splat.entity,
+        entity: worldTransform ? { getWorldTransform: () => worldTransform } : splat.entity,
         tintClr: splat.tintClr,
         temperature: splat.temperature,
         saturation: splat.saturation,
@@ -3238,6 +3373,67 @@ const serializeLcc2FromLodLog = async (
         whitePoint: splat.whitePoint,
         transparency: splat.transparency
     } as unknown as Splat);
+
+    // Build the export tree from paged LOD0 positions when the resident
+    // renderer data is only a proxy. Each page is filtered and released before
+    // the next one is loaded; only the compact position columns remain for
+    // the adaptive tree. This keeps the exact source LOD0 authoritative while
+    // avoiding a second full-quality LOD0 GSplat allocation.
+    const loadPagedTreeData = async (settings: SerializeSettings): Promise<DataTable> => {
+        const session = splat.pagedLodEditSession!;
+        const xValues: number[] = [];
+        const yValues: number[] = [];
+        const zValues: number[] = [];
+        for (const page of session.manifest.pages) {
+            const loaded = await session.loadPage(page);
+            try {
+                const pageData = loaded.gsplatData;
+                const state = new Uint8Array(pageData.numSplats);
+                pageData.getElement('vertex').properties.push({
+                    type: 'uchar',
+                    name: 'state',
+                    storage: state,
+                    byteSize: 1
+                });
+                // In proxy mode the LOD0 source row patch is authoritative.
+                // The LodEditLog voxel is captured from the proxy and is only
+                // a coarse-LOD replay aid; applying it to a temporary PLY page
+                // can delete a much larger or differently-basis region.
+                for (let i = 0; i < loaded.sourceIndices.length; i++) {
+                    if (session.isSourceDeleted(loaded.sourceIndices[i])) state[i] |= State.deleted;
+                }
+                const pageTransform = loaded.transform ?
+                    new Mat4().setTRS(
+                        new Vec3(loaded.transform.translation),
+                        new Quat(loaded.transform.rotation),
+                        new Vec3(loaded.transform.scale, loaded.transform.scale, loaded.transform.scale)
+                    ) : splat.worldTransform;
+                const filtered = extractDataTable([makeMockSplat(pageData, pageTransform)], settings);
+                const fx = filtered.getColumnByName('x')!.data as Float32Array;
+                const fy = filtered.getColumnByName('y')!.data as Float32Array;
+                const fz = filtered.getColumnByName('z')!.data as Float32Array;
+                for (let i = 0; i < fx.length; i++) {
+                    xValues.push(fx[i]);
+                    yValues.push(fy[i]);
+                    zValues.push(fz[i]);
+                }
+            } finally {
+                session.releasePages([page.id]);
+            }
+        }
+        const count = xValues.length;
+        const rot0 = new Float32Array(count);
+        rot0.fill(1);
+        return new DataTable([
+            new Column('x', Float32Array.from(xValues)),
+            new Column('y', Float32Array.from(yValues)),
+            new Column('z', Float32Array.from(zValues)),
+            new Column('rot_0', rot0),
+            new Column('rot_1', new Float32Array(count)),
+            new Column('rot_2', new Float32Array(count)),
+            new Column('rot_3', new Float32Array(count))
+        ], Transform.PLY);
+    };
 
     // ---- Build spatial tree from the finest LOD (LOD 0) ----
     // Tree building only needs positions, not SH/color/opacity. Loading the
@@ -3251,7 +3447,9 @@ const serializeLcc2FromLodLog = async (
     const treeLodForExport = (lodIndex: number): Promise<DataTable> => loadLodForExport(lodIndex, treeSettings);
 
     console.warn(`[LCC2] Building spatial tree from finest LOD (${lodCounts[0].toLocaleString()} splats, SH=0)`);
-    let treeDataTable = await treeLodForExport(0);
+    let treeDataTable = splat.pagedLodEditSession ?
+        await loadPagedTreeData(treeSettings) :
+        await treeLodForExport(0);
     // H4: treeLodForExport's file-load path holds rawDataTable (LOD 0) + the
     // SH=0 extractDataTable result simultaneously. Hint GC to release
     // rawDataTable/gsplatData before the export loop allocates coarser LODs.
@@ -3379,7 +3577,17 @@ const serializeLcc2FromLodLog = async (
                 const x = gsplat.getProp('x') as Float32Array;
                 const y = gsplat.getProp('y') as Float32Array;
                 const z = gsplat.getProp('z') as Float32Array;
-                lodEditLog.applyDeletionsToState(state, x, y, z, splat.worldTransform);
+                // Paged LOD0 is filtered by exact stable source rows below.
+                // Do not replay the proxy voxel here: it is intentionally not
+                // the authoritative LOD0 deletion representation.
+                if (!splat.pagedLodEditSession) {
+                    lodEditLog.applyDeletionsToState(state, x, y, z, splat.worldTransform);
+                }
+                if (splat.pagedLodEditSession) {
+                    for (let i = 0; i < state.length; i++) {
+                        if (splat.pagedLodEditSession.isSourceDeleted(rawBase + i)) state[i] |= State.deleted;
+                    }
+                }
                 filter.set(makeMockSplat(gsplat));
                 for (let i = 0; i < cnt; ++i) {
                     if (filter.test(i)) filteredToRaw[g++] = rawBase + i;
@@ -3488,7 +3696,7 @@ const serializeLcc2FromLodLog = async (
             // Streaming finest LOD: multi-LOD source + quality export + the
             // finest LOD is not the in-memory current LOD (the in-memory path
             // applies per-splat transforms, which file-loaded rows don't carry).
-            if (actualLod === 0 && maxSHBands > 0 && currentLodIndex !== 0) {
+            if (actualLod === 0 && currentLodIndex !== 0 && (maxSHBands > 0 || splat.pagedLodEditSession)) {
                 const levelTotal = await writeFinestLodStreamed(D);
                 cumulativeSplats += levelTotal;
                 const progressPercent = 5 + Math.round(95 * cumulativeSplats / totalEstimatedSplats);
@@ -3510,7 +3718,7 @@ const serializeLcc2FromLodLog = async (
                     cachedLodDataTable = null;
                     (globalThis as { gc?: () => void }).gc?.();
                 }
-                if (actualLod === 0 && maxSHBands === 0) {
+                if (actualLod === 0 && maxSHBands === 0 && !splat.pagedLodEditSession) {
                     // Portable (SH=0) source: reuse the tree-building table
                     // directly. It already holds the finest LOD in LCC2 space
                     // with the same SH=0 layout as the coarser LODs, and its
@@ -4154,6 +4362,7 @@ export {
     Writer,
     serializePly,
     serializePlyToWriter,
+    serializePagedLod0Ply,
     serializePlyCompressed,
     serializeStandardPly,
     serializeSplat,

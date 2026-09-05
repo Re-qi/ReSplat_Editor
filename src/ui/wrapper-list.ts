@@ -11,6 +11,7 @@ import deleteSvg from './svg/delete.svg';
 import hiddenSvg from './svg/hidden.svg';
 import originSvg from './svg/origin.svg';
 import shownSvg from './svg/shown.svg';
+import { addVerticalListResizeHandle } from './vertical-list-resize';
 
 const createSvg = (svgString: string) => {
     const decodedStr = decodeURIComponent(svgString.substring('data:image/svg+xml,'.length));
@@ -70,6 +71,7 @@ class WrapperList extends Container {
 
         this.append(this.header);
         this.append(this.listContainer);
+        addVerticalListResizeHandle(this.listContainer.dom);
 
         // Shared helper for adding shape items
         const addShapeItem = (

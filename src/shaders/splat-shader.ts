@@ -5,6 +5,10 @@ uniform sampler2D splatState;
 uniform sampler2D soloMask;             // 255 = visible, 0 = hidden (point-cloud-group solo)
 uniform sampler2D desaturateMask;       // 255 = desaturate, 0 = normal (point-cloud-group edit)
 
+#if PAINT_ENABLED
+uniform sampler2D paintColor;           // transient local paint stroke (rgb + strength)
+#endif
+
 uniform vec4 selectedClr;
 uniform vec4 lockedClr;
 
@@ -18,6 +22,8 @@ varying mediump float depthValue;               // Depth value for depth mode
 #if PICK_PASS
     uniform uint pickOp;                        // 0: add, 1: remove, 2: set
     uniform int pickMode;                       // 0: pick id, 1: depth estimation
+    uniform float pickAlphaThreshold;           // minimum effective alpha for interaction
+    varying mediump float pickOpacity;          // gaussian opacity used by the current picker
 #endif
 
 uniform int displayMode;                        // 0: color mode, 1: depth mode
@@ -244,11 +250,15 @@ void main(void) {
     depthValue = mod(linearDepth / max(depthCycleLength, 1.0), 1.0);
 
     #if PICK_PASS
+        float sourceOpacity = getColor().a;
+        pickOpacity = pickAlphaThreshold > 0.0 ?
+            clamp(sourceOpacity * clrScale.a, 0.0, 1.0) :
+            sourceOpacity;
+
         if (pickMode == 1) {
             // depth estimation mode: compute normalized depth in vertex shader
             float normalizedDepth = (linearDepth - near_clip) / (far_clip - near_clip);
-            vec4 clr = getColor();
-            color = vec4(normalizedDepth, 0.0, 0.0, 1.0) * clr.a;
+            color = vec4(normalizedDepth, 0.0, 0.0, 1.0);
         } else {
             // pick id
             uvec4 bits = (uvec4(splat.index) >> uvec4(0u, 8u, 16u, 24u)) & uvec4(255u);
@@ -258,6 +268,14 @@ void main(void) {
     #elif FORWARD_PASS
         // read color
         color = getColor();
+
+        // Preview the current uncommitted paint stroke on the DC base color.
+        // The stroke is baked into f_dc on pointer-up, at which point this
+        // texture is cleared before the next frame.
+        #if PAINT_ENABLED
+        vec4 painted = texelFetch(paintColor, splat.uv, 0);
+        color.xyz = mix(color.xyz, painted.xyz, painted.a);
+        #endif
 
         // evaluate spherical harmonics
         #if SH_BANDS > 0
@@ -320,6 +338,8 @@ uniform int displayMode;
 
 #if PICK_PASS
     uniform int pickMode;           // 0: id, 1: depth estimation
+    uniform float pickAlphaThreshold;
+    varying mediump float pickOpacity;
 #endif
 
 const float EXP4 = exp(-4.0);
@@ -337,17 +357,20 @@ void main(void) {
     }
 
     #if PICK_PASS
+        mediump float gaussianAlpha = normExp(A);
+        mediump float effectiveAlpha = gaussianAlpha * pickOpacity;
+
         if (pickMode == 1) {
             // depth estimation
-            mediump float alpha = normExp(A);
-            if (alpha < 1.0 / 255.0) {
+            if (gaussianAlpha < 1.0 / 255.0 || effectiveAlpha < pickAlphaThreshold) {
                 discard;
             }
-            // we should multiply by alpha here to take into account gaussian falloff,
-            // but it results in less accurate depth for some reason
-            gl_FragColor = color * alpha;
+            gl_FragColor = color * effectiveAlpha;
         } else {
             // pick id
+            if (effectiveAlpha < pickAlphaThreshold) {
+                discard;
+            }
             gl_FragColor = color;
         }
     #else

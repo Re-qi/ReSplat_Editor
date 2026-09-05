@@ -35,11 +35,13 @@ const collectViewPrefs = (events: Events): Record<string, any> => {
         lockedColor: packC(events.invoke('lockedClr')),
         tonemapping: events.invoke('camera.tonemapping'),
         fov: events.invoke('camera.fov'),
+        fovDolly: events.invoke('camera.fovDolly'),
         shBands: events.invoke('view.bands'),
         flySpeed: events.invoke('camera.flySpeed'),
         centersSize: events.invoke('camera.splatSize'),
         centersUseGaussianColor: events.invoke('view.centersUseGaussianColor'),
         outlineSelection: events.invoke('view.outlineSelection'),
+        gridPlane: events.invoke('grid.plane'),
         showBoundDimensions: events.invoke('camera.boundDimensions'),
         showCameraPoses: events.invoke('camera.showPoses')
     };
@@ -64,6 +66,9 @@ const applyViewPrefs = (events: Events, prefs: Record<string, any>): void => {
     if (prefs.tonemapping !== undefined) {
         events.fire('camera.setTonemapping', prefs.tonemapping);
     }
+    if (prefs.fovDolly !== undefined) {
+        events.fire('camera.setFovDolly', prefs.fovDolly);
+    }
     if (prefs.fov !== undefined) {
         events.fire('camera.setFov', prefs.fov);
     }
@@ -81,6 +86,9 @@ const applyViewPrefs = (events: Events, prefs: Record<string, any>): void => {
     }
     if (prefs.outlineSelection !== undefined) {
         events.fire('view.setOutlineSelection', prefs.outlineSelection);
+    }
+    if (prefs.gridPlane === 'xz' || prefs.gridPlane === 'xy' || prefs.gridPlane === 'yz') {
+        events.fire('grid.setPlane', prefs.gridPlane);
     }
     if (prefs.showBoundDimensions !== undefined) {
         events.fire('camera.setBoundDimensions', prefs.showBoundDimensions);

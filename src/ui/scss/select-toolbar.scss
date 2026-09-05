@@ -30,4 +30,30 @@
     .select-toolbar-input {
         width: 70px;
     }
+
+    &.paint-toolbar {
+        gap: 8px;
+
+        .paint-color-display {
+            width: 38px;
+            height: 30px;
+            border-radius: 3px;
+            pointer-events: none;
+        }
+
+        .paint-decal-file-input {
+            display: none;
+        }
+
+        .paint-decal-toolbar-preview {
+            width: 38px;
+            height: 30px;
+            flex: 0 0 38px;
+            border-radius: 3px;
+            background: repeating-conic-gradient(#666 0 25%, #888 0 50%) 50% / 8px 8px;
+            object-fit: contain;
+            pointer-events: none;
+        }
+
+    }
 }

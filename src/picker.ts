@@ -90,7 +90,7 @@ class Picker {
     }
 
     // Prepare for ID picking by rendering the specified splat
-    prepareId(splat: Splat, mode: 'add' | 'remove' | 'set') {
+    prepareId(splat: Splat, mode: 'add' | 'remove' | 'set', alphaThreshold = 0) {
         if (!this.idRenderTarget) {
             return;
         }
@@ -106,6 +106,7 @@ class Picker {
         // Set picker uniforms
         this.device.scope.resolve('pickOp').setValue(['add', 'remove', 'set'].indexOf(mode));
         this.device.scope.resolve('pickMode').setValue(0);
+        this.device.scope.resolve('pickAlphaThreshold').setValue(alphaThreshold);
 
         // Render ID picking pass
         const emptyMap = new Map();
@@ -171,7 +172,7 @@ class Picker {
     }
 
     // Prepare for depth picking by rendering the specified splat
-    prepareDepth(splat: Splat) {
+    prepareDepth(splat: Splat, alphaThreshold = 0) {
         if (!this.depthRenderTarget) {
             return;
         }
@@ -189,6 +190,7 @@ class Picker {
         // Set depth estimation mode uniform
         this.device.scope.resolve('pickOp').setValue(2); // 'set' mode - don't skip any visible splats
         this.device.scope.resolve('pickMode').setValue(1);
+        this.device.scope.resolve('pickAlphaThreshold').setValue(alphaThreshold);
 
         // Render scene with depth pass
         this.renderPass.blendState = this.depthBlendState;

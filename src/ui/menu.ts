@@ -119,7 +119,7 @@ class Menu extends Container {
 
         viewOptions.on('click', () => events.fire('viewPanel.toggleVisible'));
 
-        events.on('viewPanel.visible', (visible: boolean) => {
+        events.on('viewPanel.displayVisible', (visible: boolean) => {
             viewOptions.class[visible ? 'add' : 'remove']('active');
         });
 
@@ -226,6 +226,10 @@ class Menu extends Container {
         }, {
             // separator
         }, {
+            text: localize('menu.file.import-image'),
+            icon: createSvg(sceneImport),
+            onSelect: () => events.invoke('scene.importImage')
+        }, {
             text: localize('menu.file.combine-lod-lcc2', { ellipsis: true }),
             icon: createSvg(squaresUnite),
             onSelect: async () => await events.invoke('show.combineLcc2Popup')
@@ -293,6 +297,11 @@ class Menu extends Container {
             extra: shortcutManager.formatShortcut('select.merge'),
             isEnabled: () => events.invoke('multiSplatSelection.count') >= 2,
             onSelect: () => events.fire('select.merge')
+        }, {
+            text: localize('menu.select.subdivide'),
+            icon: createSvg(selectSeparate),
+            isEnabled: () => events.invoke('selection.hasSplat'),
+            onSelect: () => events.fire('select.subdivide')
         }]);
 
         const renderMenuPanel = new MenuPanel([{

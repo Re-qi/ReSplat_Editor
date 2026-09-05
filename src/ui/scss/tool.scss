@@ -4,6 +4,7 @@
     position: absolute;
     width: 100%;
     height: 100%;
+    z-index: 0;
 
     &.hidden {
         display: none;
@@ -15,6 +16,30 @@
             stroke: #f60;
             stroke-width: 1;
             stroke-dasharray: 5, 5;
+        }
+    }
+
+    &#paint-tool-svg {
+        pointer-events: none;
+
+        >circle {
+            stroke: none;
+        }
+
+        >.paint-brush-adjustment-guide {
+            fill: none;
+            stroke-width: 1.5px;
+            vector-effect: non-scaling-stroke;
+        }
+
+        >.paint-brush-adjustment-guide-back {
+            stroke: white;
+        }
+
+        >.paint-brush-adjustment-guide-front {
+            stroke: #f00;
+            stroke-dasharray: 5px 5px;
+            animation: paint-brush-marching-ants 0.5s linear infinite;
         }
     }
 
@@ -100,5 +125,25 @@
             stroke: black;
             stroke-width: 2;
         }
+    }
+}
+
+@keyframes paint-brush-marching-ants {
+    to {
+        stroke-dashoffset: -10px;
+    }
+}
+
+.paint-decal-cursor {
+    position: absolute;
+    transform: translate(-50%, -50%);
+    pointer-events: none;
+    object-fit: contain;
+    opacity: 0.5;
+    filter: drop-shadow(0 0 1px rgba(0, 0, 0, 0.9));
+    z-index: 0;
+
+    &.hidden {
+        display: none;
     }
 }

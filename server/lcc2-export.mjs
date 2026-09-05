@@ -15,6 +15,8 @@ import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { Worker } from 'node:worker_threads';
 
+import { NodePathReadFileSystem } from './node-path-read-file-system.mjs';
+
 // --- Helpers ---
 
 /** Sampling rate: finest=100%, geometric 0.5^k per level (matches XGRIDS reference). */
@@ -383,20 +385,18 @@ export async function lcc2ExportToPath(inputPath, outputDir, options, splatLib, 
     } else {
         console.log(`\n[lcc2] Reading ${path.extname(inputPath) || 'source'} (splat-transform): ${inputPath}`);
         const {
-            readFile, getInputFormat, MemoryReadFileSystem, ZipReadFileSystem,
+            readFile, getInputFormat, ZipReadFileSystem,
             bakeTransform, materializeToDataTable, createChunkDataPool, selectLod
         } = splatLib;
-        const bytes = fs.readFileSync(inputPath);
         const base = path.basename(inputPath);
         const inputFormat = getInputFormat(base);
-        const memFs = new MemoryReadFileSystem();
-        memFs.set(base, bytes);
-        let readFs = memFs;
+        const nodeFs = new NodePathReadFileSystem(inputPath);
+        let readFs = nodeFs;
         let readFilename = base;
         if (inputFormat === 'sog' && lowerInput.endsWith('.sog')) {
             // Bundled .sog is a zip container; the sog reader expects the inner
             // meta.json as the entry point (mirrors the browser loader).
-            readFs = new ZipReadFileSystem(await memFs.createSource(base));
+            readFs = new ZipReadFileSystem(await nodeFs.createSource(base));
             readFilename = 'meta.json';
         }
         let dataTableFallback;
@@ -418,9 +418,7 @@ export async function lcc2ExportToPath(inputPath, outputDir, options, splatLib, 
             }
         } finally {
             readFs.close?.();
-            // Release the raw file bytes (may be 100s of MB) before the
-            // pipeline allocates its per-column Float32Arrays.
-            memFs.set(base, new Uint8Array(0));
+            if (readFs !== nodeFs) nodeFs.close();
         }
         columns = dataTableFallback.columns.map(c => ({ name: c.name, data: c.data }));
         numRows = dataTableFallback.numRows;

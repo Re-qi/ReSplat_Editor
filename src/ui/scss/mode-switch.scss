@@ -2,7 +2,10 @@
 
 #mode-switch {
     position: absolute;
-    right: 453px;
+    // Leave one 8px gap between the color, overlay and render-mode controls.
+    // Both the color and overlay controls are 56px wide (38px button, 2px
+    // margins and 16px horizontal padding); the render-mode control is 136px.
+    right: 661px;
     top: 24px;
     height: 54px;
     padding: 0px 8px;
@@ -63,55 +66,11 @@
     }
 
     &.scene-has-scrollbar {
-        right: 463px;
+        right: 671px;
     }
 
     &.scene-collapsed {
         transform: translateX(344px);
     }
 
-    #depth-cycle-popup {
-        position: absolute;
-        top: calc(100% + 4px);
-        right: 0;
-        width: 250px;
-        height: 28px;
-        padding: 0px 8px;
-        border-radius: 6px;
-        background-color: $bcg-dark;
-        display: flex;
-        flex-direction: row;
-        align-items: center;
-        white-space: nowrap;
-
-        .depth-cycle-popup-label {
-            margin-right: 6px;
-            color: $text-secondary;
-            font-size: 11px;
-        }
-
-        .depth-cycle-popup-slider {
-            flex: 1;
-            margin: 0px;
-
-            .pcui-numeric-input {
-                display: flex;
-                width: 20px;
-                box-sizing: content-box;
-
-                input {
-                    width: 25px;
-                }
-            }
-
-            & > .pcui-slider-container {
-                & > .pcui-slider-bar {
-                    & > .pcui-slider-handle {
-                        background-color: $clr-default;
-                        border-radius: 3px;
-                    }
-                }
-            }
-        }
-    }
 }

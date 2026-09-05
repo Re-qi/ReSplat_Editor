@@ -5,6 +5,7 @@ import { BackendClient, lodNeedsBackend } from './backend';
 import { Events } from './events';
 import { defaultLodIndex, loadGSplatData, loadSogDecimated, validateGSplatData } from './io';
 import { LodEditLog } from './lod-edit-log';
+import { PagedLodEditSession } from './paged-lod-edit';
 import { Splat } from './splat';
 import { localize } from './ui/localization';
 
@@ -35,10 +36,6 @@ class AssetLoader {
         let capturedLodCounts: number[] | null = null;
         let capturedNumLods = 1;
         let pickedLod = 0;
-        // When true, the user chose to edit only a single LOD: the picked LOD
-        // is loaded standalone and no cross-LOD metadata is attached (no LOD
-        // switching, no edit propagation, no multi-LOD LCC2 export).
-        let singleLodMode = false;
         // When >= 0, the user picked a LOD whose quality table exceeds the
         // renderer heap — it is loaded through the backend instead of
         // materializing the raw multi-GB container in the renderer.
@@ -53,29 +50,6 @@ class AssetLoader {
                 capturedNumLods = lodCounts.length;
                 this.events.fire('stopSpinner');
                 try {
-                    // For LCC files, first ask whether to edit a single LOD
-                    // (standalone) or multiple LODs (cross-LOD editing). Other
-                    // multi-LOD files skip this and go straight to LOD select.
-                    const lowerFilename = filename.toLowerCase();
-                    const isLcc = lowerFilename.endsWith('.lcc') || lowerFilename.endsWith('.lcc2');
-                    if (isLcc) {
-                        const modeResult = await this.events.invoke('showPopup', {
-                            type: 'okcancel',
-                            header: localize('popup.lod-mode-header'),
-                            message: localize('popup.lod-mode-message'),
-                            icon: false,
-                            okText: localize('popup.lod-mode-single'),
-                            cancelText: localize('popup.lod-mode-multi'),
-                            warning: {
-                                text: localize('popup.lod-mode-note')
-                            }
-                        });
-                        // OK = single LOD (standalone), Cancel = multi LOD
-                        // (cross-LOD editing). Both are valid choices; neither
-                        // aborts the load.
-                        singleLodMode = modeResult.action === 'ok';
-                    }
-
                     const result = await this.events.invoke('showPopup', {
                         type: 'okcancel',
                         header: localize('popup.load-options-header'),
@@ -145,17 +119,36 @@ class AssetLoader {
 
             const splat = new Splat(asset, transform.rotation);
 
-            // When the file was multi-LOD and the user chose multi-LOD editing,
-            // attach LCC metadata so cross-LOD editing (LOD switch, LCC2 export)
-            // is enabled. lccFileSystem is runtime-only (not serialized);
-            // doc.ts rebuilds it on .respproj load. In single-LOD mode the splat
-            // is left standalone (no metadata attached).
-            if (!singleLodMode && capturedNumLods > 1 && capturedLodCounts) {
+            // A non-zero LOD is always a proxy for the paged LOD0 editor. Keep
+            // the old mode popup for compatibility, but it no longer disables
+            // the exact LOD0 edit path. LOD0 itself remains the ordinary
+            // direct-import path.
+            if (capturedNumLods > 1 && capturedLodCounts) {
                 splat.lccFilePath = filename;
                 splat.lccFileSystem = fileSystem;
                 splat.lodCounts = capturedLodCounts;
                 splat.currentLodIndex = pickedLod;
                 splat.lodEditLog = new LodEditLog();
+
+                if (pickedLod > 0 && containerFilePath) {
+                    try {
+                        const manifest = await BackendClient.openLodEdit(containerFilePath, pickedLod);
+                        splat.pagedLodDescriptor = {
+                            version: manifest.version,
+                            sourceFingerprint: manifest.sourceFingerprint,
+                            sourcePath: manifest.sourcePath,
+                            proxyLod: manifest.proxyLod
+                        };
+                        splat.pagedLodEditSession = new PagedLodEditSession(splat, manifest);
+                    } catch (error) {
+                        // Do not silently present a non-zero import as an
+                        // exact editor when the local paging backend failed.
+                        // This feature is intentionally desktop/local-only.
+                        console.error('[asset-loader] Failed to open paged LOD0 session', error);
+                        splat.destroy();
+                        throw error;
+                    }
+                }
             }
 
             return splat;

@@ -4,10 +4,13 @@ import { ColorPanel } from './color-panel';
 import { Events } from '../events';
 import { localize } from './localization';
 import { LodSwitcher } from './lod-switcher';
+import { PaintLayerPanel } from './paint-layer-panel';
+import { PaintPalette } from './paint-palette';
 import { PointCloudGroup } from './point-cloud-group';
 import { SplatList } from './splat-list';
 import { Tooltips } from './tooltips';
 import { Transform } from './transform';
+import { addVerticalListResizeHandle } from './vertical-list-resize';
 import { ViewPanel } from './view-panel';
 import { WrapperList } from './wrapper-list';
 
@@ -95,49 +98,77 @@ class ScenePanel extends Container {
         viewSection.append(embeddedViewPanel);
         viewSection.hidden = true;
 
+        const paintPalette = new PaintPalette(events, tooltips);
+        const paintLayerPanel = new PaintLayerPanel(events, tooltips);
+
         this.append(sceneHeader);
         this.append(splatListContainer);
+        addVerticalListResizeHandle(splatListContainer.dom);
         this.append(new LodSwitcher(events));
         this.append(pointCloudGroup);
         this.append(new WrapperList(events));
         this.append(transformHeader);
         this.append(new Transform(events, tooltips));
+        this.append(paintPalette);
+        this.append(paintLayerPanel);
         this.append(colorSection);
         this.append(viewSection);
 
-        // When color mode is selected from mode-switch, keep color section hidden
-        // User needs to click the color mode button again to show it
-        events.on('view.displayMode', (mode: string) => {
-            if (mode === 'color') {
-                colorSection.hidden = true;
-            } else {
-                colorSection.hidden = true;
-            }
-        });
+        let colorVisible = false;
+        let viewVisible = false;
 
-        // Toggle color section visibility when clicking color mode button while already active
+        const updateSectionVisibility = () => {
+            const colorDisplayed = colorVisible;
+            const viewDisplayed = viewVisible;
+            colorSection.hidden = !colorDisplayed;
+            viewSection.hidden = !viewDisplayed;
+            events.fire('colorPanel.displayVisible', colorDisplayed);
+            events.fire('viewPanel.displayVisible', viewDisplayed);
+        };
+
+        const updateModeLayout = (mode: 'edit' | 'paint') => {
+            const painting = mode === 'paint';
+            this.dom.classList.toggle('paint-mode', painting);
+            paintPalette.hidden = !painting;
+            paintLayerPanel.hidden = !painting;
+            updateSectionVisibility();
+        };
+        events.on('mode.changed', updateModeLayout);
+        const initialMode = events.functions.has('mode.active') ? (events.invoke('mode.active') as 'edit' | 'paint') : 'edit';
+        updateModeLayout(initialMode ?? 'edit');
+
+        // Toggle color section visibility while preserving its state across mode changes.
         events.on('colorPanel.toggleVisible', () => {
-            colorSection.hidden = !colorSection.hidden;
-            if (!colorSection.hidden) {
+            colorVisible = !colorVisible;
+            if (colorVisible) {
                 events.fire('colorPanel.shown');
             }
+            updateSectionVisibility();
+            events.fire('colorPanel.visible', colorVisible);
         });
 
-        // Toggle view section visibility via menu bar button
+        // Toggle view section visibility independently of the color section.
         events.on('viewPanel.toggleVisible', () => {
-            viewSection.hidden = !viewSection.hidden;
-            events.fire('viewPanel.visible', !viewSection.hidden);
+            viewVisible = !viewVisible;
+            updateSectionVisibility();
+            events.fire('viewPanel.visible', viewVisible);
+            if (!viewVisible) events.fire('colorPanel.visible', colorVisible);
         });
         events.on('viewPanel.visible', (visible: boolean) => {
-            viewSection.hidden = !visible;
+            viewVisible = visible;
+            updateSectionVisibility();
         });
 
         events.on('scenePanel.toggle', () => {
             this.dom.classList.toggle('collapsed');
+            const viewModeToggle = document.getElementById('view-mode-toggle');
             const modeSwitch = document.getElementById('mode-switch');
             const overlayToggle = document.getElementById('overlay-toggle');
             const cameraModeSwitch = document.getElementById('camera-mode-switch');
             const viewCube = document.getElementById('view-cube-container');
+            if (viewModeToggle) {
+                viewModeToggle.classList.toggle('scene-collapsed');
+            }
             if (modeSwitch) {
                 modeSwitch.classList.toggle('scene-collapsed');
             }
@@ -154,10 +185,14 @@ class ScenePanel extends Container {
 
         // Detect vertical scrollbar presence
         const syncScrollbarClass = (hasScrollbar: boolean) => {
+            const viewModeToggle = document.getElementById('view-mode-toggle');
             const modeSwitch = document.getElementById('mode-switch');
             const overlayToggle = document.getElementById('overlay-toggle');
             const cameraModeSwitch = document.getElementById('camera-mode-switch');
             const viewCube = document.getElementById('view-cube-container');
+            if (viewModeToggle) {
+                viewModeToggle.classList.toggle('scene-has-scrollbar', hasScrollbar);
+            }
             if (modeSwitch) {
                 modeSwitch.classList.toggle('scene-has-scrollbar', hasScrollbar);
             }

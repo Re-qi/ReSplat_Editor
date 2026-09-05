@@ -38,11 +38,18 @@ class LodSwitcher extends Container {
         const refresh = (splat: Splat | null) => {
             if (splat && splat.lodEditLog && splat.lccFileSystem && splat.lodCounts.length > 1) {
                 this.hidden = false;
-                this.selectInput.options = splat.lodCounts.map((count, i) => ({
+                // In paged proxy mode LOD0 is an edit source, not a display
+                // level. Exposing it here lets the SelectInput emit
+                // lod.switch(0), which is explicitly forbidden because it
+                // would imply loading the complete LOD0 into the renderer.
+                const proxyMode = !!splat.pagedLodEditSession;
+                this.selectInput.options = splat.lodCounts
+                .map((count, i) => ({
                     v: i,
                     t: `LOD ${i} (${count.toLocaleString()} ${localize('popup.lod-select-splats')})`
-                }));
-                this.selectInput.value = String(splat.currentLodIndex);
+                }))
+                .filter((_, i) => !proxyMode || i > 0);
+                this.selectInput.value = String(proxyMode ? Math.max(1, splat.currentLodIndex) : splat.currentLodIndex);
             } else {
                 this.hidden = true;
                 this.selectInput.options = [];
@@ -64,6 +71,13 @@ class LodSwitcher extends Container {
             const targetLod = parseInt(value, 10);
             const splat = events.invoke('splatSelection') as Splat;
             if (!splat || targetLod === splat.currentLodIndex) return;
+            if (splat.pagedLodEditSession && targetLod === 0) {
+                // Defensive guard for programmatic SelectInput changes or a
+                // stale UI value. The normal options list already excludes
+                // LOD0 in proxy mode.
+                refresh(splat);
+                return;
+            }
             this.switching = true;
             events.invoke('lod.switch', targetLod).catch((e: Error) => {
                 console.error('[lod-switcher] lod.switch failed:', e);

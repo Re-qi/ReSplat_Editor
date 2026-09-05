@@ -35,7 +35,7 @@ const fragmentShader = /* glsl */ `
     vec2 calcAzimuthElev(in vec3 dir) {
         float azimuth = atan(dir.z, dir.x);
         float elev = asin(dir.y);
-        return vec2(azimuth, elev) * 180.0 / 3.14159;
+        return vec2(azimuth, elev);
     }
 
     uniform sampler2D blueNoiseTex32;
@@ -60,13 +60,21 @@ const fragmentShader = /* glsl */ `
         return alpha > noise;
     }
 
-    bool strips(vec3 lp) {
+    bool strips(vec3 lp, vec3 worldRadii) {
         vec2 ae = calcAzimuthElev(normalize(lp));
 
-        float spacing = 180.0 / (2.0 * 3.14159 * 0.5);
-        float size = 0.03;
-        return fract(ae.x / spacing) < size ||
-               fract(ae.y / spacing) < size;
+        // Convert the angular coordinates to approximate world-space arc
+        // lengths. Keeping the grid interval fixed in world space means that
+        // scaling the ellipsoid exposes more grid lines instead of stretching
+        // the original fixed-count grid.
+        float azimuthRadius = max((worldRadii.x + worldRadii.z) * 0.5, 0.0001);
+        float elevationRadius = max((azimuthRadius + worldRadii.y) * 0.5, 0.0001);
+        vec2 arc = vec2(ae.x * azimuthRadius, ae.y * elevationRadius);
+
+        float gridSize = 1.0;
+        float lineHalfWidth = 0.015;
+        vec2 distanceToLine = abs(fract(arc / gridSize + 0.5) - 0.5) * gridSize;
+        return distanceToLine.x < lineHalfWidth || distanceToLine.y < lineHalfWidth;
     }
 
     void main() {
@@ -79,16 +87,24 @@ const fragmentShader = /* glsl */ `
         vec3 localFar = (matrix_model_inv * vec4(worldFar, 1.0)).xyz;
         vec3 localDir = normalize(localFar - localNear);
 
+        // The source sphere has radius 0.5. Matrix column lengths give its
+        // world-space axis scales, including parent transforms.
+        vec3 worldRadii = vec3(
+            length(matrix_model[0].xyz),
+            length(matrix_model[1].xyz),
+            length(matrix_model[2].xyz)
+        ) * 0.5;
+
         float t0, t1;
         if (!intersectSphereLocal(t0, t1, localNear, localDir)) {
             discard;
         }
 
         vec3 localFront = localNear + localDir * t0;
-        bool front = t0 > 0.0 && strips(localFront);
+        bool front = t0 > 0.0 && strips(localFront, worldRadii);
 
         vec3 localBack = localNear + localDir * t1;
-        bool back = strips(localBack);
+        bool back = strips(localBack, worldRadii);
 
         if (front) {
             vec3 worldFront = (matrix_model * vec4(localFront, 1.0)).xyz;

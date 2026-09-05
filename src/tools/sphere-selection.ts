@@ -145,14 +145,12 @@ class SphereSelection {
         events.on('camera.focalPointPicked', (details: { splat: Splat, position: Vec3 }) => {
             if (!this.active) return;
 
-            // eslint-disable-next-line no-use-before-define
             createSphere(details.position);
         });
 
         // Additional event to create a sphere when tool icon is clicked while already active
-        events.on('sphereSelection.create', () => {
-            // eslint-disable-next-line no-use-before-define
-            createSphere(scene.camera.focalPoint.clone());
+        events.on('sphereSelection.create', (position?: Vec3) => {
+            createSphere(position?.clone() ?? scene.camera.focalPoint.clone());
         });
 
         // Clean up our reference when a sphere is removed from the scene

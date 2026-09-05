@@ -1,6 +1,6 @@
 {
     "name": "ReSplat",
-    "version": "1.2.9",
+    "version": "2.0.0",
     "main": "electron/main.cjs",
     "author": "Re祁",
     "homepage": "https://playcanvas.com/ReSplat/editor",
@@ -22,6 +22,12 @@
         "local": "node --max-old-space-size=8192 server.js",
         "local:build": "npm run build && npm run local",
         "postinstall": "node scripts/patch-splat-transform.mjs",
+        "test:paint-through": "node scripts/test-paint-through.mjs",
+        "test:paint-layers": "node scripts/test-paint-layers.mjs",
+        "test:paint-parameter-adjustment": "node scripts/test-paint-parameter-adjustment.mjs",
+        "test:lod-convert-path": "node scripts/test-lod-convert-path.mjs",
+        "test:html-export-large-file-read": "node scripts/test-html-export-large-file-read.mjs",
+        "test:shrinkwrap-opacity": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/test-shrinkwrap-opacity.mjs",
         "electron:dev": "npm run build && electron .",
         "electron:build": "npm run build && electron-builder",
         "lint": "eslint src"

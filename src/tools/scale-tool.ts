@@ -15,7 +15,13 @@ class ScaleTool extends TransformTool {
         // set lower bound on scale
         gizmo.lowerBoundScale.set(1e-6, 1e-6, 1e-6);
 
-        const nonUniformAxes = ['x', 'y', 'z', 'yz', 'xz', 'xy'] as const;
+        // Plane handles (the squares between two axes) apply one shared scale
+        // factor to both active axes. In particular, dragging the XY square now
+        // preserves the X:Y aspect ratio instead of stretching each axis by an
+        // independent amount.
+        gizmo.uniform = true;
+
+        const scaleAxes = ['x', 'y', 'z', 'yz', 'xz', 'xy'] as const;
 
         // Force local coordinate space for BlockingPlane
         const forceLocalCoordSpace = () => {
@@ -31,7 +37,7 @@ class ScaleTool extends TransformTool {
             const isShape = shapeSel instanceof BoxShape || shapeSel instanceof SphereShape || shapeSel instanceof BlockingPlane;
             const splatSel = events.invoke('splatSelection');
             const isSplat = splatSel instanceof Splat;
-            nonUniformAxes.forEach((axis) => {
+            scaleAxes.forEach((axis) => {
                 gizmo.enableShape(axis, isShape || isSplat);
             });
             // Force local coord space for BlockingPlane

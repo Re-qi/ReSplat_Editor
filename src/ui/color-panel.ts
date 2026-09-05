@@ -46,7 +46,7 @@ const createRevertBtn = (onRevert: () => void) => {
 };
 
 // pcui slider doesn't include start and end events
-class MyFancySliderInput extends SliderInput {
+export class MyFancySliderInput extends SliderInput {
     // ResizeObserver used to refresh handle position once the handle
     // is laid out (getBoundingClientRect().width returns 0 while the
     // element is detached or hidden, which makes the stock _updateHandle

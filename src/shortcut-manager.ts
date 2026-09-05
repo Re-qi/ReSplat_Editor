@@ -38,18 +38,18 @@ const defaultShortcuts: Record<string, ShortcutBinding> = {
     'select.delete': { keys: ['Delete', 'Backspace'] },
 
     // Tools
-    'tool.move': { keys: ['w'] },
-    'tool.rotate': { keys: ['e'] },
-    'tool.scale': { keys: ['r'] },
-    'tool.rectSelection': { keys: ['2'] },
-    'tool.lassoSelection': { keys: ['4'] },
-    'tool.polygonSelection': { keys: ['3'] },
-    'tool.brushSelection': { keys: ['1'] },
-    'tool.cycleFloodTool': { keys: ['5'] },
+    'tool.move': { keys: ['w'], mode: 'edit' },
+    'tool.rotate': { keys: ['e'], mode: 'edit' },
+    'tool.scale': { keys: ['r'], mode: 'edit' },
+    'tool.rectSelection': { keys: ['2'], mode: 'edit' },
+    'tool.lassoSelection': { keys: ['4'], mode: 'edit' },
+    'tool.polygonSelection': { keys: ['3'], mode: 'edit' },
+    'tool.brushSelection': { keys: ['1'], mode: 'edit' },
+    'tool.cycleFloodTool': { keys: ['5'], mode: 'edit' },
     'tool.brushSelection.smaller': { keys: ['['], repeat: true },
     'tool.brushSelection.bigger': { keys: [']'], repeat: true },
     'tool.deactivate': { keys: ['Escape'] },
-    'tool.toggleCoordSpace': { keys: ['c'], shift: 'required' },
+    'tool.toggleCoordSpace': { keys: ['c'], shift: 'required', mode: 'edit' },
 
     // Other
     'edit.undo': { keys: ['z'], ctrl: 'required', repeat: true, capture: true },
@@ -87,7 +87,8 @@ class ShortcutManager {
                 alt: binding.alt,
                 held: binding.held,
                 repeat: binding.repeat,
-                capture: binding.capture
+                capture: binding.capture,
+                mode: binding.mode
             });
         }
     }

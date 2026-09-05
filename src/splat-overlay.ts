@@ -92,6 +92,13 @@ class SplatOverlay extends Element {
                 this.attach(splat);
             }
         });
+
+        // Structural decal subdivision replaces the fixed-size GSplatInstance
+        // and all per-splat textures while retaining the same Splat object.
+        // Refresh cached overlay texture/sorter references after that swap.
+        scene.events.on('splat.structureChanged', (splat: Splat) => {
+            if (this.splat === splat) this.attach(splat);
+        });
     }
 
     destroy() {
@@ -172,9 +179,10 @@ class SplatOverlay extends Element {
             const selectedClr = events.invoke('view.outlineSelection') ? nullClr : events.invoke('selectedClr');
             const unselectedClr = events.invoke('unselectedClr');
             const useGaussianColor = events.invoke('view.centersUseGaussianColor') ? 1.0 : 0.0;
+            const selectedAlpha = events.invoke('mode.active') === 'paint' ? 0 : selectedClr.a;
 
             material.setParameter('splatSize', splatSize * window.devicePixelRatio);
-            material.setParameter('selectedClr', [selectedClr.r, selectedClr.g, selectedClr.b, selectedClr.a]);
+            material.setParameter('selectedClr', [selectedClr.r, selectedClr.g, selectedClr.b, selectedAlpha]);
             material.setParameter('unselectedClr', [unselectedClr.r, unselectedClr.g, unselectedClr.b, unselectedClr.a]);
             material.setParameter('useGaussianColor', useGaussianColor);
             material.setParameter('transformPalette', this.splat.transformPalette.texture);

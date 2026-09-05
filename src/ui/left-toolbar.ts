@@ -5,8 +5,11 @@ import { ShortcutManager } from '../shortcut-manager';
 import { localize, formatTooltipWithShortcut } from './localization';
 import balanceSvg from './svg/balance.svg';
 import coordSpaceSvg from './svg/compass.svg';
+import eraserSvg from './svg/eraser.svg';
+import imagesSvg from './svg/images.svg';
 import translateSvg from './svg/move.svg';
 import originSvg from './svg/origin.svg';
+import paintBrushSvg from './svg/paintbrush.svg';
 import redoSvg from './svg/redo.svg';
 import rotateSvg from './svg/rotate.svg';
 import measureSvg from './svg/ruler.svg';
@@ -97,6 +100,44 @@ class LeftToolbar extends Container {
             class: 'left-toolbar-tool'
         });
 
+        const paintBrush = new Button({
+            id: 'left-toolbar-paintbrush',
+            class: ['left-toolbar-tool', 'paint-mode-tool'],
+            enabled: true,
+            hidden: true
+        });
+
+        const paintEraser = new Button({
+            id: 'left-toolbar-paint-eraser',
+            class: ['left-toolbar-tool', 'paint-mode-tool'],
+            enabled: true,
+            hidden: true
+        });
+
+        const paintEyedropper = new Button({
+            id: 'left-toolbar-paint-eyedropper',
+            class: ['left-toolbar-tool', 'paint-mode-tool'],
+            enabled: false,
+            hidden: true
+        });
+
+        const paintDecal = new Button({
+            id: 'left-toolbar-paint-decal',
+            class: ['left-toolbar-tool', 'paint-mode-tool'],
+            enabled: false,
+            hidden: true
+        });
+
+        const paintDecalSubdivide = new Button({
+            id: 'left-toolbar-paint-decal-subdivide',
+            class: ['left-toolbar-tool', 'paint-mode-tool']
+        });
+
+        const paintDecalShrinkwrap = new Button({
+            id: 'left-toolbar-paint-decal-shrinkwrap',
+            class: ['left-toolbar-tool', 'paint-mode-tool']
+        });
+
         const translate = new Button({
             id: 'left-toolbar-translate',
             class: 'left-toolbar-tool'
@@ -132,6 +173,12 @@ class LeftToolbar extends Container {
             class: ['left-toolbar-toggle']
         });
 
+        const paintTools = [paintBrush, paintEraser, paintEyedropper, paintDecal];
+        const editTools = [
+            picker, polygon, brush, lasso, flood, translate, rotate, scale,
+            measure, orient, coordSpace, origin
+        ];
+
         undo.dom.appendChild(createSvg(undoSvg));
         redo.dom.appendChild(createSvg(redoSvg));
         picker.dom.appendChild(createSvg(pickerSvg));
@@ -141,6 +188,12 @@ class LeftToolbar extends Container {
         eyedropper.dom.appendChild(createSvg(eyedropperSvg));
         opacity.dom.appendChild(createSvg(opacitySvg));
         size.dom.appendChild(createSvg(sizeSvg));
+        paintBrush.dom.appendChild(createSvg(paintBrushSvg));
+        paintEraser.dom.appendChild(createSvg(eraserSvg));
+        paintEyedropper.dom.appendChild(createSvg(eyedropperSvg));
+        paintDecal.dom.appendChild(createSvg(imagesSvg));
+        paintDecalSubdivide.dom.appendChild(createSvg(imagesSvg));
+        paintDecalShrinkwrap.dom.appendChild(createSvg(imagesSvg));
         translate.dom.appendChild(createSvg(translateSvg));
         rotate.dom.appendChild(createSvg(rotateSvg));
         scale.dom.appendChild(createSvg(scaleSvg));
@@ -161,6 +214,18 @@ class LeftToolbar extends Container {
         floodPopup.appendChild(size.dom);
         this.dom.appendChild(floodPopup);
 
+        // Paint decal variants use the same long-press / drag-to-select
+        // interaction as the edit-mode eyedropper group.
+        const paintDecalPopup = document.createElement('div');
+        paintDecalPopup.className = 'left-toolbar-popup left-toolbar-paint-decal-popup';
+        paintDecalPopup.style.display = 'none';
+        paintDecalPopup.appendChild(paintDecalSubdivide.dom);
+        paintDecalPopup.appendChild(paintDecalShrinkwrap.dom);
+        this.dom.appendChild(paintDecalPopup);
+
+        paintDecalPopup.addEventListener('mousedown', e => e.stopPropagation());
+        paintDecalPopup.addEventListener('mouseup', e => e.stopPropagation());
+
         // 阻止弹出列表中的事件冒泡
         floodPopup.addEventListener('mousedown', (e) => {
             e.stopPropagation();
@@ -169,19 +234,22 @@ class LeftToolbar extends Container {
             e.stopPropagation();
         });
 
+        const separatorBeforeEditTools = new Element({ class: 'left-toolbar-separator' });
+        const separatorBeforeMeasure = new Element({ class: 'left-toolbar-separator' });
+
         this.append(undo);
         this.append(redo);
-        this.append(new Element({ class: 'left-toolbar-separator' }));
+        this.append(separatorBeforeEditTools);
         this.append(brush);
         this.append(picker);
         this.append(polygon);
         this.append(lasso);
         this.append(flood);
-        this.append(new Element({ class: 'left-toolbar-separator' }));
+        paintTools.forEach(button => this.append(button));
         this.append(translate);
         this.append(rotate);
         this.append(scale);
-        this.append(new Element({ class: 'left-toolbar-separator' }));
+        this.append(separatorBeforeMeasure);
         this.append(measure);
         this.append(orient);
         this.append(coordSpace);
@@ -587,11 +655,8 @@ class LeftToolbar extends Container {
         const cleanupLongPressDrag = () => {
             isLongPressDrag = false;
             isLongPress = false;
-            // eslint-disable-next-line no-use-before-define
             hideFloodPopup();
-            // eslint-disable-next-line no-use-before-define
             document.removeEventListener('mouseup', onDocMouseUpCapture, true);
-            // eslint-disable-next-line no-use-before-define
             document.removeEventListener('mousemove', onDocMouseMoveCapture, true);
             // Reset all popup button hover states
             for (const btn of popupButtonActions) {
@@ -731,6 +796,111 @@ class LeftToolbar extends Container {
         floodPopupBtn.dom.addEventListener('click', () => events.fire('tool.floodSelection'));
         opacity.dom.addEventListener('click', () => events.fire('tool.opacitySelection'));
         size.dom.addEventListener('click', () => events.fire('tool.sizeSelection'));
+
+        type DecalMode = 'subdivide' | 'shrinkwrap';
+        let currentDecalMode: DecalMode = 'subdivide';
+        let decalLongPressTimer: ReturnType<typeof setTimeout> | null = null;
+        let decalLongPressDrag = false;
+        let decalSuppressClick = false;
+        let decalPressStartX = 0;
+        const decalPopupActions: Array<{ element: HTMLElement, mode: DecalMode }> = [
+            { element: paintDecalSubdivide.dom, mode: 'subdivide' },
+            { element: paintDecalShrinkwrap.dom, mode: 'shrinkwrap' }
+        ];
+
+        const showPaintDecalPopup = () => {
+            const buttonRect = paintDecal.dom.getBoundingClientRect();
+            const toolbarRect = this.dom.getBoundingClientRect();
+            paintDecalPopup.style.left = `${buttonRect.right - toolbarRect.left + 10}px`;
+            paintDecalPopup.style.top = `${buttonRect.top - toolbarRect.top - 6}px`;
+            paintDecalPopup.style.display = '';
+        };
+        const hidePaintDecalPopup = () => {
+            paintDecalPopup.style.display = 'none';
+            decalPopupActions.forEach(action => action.element.classList.remove('longpress-hover'));
+        };
+        const findDecalActionAtPoint = (x: number, y: number) => {
+            const element = document.elementFromPoint(x, y);
+            return decalPopupActions.find(action => action.element === element || action.element.contains(element)) ?? null;
+        };
+        const activateDecalMode = (mode: DecalMode) => {
+            currentDecalMode = mode;
+            events.fire('paint.decal.mode.set', mode);
+            events.fire('paint.tool.set', 'decal');
+            hidePaintDecalPopup();
+        };
+        const stopDecalLongPressDrag = () => {
+            decalLongPressDrag = false;
+            document.removeEventListener('mouseup', onDecalDocumentMouseUp, true);
+            document.removeEventListener('mousemove', onDecalDocumentMouseMove, true);
+            hidePaintDecalPopup();
+        };
+        const onDecalDocumentMouseMove = (event: MouseEvent) => {
+            const hovered = findDecalActionAtPoint(event.clientX, event.clientY);
+            decalPopupActions.forEach(action => action.element.classList.toggle('longpress-hover', action === hovered));
+        };
+        const onDecalDocumentMouseUp = (event: MouseEvent) => {
+            if (event.button !== 0) return;
+            const action = findDecalActionAtPoint(event.clientX, event.clientY);
+            if (action) activateDecalMode(action.mode);
+            stopDecalLongPressDrag();
+        };
+        const startDecalLongPressDrag = () => {
+            if (decalLongPressTimer) clearTimeout(decalLongPressTimer);
+            decalLongPressTimer = null;
+            decalLongPressDrag = true;
+            decalSuppressClick = true;
+            showPaintDecalPopup();
+            document.addEventListener('mouseup', onDecalDocumentMouseUp, true);
+            document.addEventListener('mousemove', onDecalDocumentMouseMove, true);
+        };
+
+        const decalToggle = document.createElement('div');
+        decalToggle.className = 'left-toolbar-decal-toggle';
+        paintDecal.dom.style.position = 'relative';
+        paintDecal.dom.appendChild(decalToggle);
+        decalToggle.addEventListener('mousedown', (event) => {
+            event.stopPropagation();
+            if (paintDecalPopup.style.display === 'none') showPaintDecalPopup();
+            else hidePaintDecalPopup();
+        });
+
+        paintDecal.dom.addEventListener('mousedown', (event) => {
+            if (event.button !== 0 || decalToggle.contains(event.target as Node)) return;
+            decalSuppressClick = false;
+            decalPressStartX = event.clientX;
+            decalLongPressTimer = setTimeout(startDecalLongPressDrag, 200);
+        });
+        paintDecal.dom.addEventListener('mousemove', (event) => {
+            if (!decalLongPressTimer || decalLongPressDrag) return;
+            if (event.clientX - decalPressStartX >= 20) startDecalLongPressDrag();
+        });
+        paintDecal.dom.addEventListener('mouseup', (event) => {
+            if (event.button !== 0 || decalToggle.contains(event.target as Node)) return;
+            if (decalLongPressTimer) clearTimeout(decalLongPressTimer);
+            decalLongPressTimer = null;
+            if (decalSuppressClick) {
+                decalSuppressClick = false;
+                return;
+            }
+            if (!decalLongPressDrag) activateDecalMode(currentDecalMode);
+        });
+        paintDecal.dom.addEventListener('mouseleave', () => {
+            if (decalLongPressTimer) clearTimeout(decalLongPressTimer);
+            decalLongPressTimer = null;
+        });
+        decalPopupActions.forEach(action => action.element.addEventListener('click', () => activateDecalMode(action.mode)));
+        document.addEventListener('mousedown', (event) => {
+            if (paintDecalPopup.style.display !== 'none' && !decalLongPressDrag &&
+                !paintDecalPopup.contains(event.target as Node) && !paintDecal.dom.contains(event.target as Node)) {
+                hidePaintDecalPopup();
+            }
+        });
+
+        const paintToolNames = ['brush', 'eraser', 'eyedropper', 'decal'];
+        [paintBrush, paintEraser, paintEyedropper].forEach((button, index) => {
+            button.dom.addEventListener('click', () => events.fire('paint.tool.set', paintToolNames[index]));
+        });
         translate.dom.addEventListener('click', () => events.fire('tool.move'));
         rotate.dom.addEventListener('click', () => events.fire('tool.rotate'));
         scale.dom.addEventListener('click', () => events.fire('tool.scale'));
@@ -743,6 +913,52 @@ class LeftToolbar extends Container {
             } else {
                 events.fire('pivot.toggleOrigin');
             }
+        });
+
+        let paintBusy = false;
+        const setToolbarMode = (mode: 'edit' | 'paint') => {
+            const painting = mode === 'paint';
+            editTools.forEach((button) => {
+                button.hidden = painting;
+            });
+            paintTools.forEach((button) => {
+                button.hidden = !painting;
+            });
+            // The edit-only section below the paint tools is hidden in paint
+            // mode, so its separator would otherwise sit directly beside the
+            // paint-tools separator.
+            separatorBeforeMeasure.hidden = painting;
+            paintTools.forEach((button) => {
+                button.enabled = painting && !paintBusy;
+            });
+            if (painting) {
+                floodPopup.style.display = 'none';
+                hideCompactPopup();
+            } else {
+                hidePaintDecalPopup();
+                checkCompactMode();
+            }
+        };
+
+        events.on('paint.tool.changed', (toolName: string) => {
+            paintTools.forEach((button, index) => {
+                button.class[index === paintToolNames.indexOf(toolName) ? 'add' : 'remove']('active');
+            });
+        });
+
+        paintDecalSubdivide.class.add('active');
+        events.on('paint.decal.mode.changed', (mode: DecalMode) => {
+            currentDecalMode = mode;
+            paintDecalSubdivide.class[mode === 'subdivide' ? 'add' : 'remove']('active');
+            paintDecalShrinkwrap.class[mode === 'shrinkwrap' ? 'add' : 'remove']('active');
+            tooltips.unregister(paintDecal);
+            tooltips.register(paintDecal, localize(mode === 'shrinkwrap' ?
+                'paint.tool.decal-shrinkwrap' :
+                'paint.tool.decal-subdivide'));
+        });
+
+        events.on('mode.changed', (mode: 'edit' | 'paint') => {
+            setToolbarMode(mode);
         });
 
         events.on('edit.canUndo', (value: boolean) => {
@@ -785,7 +1001,6 @@ class LeftToolbar extends Container {
                 updateFloodSvg(toolName);
                 // 更新 tooltip
                 tooltips.unregister(flood);
-                // eslint-disable-next-line no-use-before-define
                 tooltips.register(flood, tooltip(floodTooltipMap[toolName], `tool.${toolName}`));
             }
         });
@@ -845,6 +1060,28 @@ class LeftToolbar extends Container {
         tooltips.register(floodPopupBtn, tooltip('tooltip.left-toolbar.flood', 'tool.floodSelection'));
         tooltips.register(opacity, tooltip('tooltip.left-toolbar.opacity', 'tool.opacitySelection'));
         tooltips.register(size, tooltip('tooltip.left-toolbar.size', 'tool.sizeSelection'));
+        tooltips.register(paintBrush, localize('paint.tool.brush'));
+        tooltips.register(paintEraser, localize('paint.tool.eraser'));
+        tooltips.register(paintEyedropper, localize('paint.tool.eyedropper'));
+        tooltips.register(paintDecal, localize('paint.tool.decal-subdivide'));
+        tooltips.register(paintDecalSubdivide, localize('paint.tool.decal-subdivide'));
+        tooltips.register(paintDecalShrinkwrap, localize('paint.tool.decal-shrinkwrap'));
+
+        events.on('paint.busy', (busy: boolean) => {
+            paintBusy = busy;
+            const painting = events.invoke('mode.active') === 'paint';
+            paintTools.forEach((button) => {
+                button.enabled = painting && !busy;
+            });
+            paintDecalSubdivide.enabled = painting && !busy;
+            paintDecalShrinkwrap.enabled = painting && !busy;
+            if (busy) hidePaintDecalPopup();
+        });
+        requestAnimationFrame(() => {
+            const mode = (events.invoke('mode.active') as 'edit' | 'paint') ?? 'edit';
+            setToolbarMode(mode);
+            paintTools[0].class.add('active');
+        });
 
         events.on('bottomToolbar.toggle', () => {
             this.dom.classList.toggle('collapsed');

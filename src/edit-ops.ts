@@ -5,16 +5,19 @@ import { Element, ElementType } from './element';
 import { Events } from './events';
 import { IndexRanges, sortedPredicate } from './index-ranges';
 import { GaussianLUT } from './lut';
+import type { PagedLodEditSession, VoxelSelectionLike } from './paged-lod-edit';
 import { Pivot } from './pivot';
 import { Scene } from './scene';
 import { Splat } from './splat';
 import { State } from './splat-state';
+import { applySubdivisionGroups, type SubdivisionGroupChange } from './splat-subdivide';
 import { Transform } from './transform';
 
 interface EditOp {
     name: string;
     do(): void | Promise<void>;
     undo(): void | Promise<void>;
+    restoreUnapplied?(): void | Promise<void>;
     destroy?(): void;
     serialize(): { type: string; data: any };
 }
@@ -277,6 +280,95 @@ class DeleteSelectionOp extends StateOp {
     constructor(splat: Splat) {
         const state = splat.splatData.getProp('state') as Uint8Array;
         super(splat, IndexRanges.fromPredicate(splat.splatData.numSplats, i => state[i] === State.selected), State.deleted, BitOp.SET, State.deleted);
+    }
+}
+
+// Exact deletion for a proxy LOD session. The source row ids are the
+// authoritative edit payload; the voxel is retained for visual replay and
+// for rebuilding coarser LODs without filling the deleted region.
+class PagedDeleteOp implements EditOp {
+    name = 'pagedDelete';
+    readonly session: PagedLodEditSession;
+    readonly splat: Splat;
+    readonly id: string;
+    sourceIndices: Uint32Array;
+    readonly voxel: VoxelSelectionLike;
+    private resolved: boolean;
+    private active = false;
+
+    constructor(
+        session: PagedLodEditSession,
+        id: string,
+        sourceIndices: Uint32Array,
+        voxel: VoxelSelectionLike,
+        pending = false
+    ) {
+        this.session = session;
+        this.splat = session.proxy;
+        this.id = id;
+        this.sourceIndices = sourceIndices;
+        this.voxel = voxel;
+        this.resolved = !pending;
+    }
+
+    do() {
+        this.active = true;
+        if (this.resolved) {
+            this.session.commitDelete(this.id, this.sourceIndices, this.voxel);
+        }
+    }
+
+    undo() {
+        this.active = false;
+        this.session.undoDelete(this.id);
+    }
+
+    /**
+     * Complete an optimistic delete once the exact LOD0 source rows arrive.
+     * If the user already undid the operation, keep the resolved rows for a
+     * later redo but do not reapply the delete now.
+     */
+    resolve(sourceIndices: Uint32Array) {
+        this.sourceIndices = sourceIndices;
+        this.resolved = true;
+        if (this.active) {
+            this.session.commitDelete(this.id, this.sourceIndices, this.voxel);
+        }
+    }
+
+    destroy() {
+        this.active = false;
+    }
+
+    serialize() {
+        return {
+            type: this.name,
+            data: {
+                splatIndex: this.splat.scene.getSplatIndex(this.splat),
+                id: this.id,
+                sourceIndices: Array.from(this.sourceIndices),
+                voxel: {
+                    aabbMin: this.voxel.aabbMin,
+                    aabbMax: this.voxel.aabbMax,
+                    n: this.voxel.n,
+                    bitmap: Array.from(this.voxel.bitmap)
+                }
+            }
+        };
+    }
+
+    static deserialize(data: any, scene: Scene): PagedDeleteOp {
+        const splat = scene.getSplatByIndex(data.splatIndex);
+        const session = splat?.pagedLodEditSession;
+        if (!splat || !session) {
+            throw new Error(`Paged LOD session missing for splat ${data.splatIndex}`);
+        }
+        return new PagedDeleteOp(session, data.id, Uint32Array.from(data.sourceIndices ?? []), {
+            aabbMin: data.voxel.aabbMin,
+            aabbMax: data.voxel.aabbMax,
+            n: data.voxel.n,
+            bitmap: Uint8Array.from(data.voxel.bitmap ?? [])
+        });
     }
 }
 
@@ -630,6 +722,46 @@ const decodeLut = (s: any): GaussianLUT | undefined => {
     return new GaussianLUT(data, s.name ?? '', s.presetId ?? null);
 };
 
+// Encode sparse paint history without expanding large typed arrays into JSON
+// number lists. Chunking avoids exceeding the argument limit of
+// String.fromCharCode on large strokes.
+const encodeTypedArray = (view: ArrayBufferView): string => {
+    const bytes = new Uint8Array(view.buffer, view.byteOffset, view.byteLength);
+    const chunkSize = 0x8000;
+    let binary = '';
+    for (let i = 0; i < bytes.length; i += chunkSize) {
+        binary += String.fromCharCode(...bytes.subarray(i, Math.min(bytes.length, i + chunkSize)));
+    }
+    return btoa(binary);
+};
+
+const decodeBytes = (encoded: string): Uint8Array => {
+    const binary = atob(encoded);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; ++i) {
+        bytes[i] = binary.charCodeAt(i);
+    }
+    return bytes;
+};
+
+const decodeUint32Array = (encoded: string): Uint32Array => {
+    const bytes = decodeBytes(encoded);
+    if (bytes.byteLength % Uint32Array.BYTES_PER_ELEMENT !== 0) {
+        throw new Error('Invalid serialized paint index data.');
+    }
+    return new Uint32Array(bytes.buffer);
+};
+
+const decodeUint8Array = (encoded: string): Uint8Array => decodeBytes(encoded);
+
+const decodeFloat32Array = (encoded: string): Float32Array => {
+    const bytes = decodeBytes(encoded);
+    if (bytes.byteLength % Float32Array.BYTES_PER_ELEMENT !== 0) {
+        throw new Error('Invalid serialized paint color data.');
+    }
+    return new Float32Array(bytes.buffer);
+};
+
 class SetSplatColorAdjustmentOp {
     name: 'setSplatColor';
     splat: Splat;
@@ -724,6 +856,419 @@ class SetSplatColorAdjustmentOp {
             oldState: unpackState(data.oldState),
             newState: unpackState(data.newState)
         });
+    }
+}
+
+class PaintStrokeOp {
+    name = 'paintStroke';
+    splat: Splat;
+    indices: Uint32Array;
+    before: Float32Array;
+    after: Float32Array;
+    colors: Float32Array | null;
+
+    constructor(options: {
+        splat: Splat,
+        indices: Uint32Array,
+        before: Float32Array,
+        after: Float32Array,
+        colors?: Float32Array | null
+    }) {
+        this.splat = options.splat;
+        this.indices = options.indices;
+        this.before = options.before;
+        this.after = options.after;
+        this.colors = options.colors ?? null;
+
+        if (this.before.length !== this.indices.length * 3 || this.after.length !== this.indices.length * 3) {
+            throw new Error('PaintStrokeOp requires three before/after values per splat.');
+        }
+        if (this.colors && this.colors.length !== this.indices.length * 4) {
+            throw new Error('PaintStrokeOp requires four paint color values per splat.');
+        }
+    }
+
+    do() {
+        this.splat.applyPaintValues(this.indices, this.after);
+    }
+
+    undo() {
+        this.splat.applyPaintValues(this.indices, this.before);
+    }
+
+    serialize() {
+        return {
+            type: this.name,
+            data: {
+                splatIndex: this.splat.scene.getSplatIndex(this.splat),
+                indices: encodeTypedArray(this.indices),
+                before: encodeTypedArray(this.before),
+                after: encodeTypedArray(this.after),
+                colors: this.colors ? encodeTypedArray(this.colors) : null
+            }
+        };
+    }
+
+    static deserialize(data: any, scene: Scene): PaintStrokeOp {
+        return new PaintStrokeOp({
+            splat: scene.getSplatByIndex(data.splatIndex),
+            indices: decodeUint32Array(data.indices),
+            before: decodeFloat32Array(data.before),
+            after: decodeFloat32Array(data.after),
+            colors: data.colors ? decodeFloat32Array(data.colors) : null
+        });
+    }
+}
+
+class PaintEraseOp {
+    name = 'paintErase';
+    splat: Splat;
+    indices: Uint32Array;
+    strengths: Float32Array;
+
+    constructor(options: {
+        splat: Splat,
+        indices: Uint32Array,
+        strengths: Float32Array
+    }) {
+        this.splat = options.splat;
+        this.indices = options.indices;
+        this.strengths = options.strengths;
+
+        if (this.strengths.length !== this.indices.length) {
+            throw new Error('PaintEraseOp requires one erase strength per splat.');
+        }
+    }
+
+    // PaintLayerManager owns the composited result. These methods are only
+    // fallbacks for environments where the operation is not layer-wrapped.
+    do() {}
+
+    undo() {}
+
+    serialize() {
+        return {
+            type: this.name,
+            data: {
+                splatIndex: this.splat.scene.getSplatIndex(this.splat),
+                indices: encodeTypedArray(this.indices),
+                strengths: encodeTypedArray(this.strengths)
+            }
+        };
+    }
+
+    static deserialize(data: any, scene: Scene): PaintEraseOp {
+        return new PaintEraseOp({
+            splat: scene.getSplatByIndex(data.splatIndex),
+            indices: decodeUint32Array(data.indices),
+            strengths: decodeFloat32Array(data.strengths)
+        });
+    }
+}
+
+class SplatSubdivideOp {
+    name = 'splatSubdivide';
+    splat: Splat;
+    events: Events;
+    structuralIndices: Uint32Array;
+    beforeStates: Uint8Array;
+    afterStates: Uint8Array;
+    groupChanges: SubdivisionGroupChange[];
+
+    constructor(options: {
+        splat: Splat,
+        events: Events,
+        structuralIndices: Uint32Array,
+        beforeStates: Uint8Array,
+        afterStates: Uint8Array,
+        groupChanges?: SubdivisionGroupChange[]
+    }) {
+        this.splat = options.splat;
+        this.events = options.events;
+        this.structuralIndices = options.structuralIndices;
+        this.beforeStates = options.beforeStates;
+        this.afterStates = options.afterStates;
+        this.groupChanges = options.groupChanges ?? [];
+
+        if (this.beforeStates.length !== this.structuralIndices.length || this.afterStates.length !== this.structuralIndices.length) {
+            throw new Error('Splat subdivision state data does not match its indices.');
+        }
+    }
+
+    private async apply(applied: boolean) {
+        await this.splat.applyStateValues(
+            this.structuralIndices,
+            applied ? this.afterStates : this.beforeStates
+        );
+        applySubdivisionGroups(this.events, this.splat, this.groupChanges, applied);
+    }
+
+    do() {
+        return this.apply(true);
+    }
+
+    undo() {
+        return this.apply(false);
+    }
+
+    restoreUnapplied() {
+        return this.apply(false);
+    }
+
+    serialize() {
+        return {
+            type: this.name,
+            data: {
+                splatIndex: this.splat.scene.getSplatIndex(this.splat),
+                structuralIndices: encodeTypedArray(this.structuralIndices),
+                beforeStates: encodeTypedArray(this.beforeStates),
+                afterStates: encodeTypedArray(this.afterStates),
+                groupChanges: this.groupChanges.map(change => ({
+                    groupIndex: change.groupIndex,
+                    name: change.name,
+                    beforeRanges: change.beforeRanges.serialize(),
+                    afterRanges: change.afterRanges.serialize()
+                }))
+            }
+        };
+    }
+
+    static deserialize(data: any, scene: Scene, events: Events): SplatSubdivideOp {
+        return new SplatSubdivideOp({
+            splat: scene.getSplatByIndex(data.splatIndex),
+            events,
+            structuralIndices: decodeUint32Array(data.structuralIndices),
+            beforeStates: decodeUint8Array(data.beforeStates),
+            afterStates: decodeUint8Array(data.afterStates),
+            groupChanges: (data.groupChanges ?? []).map((change: any) => ({
+                groupIndex: change.groupIndex,
+                name: change.name,
+                beforeRanges: IndexRanges.deserialize(change.beforeRanges),
+                afterRanges: IndexRanges.deserialize(change.afterRanges)
+            }))
+        });
+    }
+}
+
+class DecalSubdividePaintOp {
+    name = 'decalSubdividePaint';
+    splat: Splat;
+    events: Events;
+    structuralIndices: Uint32Array;
+    beforeStates: Uint8Array;
+    afterStates: Uint8Array;
+    paintIndices: Uint32Array;
+    beforePaint: Float32Array;
+    afterPaint: Float32Array;
+    paintColors: Float32Array | null;
+    groupChanges: SubdivisionGroupChange[];
+
+    constructor(options: {
+        splat: Splat,
+        events: Events,
+        structuralIndices: Uint32Array,
+        beforeStates: Uint8Array,
+        afterStates: Uint8Array,
+        paintIndices: Uint32Array,
+        beforePaint: Float32Array,
+        afterPaint: Float32Array,
+        paintColors?: Float32Array | null,
+        groupChanges?: SubdivisionGroupChange[]
+    }) {
+        this.splat = options.splat;
+        this.events = options.events;
+        this.structuralIndices = options.structuralIndices;
+        this.beforeStates = options.beforeStates;
+        this.afterStates = options.afterStates;
+        this.paintIndices = options.paintIndices;
+        this.beforePaint = options.beforePaint;
+        this.afterPaint = options.afterPaint;
+        this.paintColors = options.paintColors ?? null;
+        this.groupChanges = options.groupChanges ?? [];
+
+        if (this.beforeStates.length !== this.structuralIndices.length || this.afterStates.length !== this.structuralIndices.length) {
+            throw new Error('Decal subdivision state data does not match its indices.');
+        }
+        if (this.beforePaint.length !== this.paintIndices.length * 3 || this.afterPaint.length !== this.paintIndices.length * 3) {
+            throw new Error('Decal subdivision paint data does not match its indices.');
+        }
+        if (this.paintColors && this.paintColors.length !== this.paintIndices.length * 4) {
+            throw new Error('Decal subdivision requires four paint color values per splat.');
+        }
+    }
+
+    private async apply(applied: boolean) {
+        await this.splat.applyStateValues(
+            this.structuralIndices,
+            applied ? this.afterStates : this.beforeStates
+        );
+        applySubdivisionGroups(this.events, this.splat, this.groupChanges, applied);
+        this.splat.applyPaintValues(
+            this.paintIndices,
+            applied ? this.afterPaint : this.beforePaint
+        );
+    }
+
+    do() {
+        return this.apply(true);
+    }
+
+    undo() {
+        return this.apply(false);
+    }
+
+    // Project PLY data preserves every appended child row but intentionally
+    // omits editor state. Restore operations after the saved history cursor in
+    // reverse order before replaying the applied prefix.
+    restoreUnapplied() {
+        return this.apply(false);
+    }
+
+    serialize() {
+        return {
+            type: this.name,
+            data: {
+                splatIndex: this.splat.scene.getSplatIndex(this.splat),
+                structuralIndices: encodeTypedArray(this.structuralIndices),
+                beforeStates: encodeTypedArray(this.beforeStates),
+                afterStates: encodeTypedArray(this.afterStates),
+                paintIndices: encodeTypedArray(this.paintIndices),
+                beforePaint: encodeTypedArray(this.beforePaint),
+                afterPaint: encodeTypedArray(this.afterPaint),
+                paintColors: this.paintColors ? encodeTypedArray(this.paintColors) : null,
+                groupChanges: this.groupChanges.map(change => ({
+                    groupIndex: change.groupIndex,
+                    name: change.name,
+                    beforeRanges: change.beforeRanges.serialize(),
+                    afterRanges: change.afterRanges.serialize()
+                }))
+            }
+        };
+    }
+
+    static deserialize(data: any, scene: Scene, events: Events): DecalSubdividePaintOp {
+        return new DecalSubdividePaintOp({
+            splat: scene.getSplatByIndex(data.splatIndex),
+            events,
+            structuralIndices: decodeUint32Array(data.structuralIndices),
+            beforeStates: decodeUint8Array(data.beforeStates),
+            afterStates: decodeUint8Array(data.afterStates),
+            paintIndices: decodeUint32Array(data.paintIndices),
+            beforePaint: decodeFloat32Array(data.beforePaint),
+            afterPaint: decodeFloat32Array(data.afterPaint),
+            paintColors: data.paintColors ? decodeFloat32Array(data.paintColors) : null,
+            groupChanges: (data.groupChanges ?? []).map((change: any) => ({
+                groupIndex: change.groupIndex,
+                name: change.name,
+                beforeRanges: IndexRanges.deserialize(change.beforeRanges),
+                afterRanges: IndexRanges.deserialize(change.afterRanges)
+            }))
+        });
+    }
+}
+
+class PaintLayerOp {
+    name = 'paintLayer';
+    layerId: string;
+    op: EditOp;
+    events: Events;
+
+    constructor(layerId: string, op: EditOp, events: Events) {
+        this.layerId = layerId;
+        this.op = op;
+        this.events = events;
+    }
+
+    get splat(): Splat | undefined {
+        return (this.op as any).splat;
+    }
+
+    private setApplied(applied: boolean) {
+        if (this.events.functions.has('paint.layers.operation.setApplied')) {
+            return this.events.invoke('paint.layers.operation.setApplied', this, applied);
+        }
+        return applied ? this.op.do() : this.op.undo();
+    }
+
+    do() {
+        return this.setApplied(true);
+    }
+
+    undo() {
+        return this.setApplied(false);
+    }
+
+    restoreUnapplied() {
+        if (this.events.functions.has('paint.layers.operation.setApplied')) {
+            return this.events.invoke('paint.layers.operation.setApplied', this, false);
+        }
+        return this.op.restoreUnapplied?.() ?? this.op.undo();
+    }
+
+    destroy() {
+        if (this.events.functions.has('paint.layers.operation.unregister')) {
+            this.events.invoke('paint.layers.operation.unregister', this);
+        }
+        this.op.destroy?.();
+    }
+
+    serialize() {
+        return {
+            type: this.name,
+            data: {
+                layerId: this.layerId,
+                op: this.op.serialize()
+            }
+        };
+    }
+
+    static deserialize(data: any, scene: Scene, events: Events): PaintLayerOp {
+        const result = new PaintLayerOp(data.layerId, deserializeEditOp(data.op, scene, events), events);
+        if (events.functions.has('paint.layers.operation.register')) {
+            events.invoke('paint.layers.operation.register', result, false);
+        }
+        return result;
+    }
+}
+
+// Undoable removal of a paint layer. The layer manager keeps a tombstone for
+// the removed layer so paint operations remain available to undo/redo and can
+// be restored when a project is reopened.
+class PaintLayerDeleteOp {
+    name = 'paintLayerDelete';
+    layerId: string;
+    events: Events;
+
+    constructor(layerId: string, events: Events) {
+        this.layerId = layerId;
+        this.events = events;
+    }
+
+    do() {
+        return this.events.invoke('paint.layers.delete', this.layerId);
+    }
+
+    undo() {
+        return this.events.invoke('paint.layers.restore', this.layerId);
+    }
+
+    // Deletion has no direct Splat state to restore. The layer manager owns the
+    // tombstone and performs the same restore operation for an unapplied suffix.
+    restoreUnapplied() {
+        return this.undo();
+    }
+
+    serialize() {
+        return {
+            type: this.name,
+            data: {
+                layerId: this.layerId
+            }
+        };
+    }
+
+    static deserialize(data: any, events: Events): PaintLayerDeleteOp {
+        return new PaintLayerDeleteOp(data.layerId, events);
     }
 }
 
@@ -1423,6 +1968,8 @@ function deserializeEditOp(
         case 'deleteSelection':
         case 'reset':
             return StateOp.deserialize(opData.data, scene);
+        case 'pagedDelete':
+            return PagedDeleteOp.deserialize(opData.data, scene);
         case 'entityTransform':
             return EntityTransformOp.deserialize(opData.data, scene);
         case 'splatsTransform':
@@ -1433,6 +1980,18 @@ function deserializeEditOp(
             return SetLocalFrameOp.deserialize(opData.data, scene);
         case 'setSplatColor':
             return SetSplatColorAdjustmentOp.deserialize(opData.data, scene);
+        case 'paintStroke':
+            return PaintStrokeOp.deserialize(opData.data, scene);
+        case 'paintErase':
+            return PaintEraseOp.deserialize(opData.data, scene);
+        case 'splatSubdivide':
+            return SplatSubdivideOp.deserialize(opData.data, scene, events);
+        case 'decalSubdividePaint':
+            return DecalSubdividePaintOp.deserialize(opData.data, scene, events);
+        case 'paintLayer':
+            return PaintLayerOp.deserialize(opData.data, scene, events);
+        case 'paintLayerDelete':
+            return PaintLayerDeleteOp.deserialize(opData.data, events);
         case 'animTrackEdit':
             return AnimTrackEditOp.deserialize(opData.data, events);
         case 'multiOp':
@@ -1475,6 +2034,7 @@ export {
     HideSelectionOp,
     UnhideAllOp,
     DeleteSelectionOp,
+    PagedDeleteOp,
     ResetOp,
     EntityTransformOp,
     SplatsTransformOp,
@@ -1483,6 +2043,12 @@ export {
     SetLocalFrameOp,
     ColorAdjustment,
     SetSplatColorAdjustmentOp,
+    PaintStrokeOp,
+    PaintEraseOp,
+    SplatSubdivideOp,
+    DecalSubdividePaintOp,
+    PaintLayerOp,
+    PaintLayerDeleteOp,
     AnimTrackEditOp,
     MultiOp,
     AddSplatOp,
@@ -1496,3 +2062,4 @@ export {
     ModifyGroupRangesOp,
     deserializeEditOp
 };
+export type { SubdivisionGroupChange } from './splat-subdivide';

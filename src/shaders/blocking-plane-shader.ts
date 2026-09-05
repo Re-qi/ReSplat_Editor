@@ -73,14 +73,21 @@ const fragmentShader = /* glsl */ `
 
         vec3 worldHit = (matrix_model * vec4(localHit, 1.0)).xyz;
         
-        // Draw grid pattern
-        float gridSize = 0.5;
-        vec2 gridPos = localHit.xz / gridSize;
+        // Draw the internal grid at a fixed world-space interval. The model
+        // matrix column lengths convert the plane-local coordinates into
+        // distances along its two axes, so scaling the plane reveals more
+        // grid cells instead of stretching a fixed-count pattern.
+        vec2 planeAxisScale = vec2(
+            length(matrix_model[0].xyz),
+            length(matrix_model[2].xyz)
+        );
+        float gridSize = 2.0;
+        vec2 gridPos = localHit.xz * planeAxisScale / gridSize;
         vec2 gridFract = fract(gridPos);
         float lineWidth = 0.05;
         bool onGrid = gridFract.x < lineWidth || gridFract.y < lineWidth;
         
-        // Draw border
+        // Keep the outer border tied to the original local-space boundary.
         float border = 0.02;
         bool onBorder = abs(localHit.x) > 0.5 - border || abs(localHit.z) > 0.5 - border;
         

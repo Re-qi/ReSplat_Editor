@@ -1,0 +1,440 @@
+@use 'colors.scss' as *;
+
+// Paint mode replaces the scene tree and transform sections in-place.
+#scene-panel.paint-mode {
+    & > :not(#paint-palette):not(#paint-layers):not(#scene-color-section):not(#scene-view-section) {
+        display: none !important;
+    }
+}
+
+#paint-palette,
+#paint-layers {
+    width: 100%;
+    flex-direction: column;
+    background-color: $bcg-primary;
+
+    &[hidden], &.pcui-hidden {
+        display: none !important;
+    }
+
+    &:not(.pcui-hidden) {
+        display: flex;
+    }
+
+    & > .panel-header {
+        display: flex;
+        flex-direction: row;
+        align-items: center;
+        height: 24px;
+        padding: 2px;
+        background-color: $bcg-dark;
+
+        & > .panel-header-icon {
+            font-family: pc-icon;
+            font-weight: bold;
+            font-size: 13px;
+            width: 16px;
+            height: 16px;
+            margin: 0 4px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: $clr-hilight;
+
+            svg {
+                width: 16px !important;
+                height: 16px !important;
+                color: currentColor;
+                fill: currentColor;
+            }
+        }
+
+        & > .panel-header-label {
+            flex-grow: 1;
+            margin: 0 4px;
+            color: $text-primary;
+            font-weight: bold;
+        }
+
+        & > .paint-palette-swatch-toggle {
+            flex: 0 0 16px;
+            width: 16px;
+            height: 16px;
+            margin: 2px 4px;
+            padding: 0;
+            box-sizing: border-box;
+
+            svg {
+                width: 16px !important;
+                height: 16px !important;
+            }
+        }
+
+        & > .paint-layer-add {
+            flex: 0 0 16px;
+            width: 16px;
+            height: 16px;
+            margin: 2px 4px;
+            padding: 0;
+            box-sizing: border-box;
+
+            svg {
+                width: 16px !important;
+                height: 16px !important;
+            }
+        }
+    }
+}
+
+#paint-layers {
+    .paint-layer-controls {
+        display: flex;
+        flex-direction: row;
+        align-items: center;
+        height: 28px;
+        padding: 2px;
+        gap: 4px;
+        box-sizing: border-box;
+        overflow: visible;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+    }
+
+    .paint-layer-blend-select {
+        flex: 0 0 118px;
+        width: 118px;
+        min-width: 0;
+        margin: 0;
+    }
+
+    .paint-layer-opacity-slider {
+        flex: 1 1 auto;
+        min-width: 0;
+        margin: 0;
+
+        .pcui-slider-container .pcui-slider-bar .pcui-slider-handle {
+            background-color: $clr-default;
+            border-radius: 3px;
+        }
+    }
+
+    .paint-layer-list {
+        // Match the scene manager's default list footprint.
+        position: relative;
+        min-height: 80px;
+        max-height: 200px;
+        overflow-y: auto;
+    }
+
+    .paint-layer-draggable {
+        cursor: grab;
+        user-select: none;
+        touch-action: none;
+    }
+
+    .paint-layer-drag-source {
+        opacity: 0;
+    }
+
+    .paint-layer-drop-indicator {
+        position: absolute;
+        z-index: 4;
+        right: 4px;
+        left: 4px;
+        height: 2px;
+        transform: translateY(-1px);
+        background: #ff8a24;
+        box-shadow: 0 0 3px rgba(255, 138, 36, 0.75);
+        pointer-events: none;
+    }
+
+    .paint-layer-item:not(.visible) .splat-item-text {
+        opacity: 0.55;
+    }
+
+    .paint-layer-base:hover.visible {
+        cursor: default;
+    }
+}
+
+.paint-layer-drag-preview {
+    position: fixed !important;
+    z-index: 10002;
+    box-sizing: border-box;
+    min-height: 0 !important;
+    padding: 0 !important;
+    margin: 0 !important;
+    opacity: 0.95;
+    pointer-events: none;
+    box-shadow: 0 5px 12px rgba(0, 0, 0, 0.45);
+}
+
+body.paint-layer-dragging,
+body.paint-layer-dragging * {
+    cursor: grabbing !important;
+}
+
+.pcui-container.pcui-select-input-list.paint-layer-blend-floating-list {
+    position: fixed;
+    z-index: 10001;
+    top: 0;
+    width: max-content;
+    max-height: none;
+    overflow-y: visible;
+    box-sizing: border-box;
+    white-space: nowrap;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.35);
+
+    > *:hover,
+    > .pcui-select-input-label-highlighted {
+        background-color: $bcg-darkest;
+        color: $text-primary;
+        cursor: pointer;
+    }
+
+    > .paint-layer-blend-separator {
+        height: 1px !important;
+        min-height: 1px !important;
+        margin: 4px 6px !important;
+        padding: 0 !important;
+        border-top: 1px solid rgba(255, 255, 255, 0.2);
+        box-sizing: border-box;
+        pointer-events: none;
+    }
+}
+
+.paint-palette-swatch-view {
+    display: flex;
+    flex-wrap: wrap;
+    direction: ltr;
+    justify-content: flex-start;
+    align-content: flex-start;
+    gap: 4px;
+    padding: 8px 15px;
+    box-sizing: border-box;
+    min-height: 54px;
+
+    &[hidden] {
+        display: none !important;
+    }
+}
+
+.paint-palette-swatch {
+    flex: 0 0 38px;
+    width: 38px;
+    height: 38px;
+    padding: 0;
+    border: 1px solid rgba(255, 255, 255, 0.35);
+    border-radius: 4px;
+    box-sizing: border-box;
+    appearance: none;
+    cursor: pointer;
+    touch-action: none;
+    transition: border-color 0.1s ease, box-shadow 0.1s ease, opacity 0.1s ease;
+
+    &:hover {
+        border-color: $clr-hilight;
+        box-shadow: 0 0 0 1px rgba(255, 153, 0, 0.65);
+    }
+
+    &.is-dragging {
+        opacity: 0.25;
+    }
+}
+
+.paint-palette-swatch-add {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background-color: $bcg-dark;
+    color: $text-primary;
+    font-size: 24px;
+    line-height: 36px;
+    font-family: Arial, sans-serif;
+
+    &:hover {
+        background-color: $bcg-darkest;
+        color: $clr-hilight;
+    }
+}
+
+.paint-palette-swatch-drag-ghost {
+    position: fixed;
+    left: 0;
+    top: 0;
+    z-index: 10001;
+    pointer-events: none;
+    opacity: 0.9;
+    transform: translate(-50%, -50%);
+}
+
+.paint-palette-wheel {
+    width: 300px;
+    height: 300px;
+    margin: 14px auto 10px;
+    position: relative;
+    flex: 0 0 auto;
+}
+
+.paint-palette-hue {
+    position: absolute;
+    inset: 0;
+    border-radius: 50%;
+    background: conic-gradient(
+        from -90deg,
+        #ff0000 0deg,
+        #ffff00 60deg,
+        #00ff00 120deg,
+        #00ffff 180deg,
+        #0000ff 240deg,
+        #ff00ff 300deg,
+        #ff0000 360deg
+    );
+    box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.08);
+    cursor: crosshair;
+    touch-action: none;
+}
+
+.paint-palette-hue::before {
+    content: '';
+    position: absolute;
+    width: 252px;
+    height: 252px;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    border-radius: 50%;
+    background: $bcg-primary;
+    pointer-events: none;
+}
+
+.paint-palette-sv {
+    position: absolute;
+    width: 170px;
+    height: 170px;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    overflow: hidden;
+    border-radius: 2px;
+    background: linear-gradient(to top, #000, transparent), linear-gradient(to right, #fff, #f00);
+    box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.6);
+    cursor: crosshair;
+    touch-action: none;
+    z-index: 1;
+}
+
+.paint-palette-sv-handle {
+    position: absolute;
+    width: 10px;
+    height: 10px;
+    border: 2px solid #fff;
+    border-radius: 50%;
+    box-sizing: border-box;
+    box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.8), 0 1px 3px rgba(0, 0, 0, 0.65);
+    pointer-events: none;
+    z-index: 2;
+}
+
+.paint-palette-hue-handle {
+    position: absolute;
+    width: 8px;
+    height: 24px;
+    background-color: $clr-default;
+    border: 1px solid $bcg-darkest;
+    border-radius: 3px;
+    box-sizing: border-box;
+    box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.65);
+    pointer-events: none;
+    z-index: 2;
+    transform: translate(-50%, -50%);
+}
+
+.paint-palette-sv-handle {
+    width: 12px;
+    height: 12px;
+    transform: translate(-50%, -50%);
+}
+
+.paint-palette-sliders {
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+    padding: 4px 0 6px;
+    border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.paint-palette-slider-row {
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    height: 28px;
+    padding: 2px;
+    gap: 0;
+}
+
+.paint-palette-slider-label {
+    flex-shrink: 0;
+    width: 52px;
+    flex: 0 0 52px;
+    margin-right: 6px;
+    color: $text-secondary;
+}
+
+.paint-palette-slider {
+    flex-grow: 1;
+    min-width: 180px;
+    margin: 0px;
+
+    .pcui-slider-container {
+        .pcui-slider-bar {
+            .pcui-slider-handle {
+                background-color: $clr-default;
+                border-radius: 3px;
+            }
+        }
+    }
+}
+
+.paint-palette-slider-row .row-revert-btn {
+    flex-shrink: 0;
+    flex: 0 0 16px;
+    width: 16px;
+    height: 16px;
+    margin: 4px 0 4px 4px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 3px;
+    cursor: pointer;
+    color: $text-secondary;
+    opacity: 0.6;
+
+    svg {
+        width: 16px;
+        height: 16px;
+        color: currentColor;
+        fill: currentColor;
+    }
+
+    &:hover {
+        color: $clr-hilight;
+        opacity: 1;
+        background-color: rgba(255, 102, 0, 0.15);
+    }
+}
+
+.paint-palette-slider-h .pcui-slider-bar {
+    background: linear-gradient(to right, #ff0000, #ffff00, #00ff00, #00ffff, #0000ff, #ff00ff, #ff0000);
+}
+
+.paint-palette-slider-s .pcui-slider-bar {
+    background: linear-gradient(to right, #777, #f00);
+}
+
+.paint-palette-slider-v .pcui-slider-bar {
+    background: linear-gradient(to right, #000, #fff);
+}
+
+.paint-palette-slider-mix .pcui-slider-bar {
+    background: linear-gradient(to right, #333, $clr-hilight);
+}

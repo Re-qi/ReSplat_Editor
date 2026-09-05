@@ -263,6 +263,119 @@ class BackendClient {
     }
 
     /**
+     * Open a selection-driven LOD0 edit session. The selected non-zero LOD is
+     * only a proxy in the renderer; page data is fetched after a spatial edit
+     * asks for it.
+     */
+    static async openLodEdit(
+        filePath: string,
+        proxyLod: number
+    ): Promise<{
+        sessionId: string;
+        version: number;
+        sourceFingerprint: string;
+        sourcePath: string;
+        format: 'lcc' | 'lcc2';
+        proxyLod: number;
+        totalLods: number;
+        totalPoints: number;
+        bounds: { min: number[]; max: number[] };
+        pageCount: number;
+        workingSetBytes?: number;
+        maxConcurrentPages?: number;
+        pages: Array<{
+            id: string;
+            lod: number;
+            count: number;
+            bounds: { min: number[]; max: number[] };
+            ranges: Array<{ start: number; count: number }>;
+            sourceFile?: string | null;
+        }>;
+    }> {
+        if (!(await this.isAvailable())) throw new Error('本地分页后端不可用');
+        const res = await fetch(`${this.BASE_URL}/api/lod-edit/open`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ filePath, proxyLod })
+        });
+        if (!res.ok) {
+            let message = `LOD edit open failed: ${res.statusText}`;
+            try {
+                message = (await res.json()).error || message;
+            } catch { /* default */ }
+            throw new Error(message);
+        }
+        return res.json();
+    }
+
+    /** Load one LOD0 page and retain its stable source-row mapping. */
+    static async loadLodEditPage(
+        sessionId: string,
+        pageId: string
+    ): Promise<{
+        pageId: string;
+        count: number;
+        sourceIndices: Uint32Array;
+        gsplatData: GSplatData;
+        bounds: { min: number[]; max: number[] };
+        transform: {
+            translation: number[];
+            rotation: number[];
+            scale: number;
+        };
+    }> {
+        const res = await fetch(`${this.BASE_URL}/api/lod-edit/page/${encodeURIComponent(sessionId)}/${encodeURIComponent(pageId)}`);
+        if (!res.ok) {
+            let message = `LOD edit page failed: ${res.statusText}`;
+            try {
+                message = (await res.json()).error || message;
+            } catch { /* default */ }
+            throw new Error(message);
+        }
+        const payload = await res.json();
+        const pageBlob = await (await fetch(`${payload.baseUrl}${payload.url}`)).blob();
+        const pageFs = new MappedReadFileSystem();
+        pageFs.addFile(`${pageId}.ply`, pageBlob);
+        const loaded = await loadGSplatData(`${pageId}.ply`, pageFs, true);
+        if (!loaded) throw new Error(`Failed to decode LOD edit page ${pageId}`);
+        const sourceIndices = Uint32Array.from(payload.sourceIndices as number[]);
+        if (sourceIndices.length !== loaded.gsplatData.numSplats) {
+            throw new Error(`LOD edit page ${pageId} source index count mismatch`);
+        }
+        const element = loaded.gsplatData.getElement('vertex');
+        element.properties.push({
+            type: 'uint',
+            name: 'source_index',
+            storage: sourceIndices,
+            byteSize: sourceIndices.BYTES_PER_ELEMENT
+        });
+        return {
+            pageId,
+            count: loaded.gsplatData.numSplats,
+            sourceIndices,
+            gsplatData: loaded.gsplatData,
+            bounds: payload.bounds,
+            // The temporary PLY has its own source-to-engine transform. It
+            // must be used for exact selection because its coordinate basis
+            // can differ from the resident proxy's source basis.
+            transform: {
+                translation: [loaded.transform.translation.x, loaded.transform.translation.y, loaded.transform.translation.z],
+                rotation: [loaded.transform.rotation.x, loaded.transform.rotation.y, loaded.transform.rotation.z, loaded.transform.rotation.w],
+                scale: loaded.transform.scale
+            }
+        };
+    }
+
+    static async closeLodEdit(sessionId: string): Promise<void> {
+        if (!this._available) return;
+        await fetch(`${this.BASE_URL}/api/lod-edit/close`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ sessionId })
+        }).catch(() => {});
+    }
+
+    /**
      * Read PLY header from a file path — returns vertex count + estimated memory.
      */
     static async plyMeta(

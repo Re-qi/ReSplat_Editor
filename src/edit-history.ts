@@ -17,7 +17,7 @@ const opReferencesSplat = (op: EditOp, splat: Splat): boolean => {
 // Spatial operations are recorded to LodEditLog for cross-LOD replay.
 // Non-spatial ops (color, rename, group) only affect the current LOD.
 const SPATIAL_OP_NAMES = new Set([
-    'selectOp', 'deleteSelection', 'splatsTransform',
+    'selectOp', 'deleteSelection', 'pagedDelete', 'splatsTransform',
     'selectAll', 'selectNone', 'selectInvert', 'replaceSelection'
 ]);
 
@@ -177,7 +177,7 @@ class EditHistory {
 
     serialize() {
         return {
-            version: '1.0.0',
+            version: '1.1.0',
             cursor: this.cursor,
             history: this.history.map(op => op.serialize())
         };
@@ -201,6 +201,18 @@ class EditHistory {
             }
             this.history = ops;
             this.cursor = Math.min(data.cursor, ops.length);
+
+            // Structural subdivision operations append rows that are intentionally
+            // retained in project PLY data. Since editor state is not stored in
+            // that PLY, restore the unapplied suffix from newest to oldest so
+            // an undone parent subdivision also keeps all descendants hidden.
+            for (let i = this.history.length - 1; i >= this.cursor; --i) {
+                try {
+                    await this.history[i].restoreUnapplied?.();
+                } catch (e) {
+                    console.warn(`Failed to restore unapplied EditOp[${i}]: ${e.message}`);
+                }
+            }
 
             // Replay all applied operations to restore splat state
             // (needed because SOG/PLY data may not include state changes)

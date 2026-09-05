@@ -15,6 +15,7 @@ import { Events } from './events';
 import { initFileHandler } from './file-handler';
 import { registerIframeApi } from './iframe-api';
 import { loadLodGSplatData } from './io';
+import { PaintLayerManager } from './paint-layers';
 import { registerPlyFixerEvents } from './ply-fixer';
 import { registerPlySequenceEvents } from './ply-sequence';
 import { registerRenderEvents } from './render';
@@ -34,6 +35,7 @@ import { MeasureTool } from './tools/measure-tool';
 import { MoveTool } from './tools/move-tool';
 import { OpacitySelection } from './tools/opacity-selection';
 import { OrientTool } from './tools/orient-tool';
+import { PaintTool } from './tools/paint-tool';
 import { PolygonSelection } from './tools/polygon-selection';
 import { RectSelection } from './tools/rect-selection';
 import { RotateTool } from './tools/rotate-tool';
@@ -120,6 +122,9 @@ const registerLodEvents = (events: Events, scene: Scene, editHistory: EditHistor
         if (!oldSplat?.lodEditLog || !oldSplat.lccFileSystem || !oldSplat.lccFilePath) {
             throw new Error('LOD switch requires a multi-LOD splat with valid lccFileSystem');
         }
+        if (oldSplat.pagedLodEditSession && targetLod === 0) {
+            throw new Error('代理 LOD 编辑模式不会切换或加载完整 LOD0');
+        }
         if (targetLod === oldSplat.currentLodIndex) return;
         if (targetLod < 0 || targetLod >= oldSplat.lodCounts.length) {
             throw new Error(`Invalid LOD index ${targetLod} (file has ${oldSplat.lodCounts.length} levels)`);
@@ -132,16 +137,81 @@ const registerLodEvents = (events: Events, scene: Scene, editHistory: EditHistor
             // Capture state to carry over to the new Splat instance.
             const doc = oldSplat.docSerialize();
             const oldUid = oldSplat.uid;
-            const { lccFilePath, lccFileSystem, lodCounts, originalFilePath, lodEditLog } = oldSplat;
+            const { lccFilePath, lccFileSystem, lodCounts, originalFilePath, lodEditLog, pagedLodEditSession } = oldSplat;
+            const previousLod = oldSplat.currentLodIndex;
+
+            // Keep target loading and rollback on the same path. A failed
+            // high-LOD allocation must not leave the scene without a usable
+            // splat to render.
+            const loadSplatLod = async (lodIndex: number): Promise<Splat> => {
+                let result = await loadBigLodViaBackend(originalFilePath || lccFilePath, lodCounts, lodIndex);
+                if (!result) {
+                    result = await loadLodGSplatData(lccFilePath, lccFileSystem, lodIndex);
+                }
+                const { gsplatData, transform } = result;
+
+                const asset = new Asset(lccFilePath, 'gsplat', {
+                    url: `lod-asset-${Date.now()}`,
+                    filename: lccFilePath
+                });
+                scene.app.assets.add(asset);
+                let nextSplat: Splat | null = null;
+                try {
+                    asset.resource = new GSplatResource(scene.graphicsDevice, gsplatData);
+
+                    nextSplat = new Splat(asset, transform.rotation);
+                    nextSplat.uid = oldUid;
+                    nextSplat.docDeserialize(doc);
+
+                    // docDeserialize cannot restore runtime file-system objects or
+                    // the live paging session, so reattach those explicitly.
+                    nextSplat.lccFilePath = lccFilePath;
+                    nextSplat.lccFileSystem = lccFileSystem;
+                    nextSplat.lodCounts = lodCounts;
+                    nextSplat.currentLodIndex = lodIndex;
+                    nextSplat.lodEditLog = lodEditLog;
+                    nextSplat.originalFilePath = originalFilePath;
+                    if (pagedLodEditSession) {
+                        nextSplat.pagedLodEditSession = pagedLodEditSession;
+                        pagedLodEditSession.rebindProxy(nextSplat, lodIndex);
+                        nextSplat.pagedLodDescriptor = {
+                            version: pagedLodEditSession.manifest.version,
+                            sourceFingerprint: pagedLodEditSession.sourceFingerprint,
+                            sourcePath: pagedLodEditSession.manifest.sourcePath,
+                            proxyLod: lodIndex
+                        };
+                    }
+                    nextSplat.markSaveDirty();
+                    return nextSplat;
+                } catch (error) {
+                    // If allocation fails before Splat is fully constructed,
+                    // destroy the temporary resource directly so it cannot
+                    // compete with the rollback load for memory.
+                    if (nextSplat) {
+                        nextSplat.pagedLodEditSession = null;
+                        nextSplat.destroy();
+                    } else {
+                        scene.app.assets.remove(asset);
+                        asset.unload();
+                    }
+                    throw error;
+                }
+            };
 
             // Clear EditHistory for the old splat (entries are kept in lodEditLog
             // for replay on the new LOD).
             await editHistory.removeForSplat(oldSplat);
-            lodEditLog.onEditHistoryClear();
+            if (!pagedLodEditSession) {
+                lodEditLog.onEditHistoryClear();
+            }
 
             // Remove + destroy the old splat before loading the new LOD to
             // free the previous GSplatData/GPU resources.
             scene.remove(oldSplat);
+            // The paging session belongs to the edit, not to the proxy
+            // Splat instance. Detach it so destroying the old proxy does not
+            // close the LOD0 source session.
+            oldSplat.pagedLodEditSession = null;
             oldSplat.destroy();
 
             // Route oversized LODs through the backend (compressed-ply) so the
@@ -152,45 +222,47 @@ const registerLodEvents = (events: Events, scene: Scene, editHistory: EditHistor
             // so every level stays aligned. Small LODs keep the direct path.
             // originalFilePath holds the absolute container path (backend needs
             // a real disk path, while lccFilePath is the container name).
-            let result = await loadBigLodViaBackend(originalFilePath || lccFilePath, lodCounts, targetLod);
-            if (!result) {
-                result = await loadLodGSplatData(lccFilePath, lccFileSystem, targetLod);
+            let newSplat: Splat | null = null;
+            try {
+                newSplat = await loadSplatLod(targetLod);
+                await scene.add(newSplat);
+                events.fire('selection', newSplat);
+
+                // Replay all recorded spatial ops on the new LOD.
+                await newSplat.lodEditLog.replay(newSplat);
+                await newSplat.updateState(State.deleted | State.selected);
+                await newSplat.updateSorting();
+
+                scene.boundDirty = true;
+                events.fire('lod.switched', newSplat);
+            } catch (switchError) {
+                // A high-LOD load can fail while materializing data or creating
+                // GPU resources. Clean up any partial target before restoring
+                // the previous, known-good LOD.
+                if (newSplat) {
+                    if (newSplat.scene === scene) scene.remove(newSplat);
+                    // The paging session belongs to the edit, not this failed
+                    // proxy instance. Do not let destroy() close the session.
+                    newSplat.pagedLodEditSession = null;
+                    newSplat.destroy();
+                }
+                (globalThis as { gc?: () => void }).gc?.();
+
+                try {
+                    const restored = await loadSplatLod(previousLod);
+                    await scene.add(restored);
+                    events.fire('selection', restored);
+                    await restored.lodEditLog.replay(restored);
+                    await restored.updateState(State.deleted | State.selected);
+                    await restored.updateSorting();
+                    scene.boundDirty = true;
+                    events.fire('lod.switched', restored);
+                    console.warn(`[lod-switch] LOD${targetLod} load failed; restored LOD${previousLod}`);
+                } catch (restoreError) {
+                    console.error(`[lod-switch] failed to restore LOD${previousLod} after LOD${targetLod} load failure`, restoreError);
+                }
+                throw switchError;
             }
-            const { gsplatData, transform } = result;
-
-            // Construct a new Splat reusing the old uid so external references
-            // (e.g. _plyCache keyed by uid) stay consistent.
-            const asset = new Asset(lccFilePath, 'gsplat', { url: `lod-asset-${Date.now()}`, filename: lccFilePath });
-            scene.app.assets.add(asset);
-            asset.resource = new GSplatResource(scene.graphicsDevice, gsplatData);
-
-            const newSplat = new Splat(asset, transform.rotation);
-            newSplat.uid = oldUid;
-
-            // Restore transform / color / name / localFrame from the saved doc.
-            newSplat.docDeserialize(doc);
-
-            // Re-attach LCC metadata (docDeserialize already restored them,
-            // but lodEditLog / lccFileSystem may have been nulled — overwrite
-            // to be safe, since we explicitly preserved them above).
-            newSplat.lccFilePath = lccFilePath;
-            newSplat.lccFileSystem = lccFileSystem;
-            newSplat.lodCounts = lodCounts;
-            newSplat.currentLodIndex = targetLod;
-            newSplat.lodEditLog = lodEditLog;
-            newSplat.originalFilePath = originalFilePath;
-            newSplat.markSaveDirty();
-
-            await scene.add(newSplat);
-            events.fire('selection', newSplat);
-
-            // Replay all recorded spatial ops on the new LOD.
-            await newSplat.lodEditLog.replay(newSplat);
-            await newSplat.updateState(State.deleted | State.selected);
-            await newSplat.updateSorting();
-
-            scene.boundDirty = true;
-            events.fire('lod.switched', newSplat);
         } finally {
             events.fire('stopSpinner');
         }
@@ -228,6 +300,8 @@ const main = async () => {
 
     // init localization
     await localizeInit();
+    const paintLayerManager = new PaintLayerManager(events);
+    events.function('paint.layers.manager', () => paintLayerManager);
 
     // Configure WebP WASM for SOG format (used for both reading and writing)
     WebPCodec.wasmUrl = new URL('static/lib/webp/webp.wasm', document.baseURI).toString();
@@ -341,6 +415,10 @@ const main = async () => {
 
         // Let Ctrl+modified keys pass through to shortcut manager
         if (e.ctrlKey || e.metaKey) return;
+
+        // In paint mode, leave edit tool keys available for paint-mode shortcuts
+        // that may intentionally reuse the same key.
+        if (mouseButtonsPressed === 0 && events.functions.has('mode.active') && events.invoke('mode.active') === 'paint') return;
 
         e.preventDefault();
         e.stopPropagation();
@@ -584,6 +662,7 @@ const main = async () => {
     toolManager.register('eyedropperSelection', new EyedropperSelection(events, editorUI.toolsContainer.dom, editorUI.canvasContainer));
     toolManager.register('opacitySelection', new OpacitySelection(events, editorUI.toolsContainer.dom, editorUI.canvasContainer));
     toolManager.register('sizeSelection', new SizeSelection(events, editorUI.toolsContainer.dom, editorUI.canvasContainer));
+    toolManager.register('paint', new PaintTool(events, scene, editorUI.toolsContainer.dom, editorUI.canvasContainer), 'paint');
     toolManager.register('move', new MoveTool(events, scene));
     toolManager.register('rotate', new RotateTool(events, scene));
     toolManager.register('scale', new ScaleTool(events, scene));
@@ -599,16 +678,17 @@ const main = async () => {
     const blockingPlanes: BlockingPlane[] = [];
     let currentPlane: BlockingPlane | null = null;
 
-    events.on('blockingPlane.create', () => {
+    events.on('blockingPlane.create', (position?: Vec3) => {
         const plane = new BlockingPlane();
         scene.add(plane);
         blockingPlanes.push(plane);
         currentPlane = plane;
 
-        // Position plane in front of camera
-        const cameraPos = scene.camera.position.clone();
-        const cameraForward = scene.camera.forward.clone();
-        const planePos = cameraPos.add(cameraForward.clone().mulScalar(5));
+        // Context-menu creation uses the gaussian hit point. Other creation
+        // paths keep the existing five-unit camera offset.
+        const planePos = position?.clone() ?? scene.camera.position.clone().add(
+            scene.camera.forward.clone().mulScalar(5)
+        );
         plane.pivot.setPosition(planePos);
 
         // Orient plane to face camera:
@@ -841,27 +921,32 @@ const main = async () => {
         return svg;
     };
 
+    let contextMenuHit: Promise<Vec3 | null> = Promise.resolve(null);
+
+    const createAtContextMenuHit = (eventName: string) => {
+        // Capture this menu invocation's promise so a later right-click cannot
+        // change the destination while the GPU readback is still pending.
+        const hit = contextMenuHit;
+        return hit.then((position) => {
+            events.fire(eventName, position ?? undefined);
+        });
+    };
+
     const contextMenuItems: MenuItem[] = [
         {
             text: localize('context-menu.sphere'),
             icon: createSvgElement(sphereSvg),
-            onSelect: () => {
-                events.fire('sphereSelection.create');
-            }
+            onSelect: () => createAtContextMenuHit('sphereSelection.create')
         },
         {
             text: localize('context-menu.box'),
             icon: createSvgElement(boxSvg),
-            onSelect: () => {
-                events.fire('boxSelection.create');
-            }
+            onSelect: () => createAtContextMenuHit('boxSelection.create')
         },
         {
             text: localize('context-menu.blocking-plane'),
             icon: createSvgElement(squareXSvg),
-            onSelect: () => {
-                events.fire('blockingPlane.create');
-            }
+            onSelect: () => createAtContextMenuHit('blockingPlane.create')
         }
     ];
 
@@ -895,12 +980,31 @@ const main = async () => {
     // Right-click on canvas container to show context menu (only if no drag and shift not held)
     editorUI.canvasContainer.dom.addEventListener('contextmenu', (e: MouseEvent) => {
         e.preventDefault();
+        if (events.invoke('mode.active') === 'paint') return;
         if (!hasDragged && !e.shiftKey) {
             events.fire('contextMenu.addShape', e.clientX, e.clientY);
         }
     });
 
     events.on('contextMenu.addShape', (x: number, y: number) => {
+        // Start the one-pixel gaussian hit test as soon as the context menu is
+        // opened. Camera.intersect reconstructs the world-space point along the
+        // pixel ray from the gaussian depth buffer. Invisible splats are not
+        // candidates, matching what the user can see in the viewport.
+        const canvasRect = scene.canvas.getBoundingClientRect();
+        const nx = (x - canvasRect.left) / canvasRect.width;
+        const ny = (y - canvasRect.top) / canvasRect.height;
+        if (canvasRect.width > 0 && canvasRect.height > 0 && nx >= 0 && nx < 1 && ny >= 0 && ny < 1) {
+            const visibleSplats = (scene.getElementsByType(ElementType.splat) as Splat[]).filter(splat => splat.visible);
+            contextMenuHit = visibleSplats.length > 0 ?
+                scene.camera.intersect(nx, ny, 0, visibleSplats)
+                .then(result => result?.position.clone() ?? null)
+                .catch((): null => null) :
+                Promise.resolve(null);
+        } else {
+            contextMenuHit = Promise.resolve(null);
+        }
+
         contextMenu.dom.style.left = `${x}px`;
         contextMenu.dom.style.top = `${y}px`;
         contextMenu.hidden = false;

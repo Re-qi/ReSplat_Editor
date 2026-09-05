@@ -2,7 +2,9 @@
 
 #overlay-toggle {
     position: absolute;
-    right: 554px;
+    // The render-mode menu is 136px wide and sits to the right. Keep a small
+    // fixed gap so this control never overlaps it.
+    right: 597px;
     top: 24px;
     height: 54px;
     padding: 0px 8px;
@@ -62,7 +64,7 @@
     }
 
     &.scene-has-scrollbar {
-        right: 564px;
+        right: 607px;
     }
 
     &.scene-collapsed {

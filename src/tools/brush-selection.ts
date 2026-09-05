@@ -37,11 +37,17 @@ class BrushSelection {
             return { x, y };
         };
 
-        const update = (e: PointerEvent) => {
+        const updateCursor = (e: PointerEvent) => {
             const { x, y } = getPos(e);
 
             circle.setAttribute('cx', x.toString());
             circle.setAttribute('cy', y.toString());
+
+            return { x, y };
+        };
+
+        const update = (e: PointerEvent) => {
+            const { x, y } = updateCursor(e);
 
             if (dragId !== undefined) {
                 context.beginPath();
@@ -132,6 +138,7 @@ class BrushSelection {
             parent.addEventListener('pointermove', pointermove);
             parent.addEventListener('pointerup', pointerup);
             parent.addEventListener('wheel', wheel);
+            document.addEventListener('pointermove', updateCursor, true);
         };
 
         this.deactivate = () => {
@@ -145,6 +152,7 @@ class BrushSelection {
             parent.removeEventListener('pointermove', pointermove);
             parent.removeEventListener('pointerup', pointerup);
             parent.removeEventListener('wheel', wheel);
+            document.removeEventListener('pointermove', updateCursor, true);
         };
 
         events.on('tool.brushSelection.smaller', () => {

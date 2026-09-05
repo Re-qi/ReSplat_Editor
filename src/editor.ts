@@ -4,15 +4,24 @@ import { BackendClient } from './backend';
 import { BlockingPlane } from './blocking-plane';
 import { BoxShape } from './box-shape';
 import { EditHistory } from './edit-history';
-import { SelectAllOp, SelectNoneOp, SelectInvertOp, SelectOp, StateOp, BitOp, HideSelectionOp, UnhideAllOp, DeleteSelectionOp, ResetOp, MultiOp, AddSplatOp, MergeOp } from './edit-ops';
+import { SelectAllOp, SelectNoneOp, SelectInvertOp, SelectOp, StateOp, BitOp, HideSelectionOp, UnhideAllOp, DeleteSelectionOp, PagedDeleteOp, ResetOp, MultiOp, AddSplatOp, MergeOp, SplatSubdivideOp } from './edit-ops';
 import { Element, ElementType } from './element';
 import { Events } from './events';
 import { IndexRanges } from './index-ranges';
+import type { GridPlane } from './infinite-grid';
 import { Scene } from './scene';
 import { SphereShape } from './sphere-shape';
 import { Splat } from './splat';
 import { SingleSplat } from './splat-serialize';
 import { State } from './splat-state';
+import {
+    DECAL_SUBDIVISION_POINT_BUDGET,
+    applySubdivisionGroups,
+    buildSubdivisionGroupChanges,
+    planSplatSubdivision,
+    subdivideSplatData
+} from './splat-subdivide';
+import { localize } from './ui/localization';
 import { loadViewPrefs, saveViewPrefs, collectViewPrefs, applyViewPrefs } from './view-prefs';
 
 const removeExtension = (filename: string) => {
@@ -79,6 +88,7 @@ const registerEditorEvents = (events: Events, editHistory: EditHistory, scene: S
     };
 
     let lastExportCursor = 0;
+    let pagedDeleteSerial = 0;
 
     // Add unsaved changes warning (browser-only path).
     // In Electron this is handled by main.cjs via a native dialog instead, so
@@ -149,7 +159,8 @@ const registerEditorEvents = (events: Events, editHistory: EditHistory, scene: S
     });
 
     events.function('scene.dirty', () => {
-        return editHistory.cursor !== lastExportCursor;
+        const paintLayersDirty = events.functions.has('paint.layers.dirty') && events.invoke('paint.layers.dirty');
+        return editHistory.cursor !== lastExportCursor || paintLayersDirty;
     });
 
     events.on('doc.saved', () => {
@@ -159,9 +170,9 @@ const registerEditorEvents = (events: Events, editHistory: EditHistory, scene: S
     // force render on some events
 
     [
-        'camera.mode', 'camera.overlay', 'camera.splatSize', 'view.outlineSelection',
+        'camera.mode', 'camera.overlay', 'camera.splatSize', 'camera.fov', 'view.outlineSelection',
         'view.centersUseGaussianColor', 'view.bands', 'camera.bound', 'camera.boundDimensions', 'camera.showPoses',
-        'selection.changed', 'tool.coordSpace', 'pointCloudGroup.activeGroup'
+        'grid.plane', 'selection.changed', 'tool.coordSpace', 'pointCloudGroup.activeGroup', 'mode.changed'
     ].forEach((eventName) => {
         events.on(eventName, () => {
             scene.forceRender = true;
@@ -216,12 +227,58 @@ const registerEditorEvents = (events: Events, editHistory: EditHistory, scene: S
 
     setGridVisible(scene.config.show.grid);
 
+    // grid.plane
+
+    const setGridPlane = (plane: GridPlane) => {
+        if (plane !== scene.grid.plane) {
+            scene.grid.plane = plane;
+            events.fire('grid.plane', plane);
+        }
+    };
+
+    events.function('grid.plane', () => scene.grid.plane);
+
+    events.on('grid.setPlane', (plane: GridPlane) => {
+        setGridPlane(plane);
+    });
+
+    // camera.fovDolly
+
+    let fovDolly = false;
+
+    const setFovDolly = (value: boolean) => {
+        if (value !== fovDolly) {
+            fovDolly = value;
+            events.fire('camera.fovDolly', fovDolly);
+        }
+    };
+
+    events.function('camera.fovDolly', () => fovDolly);
+
+    events.on('camera.setFovDolly', (value: boolean) => {
+        setFovDolly(value);
+    });
+
     // camera.fov
 
     const setCameraFov = (fov: number) => {
-        if (fov !== scene.camera.fov) {
-            scene.camera.fov = fov;
-            events.fire('camera.fov', scene.camera.fov);
+        const { camera } = scene;
+        if (fov !== camera.fov) {
+            const oldFovFactor = camera.fovFactor;
+            camera.fov = fov;
+
+            // Normal FOV changes behave like a lens zoom and keep the camera
+            // position fixed. Auto-dolly instead preserves apparent framing.
+            if (!fovDolly) {
+                const { controls } = scene.config;
+                const scale = camera.fovFactor / oldFovFactor;
+                const tween = camera.distanceTween;
+                for (const state of [tween.value, tween.source, tween.target]) {
+                    state.distance = Math.max(controls.minZoom, Math.min(controls.maxZoom, state.distance * scale));
+                }
+            }
+
+            events.fire('camera.fov', camera.fov);
         }
     };
 
@@ -977,17 +1034,59 @@ const registerEditorEvents = (events: Events, editHistory: EditHistory, scene: S
         });
     });
 
-    events.on('select.delete', () => {
+    events.on('select.delete', async () => {
         // Don't delete gaussians when measure tool is active (backspace deletes measure points instead)
         if (events.invoke('tool.active') === 'measure') {
             return;
         }
 
-        selectedSplats().forEach((splat) => {
-            splat.lodEditLog?.onEditHistoryAdd();
-            splat.lodEditLog?.recordDelete(splat);
-            editHistory.add(new DeleteSelectionOp(splat));
-        });
+        for (const splat of selectedSplats()) {
+            const pagedSession = splat.pagedLodEditSession;
+            if (!pagedSession || !splat.lodEditLog) {
+                splat.lodEditLog?.onEditHistoryAdd();
+                splat.lodEditLog?.recordDelete(splat);
+                await editHistory.add(new DeleteSelectionOp(splat));
+                continue;
+            }
+
+            const voxel = splat.lodEditLog.captureSelectedVoxel(splat);
+            if (!voxel) continue;
+
+            // Delete the proxy immediately. Exact LOD0 refinement continues in
+            // the background and resolves the first operation when its source
+            // rows arrive, so the user does not wait on a page/network roundtrip.
+            splat.lodEditLog.onEditHistoryAdd();
+            splat.lodEditLog.recordDelete(splat);
+            const id = `paged-delete-${Date.now()}-${pagedDeleteSerial++}`;
+            const pagedDeleteOp = new PagedDeleteOp(
+                pagedSession,
+                id,
+                new Uint32Array(),
+                voxel,
+                true
+            );
+            try {
+                await editHistory.add(new MultiOp([
+                    pagedDeleteOp,
+                    new DeleteSelectionOp(splat)
+                ]));
+            } catch (error) {
+                console.error('[editor] Failed to apply proxy deletion', error);
+                continue;
+            }
+
+            const refinement = pagedSession.startDeleteRefinement(
+                id,
+                voxel,
+                sourceIndices => pagedDeleteOp.resolve(sourceIndices)
+            );
+            refinement.catch((error) => {
+                // Keep the fast proxy edit visible. The failed task remains
+                // observable in the console, while save/export will surface
+                // the rejected pending task before producing output.
+                console.error('[editor] Background LOD0 deletion refinement failed', error);
+            });
+        }
     });
 
     // Opacity threshold selection - selects all points with opacity below the given threshold
@@ -1354,6 +1453,103 @@ const registerEditorEvents = (events: Events, editHistory: EditHistory, scene: S
         }
     });
 
+    events.on('select.subdivide', async () => {
+        const [target] = selectedSplats();
+        if (!target || target.scene !== scene) return;
+
+        const subdivisionUnavailable = !!(
+            target.lodEditLog || target.lccFilePath || target.pagedLodEditSession || target.pagedLodDescriptor
+        );
+        if (subdivisionUnavailable) {
+            await events.invoke('showPopup', {
+                type: 'info',
+                header: localize('popup.subdivide.unavailable-header'),
+                message: localize('popup.subdivide.unavailable-message')
+            });
+            return;
+        }
+
+        const requests = planSplatSubdivision(target.splatData);
+        if (requests.length === 0) {
+            await events.invoke('showPopup', {
+                type: 'info',
+                header: localize('popup.subdivide.empty-header'),
+                message: localize('popup.subdivide.empty-message')
+            });
+            return;
+        }
+
+        const childCount = requests.length * 4;
+        if (childCount > DECAL_SUBDIVISION_POINT_BUDGET) {
+            const confirmation = await events.invoke('showPopup', {
+                type: 'okcancel',
+                header: localize('popup.subdivide.large-header'),
+                message: localize('popup.subdivide.large-message')
+            });
+            if (confirmation?.action !== 'ok') return;
+        }
+
+        const originalSnapshot = {
+            data: target.splatData,
+            transformIndices: target.getTransformIndices(),
+            soloMask: new Uint8Array(target.soloMaskData),
+            desaturateMask: new Uint8Array(target.desaturateMaskData)
+        };
+        let replacementAttempted = false;
+        let groupChanges: ReturnType<typeof buildSubdivisionGroupChanges> = [];
+
+        events.fire('startSpinner');
+        events.fire('spinnerText', localize('popup.subdivide.processing'));
+        try {
+            const subdivision = subdivideSplatData(
+                originalSnapshot.data,
+                requests,
+                originalSnapshot.transformIndices,
+                originalSnapshot.soloMask,
+                originalSnapshot.desaturateMask
+            );
+            if (!subdivision) throw new Error('Subdivision produced no child Gaussians.');
+
+            groupChanges = buildSubdivisionGroupChanges(
+                events,
+                target,
+                originalSnapshot.data.numSplats,
+                subdivision.data.numSplats,
+                subdivision.childRanges
+            );
+            replacementAttempted = true;
+            await target.replaceSplatData(subdivision);
+            applySubdivisionGroups(events, target, groupChanges, true);
+            if (target.scene !== scene) throw new Error('Subdivision target changed.');
+
+            events.fire('edit.add', new SplatSubdivideOp({
+                splat: target,
+                events,
+                structuralIndices: subdivision.structuralIndices,
+                beforeStates: subdivision.beforeStates,
+                afterStates: subdivision.afterStates,
+                groupChanges
+            }), true);
+        } catch (error) {
+            if (replacementAttempted && target.scene === scene) {
+                try {
+                    await target.replaceSplatData(originalSnapshot);
+                    applySubdivisionGroups(events, target, groupChanges, false);
+                } catch (rollbackError) {
+                    console.error('[Subdivide] Failed to roll back subdivision', rollbackError);
+                }
+            }
+            console.error('[Subdivide] Failed to subdivide splat', error);
+            await events.invoke('showPopup', {
+                type: 'error',
+                header: localize('popup.subdivide.error-header'),
+                message: error instanceof Error ? error.message : String(error)
+            });
+        } finally {
+            events.fire('stopSpinner');
+        }
+    });
+
     events.on('scene.reset', () => {
         selectedSplats().forEach((splat) => {
             editHistory.add(new ResetOp(splat));
@@ -1579,10 +1775,12 @@ const registerEditorEvents = (events: Events, editHistory: EditHistory, scene: S
             centersSize: events.invoke('camera.splatSize'),
             outlineSelection: events.invoke('view.outlineSelection'),
             showGrid: events.invoke('grid.visible'),
+            gridPlane: events.invoke('grid.plane'),
             showBound: events.invoke('camera.bound'),
             showBoundDimensions: events.invoke('camera.boundDimensions'),
             showCameraPoses: events.invoke('camera.showPoses'),
             flySpeed: events.invoke('camera.flySpeed'),
+            fovDolly: events.invoke('camera.fovDolly'),
             depthCycleLength: events.invoke('view.depthCycleLength')
         };
     });
@@ -1596,10 +1794,12 @@ const registerEditorEvents = (events: Events, editHistory: EditHistory, scene: S
         events.fire('camera.setSplatSize', docView.centersSize);
         events.fire('view.setOutlineSelection', docView.outlineSelection);
         events.fire('grid.setVisible', docView.showGrid);
+        events.fire('grid.setPlane', docView.gridPlane ?? 'xz');
         events.fire('camera.setBound', docView.showBound);
         events.fire('camera.setBoundDimensions', docView.showBoundDimensions ?? false);
         events.fire('camera.setShowPoses', docView.showCameraPoses ?? false);
         events.fire('camera.setFlySpeed', docView.flySpeed);
+        events.fire('camera.setFovDolly', docView.fovDolly ?? false);
         if (docView.depthCycleLength !== undefined) {
             events.fire('view.setDepthCycleLength', docView.depthCycleLength);
         }
@@ -1619,9 +1819,9 @@ const registerEditorEvents = (events: Events, editHistory: EditHistory, scene: S
     // listen to all view-option state-change events
     [
         'bgClr', 'selectedClr', 'unselectedClr', 'lockedClr',
-        'camera.tonemapping', 'camera.fov', 'view.bands',
+        'camera.tonemapping', 'camera.fov', 'camera.fovDolly', 'view.bands',
         'camera.flySpeed', 'camera.splatSize',
-        'view.centersUseGaussianColor', 'view.outlineSelection',
+        'view.centersUseGaussianColor', 'view.outlineSelection', 'grid.plane',
         'camera.boundDimensions',
         'camera.showPoses'
     ].forEach((eventName) => {

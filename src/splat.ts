@@ -24,9 +24,11 @@ import { Element, ElementType } from './element';
 import { IndexRanges } from './index-ranges';
 import { LodEditLog } from './lod-edit-log';
 import { GaussianLUT } from './lut';
+import type { PagedLodEditSession, PagedLodManifest } from './paged-lod-edit';
 import { Serializer } from './serializer';
 import { vertexShader, fragmentShader, gsplatCenter } from './shaders/splat-shader';
 import { SphereShape } from './sphere-shape';
+import { waitForSplatInstanceReady } from './splat-instance-ready';
 import { State, SplatState } from './splat-state';
 import { Transform } from './transform';
 import { TransformPalette } from './transform-palette';
@@ -70,6 +72,13 @@ class Splat extends Element {
     // texel value 255 = desaturated (grey), 0 = normal. Never persisted.
     desaturateMaskData: Uint8Array;
     desaturateMaskTexture: Texture;
+    // Transient GPU paint overlay. The backing texture is owned by the active
+    // paint runtime so separate Splat instances never share stroke previews.
+    paintTexture: Texture | null = null;
+    // Every mesh instance keeps an explicit sampler binding. This transparent
+    // fallback prevents a previous draw's paintColor scope value leaking into
+    // a non-target splat when materials or shader variants are reused.
+    private emptyPaintTexture: Texture;
     selectionBoundStorage: BoundingBox;
     localBoundStorage: BoundingBox;
     worldBoundStorage: BoundingBox;
@@ -87,6 +96,9 @@ class Splat extends Element {
     _blackPoint = 0;
     _whitePoint = 1;
     _transparency = 1;
+    // Viewport-only multiplier owned by the paint-layer manager. Keeping it
+    // separate avoids baking derived layer opacity into the Gaussian asset.
+    _paintLayerOpacity = 1;
     // HSL mixer: 8 color ranges × 3 adjustments (hue/sat/light), normalized
     // hue shifts in [-0.5, 0.5] (i.e. ±180°), sat/light shifts in [-1, 1]
     _hslHueShifts = new Float32Array(8);
@@ -113,6 +125,12 @@ class Splat extends Element {
     lodCounts: number[] = [];
     currentLodIndex = 0;
     lodEditLog: LodEditLog | null = null;
+
+    // Non-zero LOD imports use the selected LOD as a resident proxy. The
+    // exact LOD0 data is owned by this session and is only materialized for a
+    // spatial edit. The descriptor is persisted; the session itself is not.
+    pagedLodEditSession: PagedLodEditSession | null = null;
+    pagedLodDescriptor: Pick<PagedLodManifest, 'version' | 'sourceFingerprint' | 'sourcePath' | 'proxyLod'> | null = null;
 
     // Save-dirty tracking: incremented on any change that affects PLY output
     // (transform, color properties, state). Compared against _savedDirtyVersion
@@ -146,6 +164,35 @@ class Splat extends Element {
 
     rebuildMaterial: (bands: number) => void;
 
+    private createPerSplatTexture(name: string, format: number, resource = this.asset.resource as GSplatResource) {
+        const { device, textureDimensions } = resource;
+        return new Texture(device, {
+            name,
+            width: textureDimensions.x,
+            height: textureDimensions.y,
+            format,
+            mipmaps: false,
+            minFilter: FILTER_NEAREST,
+            magFilter: FILTER_NEAREST,
+            addressU: ADDRESS_CLAMP_TO_EDGE,
+            addressV: ADDRESS_CLAMP_TO_EDGE
+        });
+    }
+
+    private bindCurrentInstance() {
+        const instance = this.entity.gsplat.instance;
+        this.localBoundStorage = instance.resource.aabb;
+        instance.meshInstance.setParameter('paintColor', this.paintTexture ?? this.emptyPaintTexture);
+        // @ts-ignore
+        this.worldBoundStorage = instance.meshInstance._aabb;
+        // @ts-ignore
+        instance.meshInstance._updateAabb = false;
+        instance.sorter.on('updated', () => {
+            this.changedCounter++;
+            if (this.scene) this.scene.forceRender = true;
+        });
+    }
+
     constructor(asset: Asset, rotation: Quat) {
         super(ElementType.splat);
 
@@ -161,8 +208,6 @@ class Splat extends Element {
         this.entity = new Entity('splatEntitiy');
         this.entity.setLocalRotation(rotation);
         this.entity.addComponent('gsplat', { asset });
-
-        const instance = this.entity.gsplat.instance;
 
         // added per-splat state channel
         // bit 1: selected
@@ -185,39 +230,22 @@ class Splat extends Element {
             byteSize: 2
         });
 
-        const { x: width, y: height } = (splatResource as any).textureDimensions;
-
-        // pack spherical harmonic data
-        const createTexture = (name: string, format: number) => {
-            return new Texture(device, {
-                name: name,
-                width: width,
-                height: height,
-                format: format,
-                mipmaps: false,
-                minFilter: FILTER_NEAREST,
-                magFilter: FILTER_NEAREST,
-                addressU: ADDRESS_CLAMP_TO_EDGE,
-                addressV: ADDRESS_CLAMP_TO_EDGE
-            });
-        };
-
         // create the state texture and the SplatState mirror that owns it.
         // splatData.getProp('state') aliases state.data so existing read-only
         // consumers (serialize, status-bar, etc) keep working unchanged.
-        this.stateTexture = createTexture('splatState', PIXELFORMAT_R8);
+        this.stateTexture = this.createPerSplatTexture('splatState', PIXELFORMAT_R8, splatResource);
         this.state = new SplatState(this.splatData.getProp('state') as Uint8Array, this.stateTexture);
-        this.transformTexture = createTexture('splatTransform', PIXELFORMAT_R16U);
+        this.transformTexture = this.createPerSplatTexture('splatTransform', PIXELFORMAT_R16U, splatResource);
 
         // solo mask texture: same layout as the state texture, default all-visible.
-        this.soloMaskTexture = createTexture('soloMask', PIXELFORMAT_R8);
+        this.soloMaskTexture = this.createPerSplatTexture('soloMask', PIXELFORMAT_R8, splatResource);
         const maskBuffer = this.soloMaskTexture.lock() as Uint8Array;
         maskBuffer.fill(255);
         this.soloMaskTexture.unlock();
         this.soloMaskData = new Uint8Array(this.splatData.numSplats);
 
         // desaturate mask texture: default all-normal (no desaturation).
-        this.desaturateMaskTexture = createTexture('desaturateMask', PIXELFORMAT_R8);
+        this.desaturateMaskTexture = this.createPerSplatTexture('desaturateMask', PIXELFORMAT_R8, splatResource);
         const desatBuffer = this.desaturateMaskTexture.lock() as Uint8Array;
         desatBuffer.fill(0);
         this.desaturateMaskTexture.unlock();
@@ -225,8 +253,17 @@ class Splat extends Element {
 
         // create the transform palette
         this.transformPalette = new TransformPalette(device);
+        this.emptyPaintTexture = Texture.createDataTexture2D(
+            device,
+            `emptyPaintColor-${this.uid}`,
+            1,
+            1,
+            PIXELFORMAT_RGBA8,
+            [new Uint8Array(4)]
+        );
 
         this.rebuildMaterial = (bands: number) => {
+            const instance = this.entity.gsplat.instance;
             const { material } = instance;
             const { glsl } = material.shaderChunks;
             glsl.set('gsplatVS', vertexShader);
@@ -238,34 +275,28 @@ class Splat extends Element {
             material.setParameter('splatTransform', this.transformTexture);
             material.setParameter('soloMask', this.soloMaskTexture);
             material.setParameter('desaturateMask', this.desaturateMaskTexture);
+            material.setDefine('PAINT_ENABLED', this.paintTexture ? '1' : '0');
+            instance.meshInstance.setParameter('paintColor', this.paintTexture ?? this.emptyPaintTexture);
             material.update();
         };
 
         this.selectionBoundStorage = new BoundingBox();
-        this.localBoundStorage = instance.resource.aabb;
-        // @ts-ignore
-        this.worldBoundStorage = instance.meshInstance._aabb;
-
-        // @ts-ignore
-        instance.meshInstance._updateAabb = false;
-
-        // when sort changes, re-render the scene
-        instance.sorter.on('updated', () => {
-            this.changedCounter++;
-            if (this.scene) {
-                this.scene.forceRender = true;
-            }
-        });
+        this.bindCurrentInstance();
     }
 
     destroy() {
+        this.pagedLodEditSession?.close().catch(error => console.warn('Failed to close paged LOD session', error));
+        this.pagedLodEditSession = null;
         super.destroy();
         if (this._lutTexture) {
             this._lutTexture.destroy();
             this._lutTexture = null;
         }
+        this.stateTexture.destroy();
+        this.transformTexture.destroy();
         this.soloMaskTexture.destroy();
         this.desaturateMaskTexture.destroy();
+        this.emptyPaintTexture.destroy();
         this.entity.destroy();
         this.asset.registry.remove(this.asset);
         this.asset.unload();
@@ -336,6 +367,125 @@ class Splat extends Element {
         if (this.scene) {
             this.scene.forceRender = true;
         }
+    }
+
+    setPaintTexture(texture: Texture | null) {
+        if (this.paintTexture === texture) return;
+        this.paintTexture = texture;
+
+        const instance = this.entity.gsplat.instance;
+        const { material } = instance;
+        material.setDefine('PAINT_ENABLED', texture ? '1' : '0');
+        instance.meshInstance.setParameter('paintColor', texture ?? this.emptyPaintTexture);
+        material.update();
+        if (this.scene) this.scene.forceRender = true;
+    }
+
+    applyPaintValues(indices: Uint32Array, values: Float32Array) {
+        if (values.length !== indices.length * 3) {
+            throw new Error('Paint values must contain three DC components per splat.');
+        }
+
+        const dc0 = this.splatData.getProp('f_dc_0') as Float32Array;
+        const dc1 = this.splatData.getProp('f_dc_1') as Float32Array;
+        const dc2 = this.splatData.getProp('f_dc_2') as Float32Array;
+        for (let i = 0; i < indices.length; ++i) {
+            const splatIndex = indices[i];
+            if (splatIndex >= this.splatData.numSplats) continue;
+            const value = i * 3;
+            dc0[splatIndex] = values[value];
+            dc1[splatIndex] = values[value + 1];
+            dc2[splatIndex] = values[value + 2];
+        }
+
+        (this.asset.resource as GSplatResource).updateColorData(this.splatData);
+        this.markSaveDirty();
+        this.changedCounter++;
+        if (this.scene) {
+            this.scene.forceRender = true;
+            this.scene.events.fire('splat.paintChanged', this);
+        }
+    }
+
+    async applyStateValues(indices: Uint32Array, values: Uint8Array) {
+        this.state.setValues(indices, values);
+        this.markSaveDirty();
+        await this.updateState(State.selected | State.locked | State.deleted);
+    }
+
+    getTransformIndices() {
+        const source = this.transformTexture.getSource() as unknown as Uint16Array | null;
+        const result = new Uint16Array(this.splatData.numSplats);
+        if (source) result.set(source.subarray(0, result.length));
+        return result;
+    }
+
+    async replaceSplatData(options: {
+        data: GSplatData,
+        transformIndices: Uint16Array,
+        soloMask: Uint8Array,
+        desaturateMask: Uint8Array
+    }) {
+        const { data, transformIndices, soloMask, desaturateMask } = options;
+        if (transformIndices.length < data.numSplats || soloMask.length < data.numSplats || desaturateMask.length < data.numSplats) {
+            throw new Error('Replacement per-splat data does not match the Gaussian count.');
+        }
+
+        const oldResource = this.asset.resource as GSplatResource;
+        const oldStateTexture = this.stateTexture;
+        const oldTransformTexture = this.transformTexture;
+        const oldSoloMaskTexture = this.soloMaskTexture;
+        const oldDesaturateMaskTexture = this.desaturateMaskTexture;
+        const newResource = new GSplatResource(oldResource.device, data);
+        const newStateTexture = this.createPerSplatTexture('splatState', PIXELFORMAT_R8, newResource);
+        const newTransformTexture = this.createPerSplatTexture('splatTransform', PIXELFORMAT_R16U, newResource);
+        const newSoloMaskTexture = this.createPerSplatTexture('soloMask', PIXELFORMAT_R8, newResource);
+        const newDesaturateMaskTexture = this.createPerSplatTexture('desaturateMask', PIXELFORMAT_R8, newResource);
+
+        this.paintTexture = null;
+        this.splatData = data;
+        this.stateTexture = newStateTexture;
+        this.state = new SplatState(data.getProp('state') as Uint8Array, newStateTexture);
+        this.transformTexture = newTransformTexture;
+        this.soloMaskTexture = newSoloMaskTexture;
+        this.soloMaskData = new Uint8Array(soloMask.subarray(0, data.numSplats));
+        this.desaturateMaskTexture = newDesaturateMaskTexture;
+        this.desaturateMaskData = new Uint8Array(desaturateMask.subarray(0, data.numSplats));
+
+        const transformBuffer = newTransformTexture.lock() as Uint16Array;
+        transformBuffer.set(transformIndices.subarray(0, data.numSplats));
+        newTransformTexture.unlock();
+        const soloBuffer = newSoloMaskTexture.lock() as Uint8Array;
+        soloBuffer.fill(255);
+        soloBuffer.set(this.soloMaskData);
+        newSoloMaskTexture.unlock();
+        const desaturateBuffer = newDesaturateMaskTexture.lock() as Uint8Array;
+        desaturateBuffer.fill(0);
+        desaturateBuffer.set(this.desaturateMaskData);
+        newDesaturateMaskTexture.unlock();
+
+        // A direct component resource keeps the same Splat and entity while
+        // forcing PlayCanvas to rebuild its fixed-size GSplatInstance.
+        this.entity.gsplat.resource = newResource;
+        this.asset.resource = newResource;
+        this.bindCurrentInstance();
+        this._hslDefineActive = false;
+        this._lutDefineActive = false;
+        if (this.scene) this.rebuildMaterial(this.scene.events.invoke('view.bands'));
+
+        oldStateTexture.destroy();
+        oldTransformTexture.destroy();
+        oldSoloMaskTexture.destroy();
+        oldDesaturateMaskTexture.destroy();
+        oldResource.destroy();
+
+        this.markSaveDirty();
+        this.changedCounter++;
+        await this.updateState(State.deleted);
+        if (this.scene && this.numSplats > 0) {
+            await waitForSplatInstanceReady(this.entity.gsplat.instance, this.scene.camera.mainCamera);
+        }
+        if (this.scene) this.scene.events.fire('splat.structureChanged', this);
     }
 
     async updatePositions() {
@@ -476,11 +626,12 @@ class Splat extends Element {
         const hasSelection = isSceneSelection || hasSelectedGaussians;
         const selected = renderOverlays && hasSelection;
         const cameraMode = events.invoke('camera.mode');
+        const painting = events.invoke('mode.active') === 'paint';
 
         // configure rings rendering - rings show whenever there's a selection, regardless of overlay
         const material = this.entity.gsplat.instance.material;
-        material.setParameter('outlineMode', events.invoke('view.outlineSelection') ? 1 : 0);
-        material.setParameter('ringSize', (hasSelection && cameraMode === 'rings') ? 0.04 : 0);
+        material.setParameter('outlineMode', !painting && events.invoke('view.outlineSelection') ? 1 : 0);
+        material.setParameter('ringSize', (!painting && hasSelection && cameraMode === 'rings') ? 0.04 : 0);
 
         // configure colors
         const selectedClr = events.invoke('selectedClr');
@@ -492,7 +643,12 @@ class Splat extends Element {
         } else if (events.invoke('view.outlineSelection')) {
             material.setParameter('selectedClr', [0, 0, 0, 0]);
         } else {
-            material.setParameter('selectedClr', [selectedClr.r, selectedClr.g, selectedClr.b, selectedClr.a * this.selectionAlpha]);
+            material.setParameter('selectedClr', [
+                selectedClr.r,
+                selectedClr.g,
+                selectedClr.b,
+                painting ? 0 : selectedClr.a * this.selectionAlpha
+            ]);
         }
         material.setParameter('unselectedClr', [unselectedClr.r, unselectedClr.g, unselectedClr.b, unselectedClr.a]);
         material.setParameter('lockedClr', [lockedClr.r, lockedClr.g, lockedClr.b, lockedClr.a]);
@@ -506,7 +662,7 @@ class Splat extends Element {
             scale * this.tintClr.r * (1 + this.temperature),
             scale * this.tintClr.g,
             scale * this.tintClr.b * (1 - this.temperature),
-            this.transparency
+            this.transparency * this.paintLayerOpacity
         ]);
 
         material.setParameter('saturation', this.saturation);
@@ -741,6 +897,18 @@ class Splat extends Element {
         return this._transparency;
     }
 
+    set paintLayerOpacity(value: number) {
+        const opacity = Math.min(1, Math.max(0, value));
+        if (opacity !== this._paintLayerOpacity) {
+            this._paintLayerOpacity = opacity;
+            if (this.scene) this.scene.forceRender = true;
+        }
+    }
+
+    get paintLayerOpacity() {
+        return this._paintLayerOpacity;
+    }
+
     set hslHueShifts(value: Float32Array) {
         this._hslHueShifts.set(value);
         this.markSaveDirty();
@@ -894,7 +1062,13 @@ class Splat extends Element {
             lccFilePath: this.lccFilePath,
             lodCounts: this.lodCounts.length > 0 ? this.lodCounts : null,
             currentLodIndex: this.lodCounts.length > 0 ? this.currentLodIndex : null,
-            lodEditLog: this.lodEditLog?.serialize() ?? null
+            lodEditLog: this.lodEditLog?.serialize() ?? null,
+            pagedLod: this.pagedLodDescriptor ? {
+                version: this.pagedLodDescriptor.version,
+                sourceFingerprint: this.pagedLodDescriptor.sourceFingerprint,
+                sourcePath: this.pagedLodDescriptor.sourcePath,
+                proxyLod: this.pagedLodDescriptor.proxyLod
+            } : null
         };
     }
 
@@ -925,6 +1099,12 @@ class Splat extends Element {
             this.lodEditLog = new LodEditLog();
             this.lodEditLog.deserialize(doc.lodEditLog);
         }
+        this.pagedLodDescriptor = doc.pagedLod ? {
+            version: doc.pagedLod.version ?? 1,
+            sourceFingerprint: doc.pagedLod.sourceFingerprint,
+            sourcePath: doc.pagedLod.sourcePath,
+            proxyLod: doc.pagedLod.proxyLod
+        } : null;
     }
 }
 

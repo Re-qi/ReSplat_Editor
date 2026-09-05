@@ -81,6 +81,22 @@ class SplatState {
         if (hi > 0) this.markDirty(lo, hi);
     }
 
+    setValues(indices: Uint32Array, values: Uint8Array): void {
+        if (indices.length !== values.length) {
+            throw new Error('State indices and values must have matching lengths.');
+        }
+        let lo = Infinity;
+        let hi = -1;
+        for (let i = 0; i < indices.length; ++i) {
+            const index = indices[i];
+            if (index >= this.data.length) continue;
+            this.data[index] = values[i];
+            if (index < lo) lo = index;
+            if (index >= hi) hi = index + 1;
+        }
+        if (hi > 0) this.markDirty(lo, hi);
+    }
+
     // recount selected/locked/deleted from scratch. cheap relative to a GPU
     // readback (single CPU pass over numSplats bytes) and only triggered from
     // flush, so the same call that uploads to GPU also refreshes counts.

@@ -1,13 +1,20 @@
 @use 'colors.scss' as *;
 
-#mode-toggle {
+#view-mode-toggle {
     position: absolute;
-    left: 24px;
-    top: 74px;
-    width: 120px;
+    left: auto;
+    right: 453px;
+    top: 24px;
+    // Keep the render-mode control the same 54px footprint as the other
+    // top-right controls. The previous bottom-only radius made it look like
+    // a different component and its content-box width made adjacent controls
+    // overlap when the palette/overlay buttons were shown together.
+    width: 136px;
+    height: 54px;
+    box-sizing: border-box;
 
     padding: 0px 8px;
-    border-radius: 0px 0px 8px 8px;
+    border-radius: 8px;
 
     background-color: $bcg-dark;
 
@@ -18,47 +25,53 @@
 
     cursor: pointer;
 
+    // Keep the keyboard-triggered scene collapse animation in sync with the
+    // other top-level controls.
+    transition: transform 0.3s ease;
+
     &.centers-mode {
-        #rings-icon, #rings-text,
-        #splat-icon, #splat-text {
+        #view-rings-icon, #view-rings-text,
+        #view-splat-icon, #view-splat-text {
             display: none;
         }
     }
 
     &.rings-mode {
-        #centers-icon, #centers-text,
-        #splat-icon, #splat-text {
+        #view-centers-icon, #view-centers-text,
+        #view-splat-icon, #view-splat-text {
             display: none;
         }
     }
 
     &.splat-mode {
-        #centers-icon, #centers-text,
-        #rings-icon, #rings-text {
+        #view-centers-icon, #view-centers-text,
+        #view-rings-icon, #view-rings-text {
             display: none;
         }
     }
 
-    #centers-icon {
-        color: $clr-hilight;
+    &.scene-has-scrollbar {
+        right: 463px;
     }
 
-    #rings-icon {
-        color: $clr-hilight;
+    &.scene-collapsed {
+        transform: translateX(344px);
     }
 
-    #splat-icon {
-        width: 12px;
-        height: 12px;
+    #view-centers-icon,
+    #view-rings-icon,
+    #view-splat-icon {
+        width: 24px;
+        height: 24px;
         color: $clr-hilight;
 
         svg {
-            width: 12px;
-            height: 12px;
+            width: 24px;
+            height: 24px;
         }
     }
 
-    #mode-dropdown-btn {
+    #view-mode-dropdown-btn {
         width: 16px;
         height: 16px;
         margin-left: auto;
@@ -72,6 +85,131 @@
 
         &.open {
             color: $clr-hilight;
+        }
+    }
+
+    #view-mode-dropdown-menu {
+        position: absolute;
+        top: calc(100% + 3px);
+        left: 0;
+        right: 0;
+        padding: 2px 0;
+        background-color: $bcg-dark;
+        border-radius: 8px;
+        z-index: 100;
+
+        .view-mode-dropdown-item {
+            display: flex;
+            flex-direction: row;
+            align-items: center;
+            padding: 5px 8px;
+            cursor: pointer;
+            color: $text-secondary;
+            border-radius: 4px;
+            margin: 2px 4px;
+
+            &:hover {
+                color: $text-primary;
+                background-color: $bcg-darker;
+            }
+
+            &.active {
+                color: #000 !important;
+                background-color: $clr-hilight;
+
+                .view-mode-dropdown-icon,
+                .pcui-label {
+                    color: #000 !important;
+                }
+
+                &:hover {
+                    background-color: $clr-hilight;
+                }
+            }
+
+            &.longpress-hover {
+                color: #000 !important;
+                background-color: $clr-hilight;
+
+                .view-mode-dropdown-icon,
+                .pcui-label {
+                    color: #000 !important;
+                }
+            }
+
+            .view-mode-dropdown-icon {
+                width: 24px;
+                height: 24px;
+                margin-right: 4px;
+                color: $text-secondary;
+
+                svg {
+                    width: 24px;
+                    height: 24px;
+                }
+            }
+        }
+    }
+
+    &:hover {
+        color: $text-primary;
+    }
+}
+
+// Editor / paint mode switch occupying the original render-mode menu slot.
+#mode-toggle {
+    position: absolute;
+    left: 24px;
+    top: 74px;
+    width: 120px;
+    min-height: 28px;
+    padding: 0px 8px;
+    border-radius: 0px 0px 8px 8px;
+    background-color: $bcg-dark;
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    justify-content: flex-start;
+    cursor: pointer;
+    color: $text-secondary;
+
+    &:hover {
+        color: $text-primary;
+    }
+
+    &.disabled {
+        cursor: default;
+        opacity: 0.55;
+    }
+
+    #mode-edit-icon,
+    #mode-paint-icon {
+        width: 24px;
+        height: 24px;
+        color: $clr-hilight;
+
+        svg {
+            width: 24px;
+            height: 24px;
+        }
+    }
+
+    #mode-edit-text,
+    #mode-paint-text {
+        margin-left: 4px;
+        color: inherit;
+    }
+
+    #mode-dropdown-btn {
+        width: 16px;
+        height: 16px;
+        margin-left: auto;
+        color: $clr-default;
+
+        svg {
+            width: 16px;
+            height: 16px;
+            fill: currentColor;
         }
     }
 
@@ -108,10 +246,6 @@
                 .pcui-label {
                     color: #000 !important;
                 }
-
-                &:hover {
-                    background-color: $clr-hilight;
-                }
             }
 
             &.longpress-hover {
@@ -124,21 +258,23 @@
                 }
             }
 
+            &.disabled {
+                cursor: default;
+                opacity: 0.5;
+                pointer-events: none;
+            }
+
             .mode-dropdown-icon {
-                width: 12px;
-                height: 12px;
+                width: 24px;
+                height: 24px;
                 margin-right: 4px;
                 color: $text-secondary;
 
                 svg {
-                    width: 12px;
-                    height: 12px;
+                    width: 24px;
+                    height: 24px;
                 }
             }
         }
-    }
-
-    &:hover {
-        color: $text-primary;
     }
 }

@@ -2,8 +2,9 @@ import { BooleanInput, ColorPicker, Container, Label, SelectInput, SliderInput }
 import { Color } from 'playcanvas';
 
 import { Events } from '../events';
+import type { GridPlane } from '../infinite-grid';
 import { ShortcutManager } from '../shortcut-manager';
-import { localize, formatTooltipWithShortcut } from './localization';
+import { i18n, localize, formatTooltipWithShortcut } from './localization';
 import cornerUpLeftSvg from './svg/corner-up-left.svg';
 import iterationCwSvg from './svg/iteration-cw.svg';
 import { Tooltips } from './tooltips';
@@ -73,6 +74,7 @@ class ViewPanel extends Container {
             events.fire('setUnselectedClr', new Color(0, 0, 1, 0.3137));
             events.fire('setLockedClr', new Color(0, 0, 0, 0.3137));
             events.fire('camera.setTonemapping', 'linear');
+            events.fire('camera.setFovDolly', false);
             events.fire('camera.setFov', 75);
             events.fire('view.setBands', 3);
             events.fire('camera.setFlySpeed', 1);
@@ -80,12 +82,41 @@ class ViewPanel extends Container {
             events.fire('view.setCentersUseGaussianColor', false);
             events.fire('view.setOutlineSelection', false);
             events.fire('grid.setVisible', true);
+            events.fire('grid.setPlane', 'xz');
             events.fire('camera.setBound', true);
             events.fire('camera.setBoundDimensions', false);
             events.fire('camera.setShowPoses', false);
+            languageSelection.value = 'auto';
+            i18n.setLanguage(null);
         });
 
         header.append(resetBtn);
+
+        // language
+
+        const languageRow = new Container({
+            class: 'view-panel-row'
+        });
+
+        const languageLabel = new Label({
+            class: 'view-panel-row-label'
+        });
+        i18n.bindText(languageLabel, 'panel.settings.language');
+
+        const languageSelection = new SelectInput({
+            class: 'view-panel-row-select',
+            defaultValue: i18n.storedLanguage ?? 'auto'
+        });
+        i18n.bindOptions(languageSelection, () => [
+            { v: 'auto', t: i18n.t('panel.settings.language.auto') },
+            ...i18n.languages.map(language => ({ v: language.code, t: language.name }))
+        ]);
+        languageSelection.on('change', (value: string) => {
+            i18n.setLanguage(value === 'auto' ? null : value);
+        });
+
+        languageRow.append(languageLabel);
+        languageRow.append(languageSelection);
 
         // colors
 
@@ -226,6 +257,26 @@ class ViewPanel extends Container {
         });
         tooltips.register(fovRevert, '恢复默认值', 'bottom');
         fovRow.append(fovRevert);
+
+        // fov auto dolly
+
+        const fovDollyRow = new Container({
+            class: 'view-panel-row'
+        });
+
+        const fovDollyLabel = new Label({
+            class: 'view-panel-row-label'
+        });
+        i18n.bindText(fovDollyLabel, 'panel.settings.fov-dolly');
+
+        const fovDollyToggle = new BooleanInput({
+            type: 'toggle',
+            class: 'view-panel-row-toggle',
+            value: false
+        });
+
+        fovDollyRow.append(fovDollyLabel);
+        fovDollyRow.append(fovDollyToggle);
 
         // sh bands
         const shBandsRow = new Container({
@@ -373,6 +424,30 @@ class ViewPanel extends Container {
         showGridRow.append(showGridLabel);
         showGridRow.append(showGridToggle);
 
+        // grid plane
+
+        const gridPlaneRow = new Container({
+            class: 'view-panel-row'
+        });
+
+        const gridPlaneLabel = new Label({
+            class: 'view-panel-row-label'
+        });
+        i18n.bindText(gridPlaneLabel, 'panel.settings.grid-plane');
+
+        const gridPlaneSelection = new SelectInput({
+            class: 'view-panel-row-select',
+            defaultValue: 'xz',
+            options: [
+                { v: 'xz', t: 'XZ' },
+                { v: 'xy', t: 'XY' },
+                { v: 'yz', t: 'YZ' }
+            ]
+        });
+
+        gridPlaneRow.append(gridPlaneLabel);
+        gridPlaneRow.append(gridPlaneSelection);
+
         // show bound
 
         const showBoundRow = new Container({
@@ -466,15 +541,18 @@ class ViewPanel extends Container {
         }
 
         this.append(header);
+        this.append(languageRow);
         this.append(clrRow);
         this.append(tonemappingRow);
         this.append(fovRow);
+        this.append(fovDollyRow);
         this.append(shBandsRow);
         this.append(cameraFlySpeedRow);
         this.append(centersSizeRow);
         this.append(centersColorRow);
         this.append(outlineSelectionRow);
         this.append(showGridRow);
+        this.append(gridPlaneRow);
         this.append(showBoundRow);
         this.append(showBoundDimensionsRow);
         this.append(showCameraPosesRow);
@@ -556,6 +634,16 @@ class ViewPanel extends Container {
             events.fire('camera.setFlySpeed', value);
         });
 
+        // fov auto dolly
+
+        events.on('camera.fovDolly', (value: boolean) => {
+            fovDollyToggle.value = value;
+        });
+
+        fovDollyToggle.on('change', (value: boolean) => {
+            events.fire('camera.setFovDolly', value);
+        });
+
         // outline selection
 
         events.on('view.outlineSelection', (value: boolean) => {
@@ -574,6 +662,16 @@ class ViewPanel extends Container {
 
         showGridToggle.on('change', () => {
             events.fire('grid.setVisible', showGridToggle.value);
+        });
+
+        // grid plane
+
+        events.on('grid.plane', (plane: GridPlane) => {
+            gridPlaneSelection.value = plane;
+        });
+
+        gridPlaneSelection.on('change', (value: GridPlane) => {
+            events.fire('grid.setPlane', value);
         });
 
         // show bound

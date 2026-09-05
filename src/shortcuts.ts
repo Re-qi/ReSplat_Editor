@@ -7,6 +7,7 @@ import { Events } from './events';
  * - 'optional': don't care either way
  */
 type ModifierState = 'required' | 'forbidden' | 'optional';
+type ShortcutMode = 'any' | 'edit' | 'paint';
 
 /**
  * A shortcut binding definition.
@@ -20,6 +21,7 @@ interface ShortcutBinding {
     held?: boolean;
     repeat?: boolean;       // whether to fire on keyboard repeat events (for non-held shortcuts)
     capture?: boolean;      // whether to use capture phase for the event listener
+    mode?: ShortcutMode;    // editor mode in which this shortcut is active (default: any)
 }
 
 /**
@@ -57,9 +59,12 @@ class Shortcuts {
             const isCtrlKey = e.code.startsWith('Control');
             const isShiftKey = e.code.startsWith('Shift');
             const isAltKey = e.code.startsWith('Alt');
+            const mode = (events.functions.has('mode.active') ? events.invoke('mode.active') : 'edit') as ShortcutMode;
 
             for (let i = 0; i < shortcuts.length; i++) {
                 const options = shortcuts[i];
+
+                if (options.mode && options.mode !== 'any' && options.mode !== mode) continue;
 
                 const ctrlMatch = isCtrlKey || checkMod(options.ctrl, !!(e.ctrlKey || e.metaKey));
                 const shiftMatch = isShiftKey || checkMod(options.shift, e.shiftKey);
@@ -129,3 +134,4 @@ class Shortcuts {
 }
 
 export { Shortcuts, ModifierState, ShortcutBinding };
+export type { ShortcutMode };

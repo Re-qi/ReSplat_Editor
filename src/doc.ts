@@ -1,11 +1,14 @@
 import { ZipFileSystem, ZipReadFileSystem, ReadFileSystem } from '@playcanvas/splat-transform';
 
+import { BackendClient } from './backend';
 import { BlockingPlane } from './blocking-plane';
 import { BoxShape } from './box-shape';
 import { EditHistory } from './edit-history';
 import { Element } from './element';
 import { Events } from './events';
 import { BrowserFileSystem, BlobReadSource, createElectronFileReadSource, MappedReadFileSystem, ZstdWriter, GZipWriter, isZstdSupported } from './io';
+import { LodEditLog } from './lod-edit-log';
+import { PagedLodEditSession } from './paged-lod-edit';
 import { recentFiles } from './recent-files';
 import { Scene } from './scene';
 import { SphereShape } from './sphere-shape';
@@ -118,6 +121,79 @@ const rebuildLccFileSystem = async (splat: Splat, events: Events): Promise<void>
         splat.lodEditLog = null;
         console.warn(`[doc] No LCC file selected — multi-LOD editing disabled for "${lccPath}"`);
     }
+};
+
+// Reopen the disk-backed LOD0 paging session after the proxy PLY has been
+// restored from the project archive. Only the descriptor and delete patch are
+// serialized; page data is always regenerated from the source container.
+const rebuildPagedLodSession = async (
+    splat: Splat,
+    patchEntry: string | null,
+    zipFs: ZipReadFileSystem,
+    zipEntries: string[],
+    electronApi: any
+): Promise<void> => {
+    const descriptor = splat.pagedLodDescriptor;
+    if (!descriptor || descriptor.proxyLod <= 0) return;
+    if (!splat.lodEditLog) splat.lodEditLog = new LodEditLog();
+
+    let sourcePath = descriptor.sourcePath;
+    if (!sourcePath || !(await electronApi?.fileExists?.(sourcePath))) {
+        if (!electronApi?.isElectron) {
+            console.warn('[doc] Paged LOD source is not available outside Electron; edit patch kept inactive');
+            return;
+        }
+        const paths = await electronApi.openFileDialog({
+            title: '重新定位 LCC/LCC2 源文件',
+            filters: [{ name: 'LCC multi-LOD', extensions: ['lcc', 'lcc2'] }]
+        });
+        sourcePath = paths?.[0] ?? null;
+        if (!sourcePath) {
+            console.warn('[doc] Paged LOD source relocation cancelled');
+            return;
+        }
+    }
+
+    const manifest = await BackendClient.openLodEdit(sourcePath, descriptor.proxyLod);
+    if (manifest.sourceFingerprint !== descriptor.sourceFingerprint) {
+        console.warn('[doc] Paged LOD source fingerprint mismatch; patch was not applied');
+        return;
+    }
+
+    const session = new PagedLodEditSession(splat, manifest);
+    if (patchEntry && zipEntries.includes(patchEntry)) {
+        const patchSource = await zipFs.createSource(patchEntry);
+        let patchBytes = await patchSource.read().readAll();
+        patchSource.close();
+        if (patchEntry.endsWith('.zst') || patchEntry.endsWith('.gz')) {
+            const stream = new DecompressionStream((patchEntry.endsWith('.zst') ? 'zstd' : 'gzip') as any);
+            const writer = stream.writable.getWriter();
+            await writer.write(patchBytes as any);
+            await writer.close();
+            const reader = stream.readable.getReader();
+            const chunks: Uint8Array[] = [];
+            while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+                chunks.push(value);
+            }
+            const length = chunks.reduce((sum, chunk) => sum + chunk.length, 0);
+            patchBytes = new Uint8Array(length);
+            let offset = 0;
+            for (const chunk of chunks) {
+                patchBytes.set(chunk, offset);
+                offset += chunk.length;
+            }
+        }
+        session.deserializePatch(JSON.parse(new TextDecoder().decode(patchBytes)));
+    }
+    splat.pagedLodEditSession = session;
+    splat.pagedLodDescriptor = {
+        version: manifest.version,
+        sourceFingerprint: manifest.sourceFingerprint,
+        sourcePath,
+        proxyLod: manifest.proxyLod
+    };
 };
 
 // ts compiler and vscode find this type, but eslint does not
@@ -330,6 +406,17 @@ const registerDocEvents = (scene: Scene, events: Events, editHistory: EditHistor
                 if (splat.lccFilePath) {
                     await rebuildLccFileSystem(splat, events);
                 }
+
+                if (splat.pagedLodDescriptor) {
+                    const patchEntry = document.pagedLodPatches?.[i] ?? null;
+                    try {
+                        await rebuildPagedLodSession(splat, patchEntry, zipFs, zipEntries, electronApi);
+                    } catch (error) {
+                        // Keep the embedded proxy usable even when the source
+                        // file is missing or the fingerprint has changed.
+                        console.warn('[doc] Failed to restore paged LOD session', error);
+                    }
+                }
             }
 
             // FIXME: trigger scene bound calc in a better way
@@ -376,9 +463,16 @@ const registerDocEvents = (scene: Scene, events: Events, editHistory: EditHistor
                 }
             }
 
+            if (events.functions.has('paint.layers.deserialize')) {
+                events.invoke('paint.layers.deserialize', document.paintLayers, events.invoke('scene.allSplats') as Splat[]);
+            }
+
             // restore edit history (must await since it goes through commandQueue)
             if (document.editHistory) {
                 await editHistory.deserialize(document.editHistory, scene);
+            }
+            if (events.functions.has('paint.layers.finishRestore')) {
+                await events.invoke('paint.layers.finishRestore');
             }
 
             // refresh the pivot to reflect the loaded transform
@@ -432,6 +526,10 @@ const registerDocEvents = (scene: Scene, events: Events, editHistory: EditHistor
         try {
             const splats = events.invoke('scene.allSplats') as Splat[];
 
+            // Deletes are optimistic in proxy mode, but a project must never
+            // serialize before its authoritative LOD0 source rows are known.
+            await Promise.all(splats.map(s => s.pagedLodEditSession?.waitForPendingRefinements()));
+
             // Serialize point cloud groups for each splat
             const groups: { name: string; indices: number[] }[][] = splats.map((s) => {
                 const splatGroups = events.invoke('pointCloudGroup.getGroupsForSplat', s) as { name: string; indices: Uint32Array }[];
@@ -441,9 +539,10 @@ const registerDocEvents = (scene: Scene, events: Events, editHistory: EditHistor
             // determine compression format
             const useZstd = isZstdSupported();
             const format = useZstd ? 'ply-zstd' : 'ply-gzip';
+            const patchExt = useZstd ? '.bin.zst' : '.bin.gz';
 
             const document = {
-                version: 1,
+                version: 2,
                 camera: scene.camera.docSerialize(),
                 view: events.invoke('docSerialize.view'),
                 poseSets: events.invoke('docSerialize.poseSets'),
@@ -453,7 +552,11 @@ const registerDocEvents = (scene: Scene, events: Events, editHistory: EditHistor
                 shapes: scene.elements
                 .filter(e => e.docSerialize() !== null)
                 .map(e => e.docSerialize()),
-                editHistory: editHistory.serialize()
+                paintLayers: events.functions.has('paint.layers.serialize') ? events.invoke('paint.layers.serialize') : null,
+                editHistory: editHistory.serialize(),
+                pagedLodPatches: splats.map((s, i) => {
+                    return s.pagedLodEditSession ? `lod-delete-patch-v2_${i}${patchExt}` : null;
+                })
             };
 
             const plySettings: SerializeSettings = {
@@ -518,6 +621,31 @@ const registerDocEvents = (scene: Scene, events: Events, editHistory: EditHistor
                 }
                 await zipWriter.close();
                 console.log(`[save] zip+write: ${((performance.now() - t0) / 1000).toFixed(1)}s (${(plyChunks.reduce((s, c) => s + c.length, 0) / 1048576).toFixed(1)} MB)`);
+
+                const session = splat.pagedLodEditSession;
+                if (session) {
+                    const patchChunks: Uint8Array[] = [];
+                    const patchMemoryWriter = {
+                        bytesWritten: 0,
+                        write(data: Uint8Array) {
+                            patchChunks.push(data);
+                            this.bytesWritten += data.length;
+                            return Promise.resolve();
+                        },
+                        close() {
+                            return Promise.resolve();
+                        },
+                        abort() {}
+                    };
+                    const patchCompressor = useZstd ? new ZstdWriter(patchMemoryWriter) : new GZipWriter(patchMemoryWriter);
+                    await patchCompressor.write(new TextEncoder().encode(JSON.stringify(session.serializePatch())));
+                    await patchCompressor.close();
+                    const patchWriter = await zipFs.createWriter(`lod-delete-patch-v2_${i}${patchExt}`);
+                    for (const chunk of patchChunks) {
+                        await patchWriter.write(chunk);
+                    }
+                    await patchWriter.close();
+                }
             }
 
             // Close zip (also closes underlying browser writer)

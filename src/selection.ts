@@ -16,6 +16,13 @@ const registerSelectionEvents = (events: Events, scene: Scene) => {
     // Multi-select state for splats (Ctrl+click)
     const multiSplatSelection = new Set<Splat>();
 
+    let prePaintSelection: {
+        splat: Splat | null;
+        shape: Element | null;
+        lastSelected: 'splat' | 'shape' | null;
+        multiSplats: Splat[];
+    } | null = null;
+
     // Most recent selection (for backward compatibility)
     const getSelection = (): Element | null => {
         if (lastSelected === 'shape' && shapeSelection) return shapeSelection;
@@ -158,6 +165,41 @@ const registerSelectionEvents = (events: Events, scene: Scene) => {
 
     events.function('multiSplatSelection.count', () => {
         return multiSplatSelection.size;
+    });
+
+    // Paint tools may change the current scene selection (for example a
+    // shrinkwrapped decal selects its newly created Splat). Preserve the edit
+    // mode selection and restore it when the user returns.
+    events.on('mode.willChange', (mode: 'edit' | 'paint') => {
+        if (mode === 'paint') {
+            prePaintSelection = {
+                splat: splatSelection instanceof Splat ? splatSelection : null,
+                shape: shapeSelection,
+                lastSelected,
+                multiSplats: Array.from(multiSplatSelection)
+            };
+            return;
+        }
+
+        if (!prePaintSelection) return;
+        const snapshot = prePaintSelection;
+        prePaintSelection = null;
+        const validSplat = snapshot.splat?.scene === scene && snapshot.splat.visible ? snapshot.splat : null;
+        const validShape = snapshot.shape?.scene === scene && snapshot.shape.visible ? snapshot.shape : null;
+
+        setSplatSelection(validSplat);
+        setShapeSelection(validShape);
+
+        multiSplatSelection.clear();
+        for (const splat of snapshot.multiSplats) {
+            if (splat.scene === scene && splat.visible) multiSplatSelection.add(splat);
+        }
+        events.fire('multiSplatSelection.changed');
+
+        lastSelected = snapshot.lastSelected === 'shape' && validShape ? 'shape' :
+            snapshot.lastSelected === 'splat' && validSplat ? 'splat' :
+                validShape ? 'shape' : validSplat ? 'splat' : null;
+        computeCurrent();
     });
 
     // Toggle a splat in the multi-selection (Ctrl+click)

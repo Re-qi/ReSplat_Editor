@@ -457,7 +457,7 @@ class LodEditLog {
     }
 
     // Capture the currently-selected splats as a voxel bitmap.
-    private captureSelectedAsVoxel(splat: Splat): VoxelSelection | null {
+    captureSelectedVoxel(splat: Splat): VoxelSelection | null {
         const state = splat.splatData.getProp('state') as Uint8Array;
         if (!state) return null;
         // Build a mask from current state.selected, then voxelize it.
@@ -471,6 +471,11 @@ class LodEditLog {
         }
         if (count === 0) return null;
         return this.maskToVoxel(splat, mask);
+    }
+
+    // Backward-compatible internal name used by older callers.
+    private captureSelectedAsVoxel(splat: Splat): VoxelSelection | null {
+        return this.captureSelectedVoxel(splat);
     }
 
     // === Misc ===

@@ -18,6 +18,7 @@ import {
     Color,
     Entity,
     Mat4,
+    Quat,
     Ray,
     RenderPass,
     RenderPassForward,
@@ -103,6 +104,10 @@ class Camera extends Element {
 
     // overridden target size
     targetSizeOverride: { width: number, height: number } = null;
+
+    // Overrides the tween-driven pose, FOV and clipping planes while rendering
+    // 360-degree cube faces.
+    poseOverride: { position: Vec3, rotation: Quat, fov: number, near: number, far: number } | null = null;
 
     renderOverlays = true;
 
@@ -272,6 +277,12 @@ class Camera extends Element {
         this.setFocalPoint(target, dampingFactorFactor);
         this.setAzimElev(azim, elev, dampingFactorFactor);
         this.setDistance(l / this.sceneRadius * this.fovFactor, dampingFactorFactor);
+    }
+
+    // Apply immediately so splat sorting sees the temporary capture pose.
+    setPoseOverride(override: Camera['poseOverride']) {
+        this.poseOverride = override;
+        this.onUpdate(0);
     }
 
     // transform the world space coordinate to normalized screen coordinate
@@ -588,10 +599,18 @@ class Camera extends Element {
             cameraPosition.add(this.focalPointTween.value);
         }
 
-        this.mainCamera.setLocalPosition(cameraPosition);
-        this.mainCamera.setLocalEulerAngles(azimElev.elev, azimElev.azim, 0);
-
-        this.fitClippingPlanes(this.mainCamera.getLocalPosition(), this.mainCamera.forward);
+        if (this.poseOverride) {
+            const { position, rotation, fov, near, far } = this.poseOverride;
+            this.mainCamera.setLocalPosition(position);
+            this.mainCamera.setLocalRotation(rotation);
+            this.camera.fov = fov;
+            this.near = near;
+            this.far = far;
+        } else {
+            this.mainCamera.setLocalPosition(cameraPosition);
+            this.mainCamera.setLocalEulerAngles(azimElev.elev, azimElev.azim, 0);
+            this.fitClippingPlanes(this.mainCamera.getLocalPosition(), this.mainCamera.forward);
+        }
 
         const { camera } = this.mainCamera;
         const { targetSize } = this;
@@ -673,9 +692,9 @@ class Camera extends Element {
     }
 
     // intersect the scene at the given normalized screen coordinate (0-1 range) using depth picking
-    async intersect(x: number, y: number) {
+    async intersect(x: number, y: number, alphaThreshold = 0, candidates?: readonly Splat[]) {
         const { scene } = this;
-        const splats = scene.getElementsByType(ElementType.splat);
+        const splats = candidates ?? scene.getElementsByType(ElementType.splat) as Splat[];
 
         let closestDepth = Infinity;
         let closestSplat: Splat | null = null;
@@ -684,7 +703,7 @@ class Camera extends Element {
         for (let i = 0; i < splats.length; ++i) {
             const splat = splats[i] as Splat;
 
-            this.picker.prepareDepth(splat);
+            this.picker.prepareDepth(splat, alphaThreshold);
             const normalizedDepth = await this.picker.readDepth(x, y);
 
             if (normalizedDepth !== null && normalizedDepth < closestDepth) {
@@ -741,8 +760,8 @@ class Camera extends Element {
     // pick mode
 
     // render picker contents
-    pickPrep(splat: Splat, mode: 'add' | 'remove' | 'set') {
-        this.picker.prepareId(splat, mode);
+    pickPrep(splat: Splat, mode: 'add' | 'remove' | 'set', alphaThreshold = 0) {
+        this.picker.prepareId(splat, mode, alphaThreshold);
     }
 
     pick(x: number, y: number) {

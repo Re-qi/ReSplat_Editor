@@ -148,14 +148,12 @@ class BoxSelection {
         events.on('camera.focalPointPicked', (details: { splat: Splat, position: Vec3 }) => {
             if (!this.active) return;
 
-            // eslint-disable-next-line no-use-before-define
             createBox(details.position);
         });
 
         // Additional event to create a box when tool icon is clicked while already active
-        events.on('boxSelection.create', () => {
-            // eslint-disable-next-line no-use-before-define
-            createBox(scene.camera.focalPoint.clone());
+        events.on('boxSelection.create', (position?: Vec3) => {
+            createBox(position?.clone() ?? scene.camera.focalPoint.clone());
         });
 
         // Clean up our reference when a box is removed from the scene

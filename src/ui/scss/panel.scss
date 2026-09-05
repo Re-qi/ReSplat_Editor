@@ -79,3 +79,20 @@
         margin: 0px;
     }
 }
+
+.vertical-list-resize-handle {
+    position: relative;
+    z-index: 10;
+    flex: 0 0 4px;
+    width: 100%;
+    height: 4px;
+    margin-top: -4px;
+    cursor: ns-resize;
+    touch-action: none;
+}
+
+html.vertical-list-resizing,
+html.vertical-list-resizing * {
+    cursor: ns-resize !important;
+    user-select: none !important;
+}

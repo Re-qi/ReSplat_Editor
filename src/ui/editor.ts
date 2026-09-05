@@ -1,5 +1,5 @@
 import { Container, Label } from '@playcanvas/pcui';
-import { Mat4, path, Vec3 } from 'playcanvas';
+import { Mat4, Vec3 } from 'playcanvas';
 
 import { DataPanel } from './data-panel';
 import { Events } from '../events';
@@ -11,7 +11,7 @@ import { ExportPopup } from './export-popup';
 import { FixPlyDialog } from './fix-ply-dialog';
 import { ImageSettingsDialog } from './image-settings-dialog';
 import { LeftToolbar } from './left-toolbar';
-import { localize } from './localization';
+import { i18n, localize } from './localization';
 import { Menu } from './menu';
 import { ModeSwitch } from './mode-switch';
 import { ModeToggle } from './mode-toggle';
@@ -27,15 +27,12 @@ import { TimelinePanel } from './timeline-panel';
 import { Tooltips } from './tooltips';
 import { VideoSettingsDialog } from './video-settings-dialog';
 import { ViewCube } from './view-cube';
+import { ViewModeToggle } from './view-mode-toggle';
 import { version } from '../../package.json';
 import { VersionCheck, UpdateState } from '../version-check';
 
 // ts compiler and vscode find this type, but eslint does not
 type FilePickerAcceptType = unknown;
-
-const removeExtension = (filename: string) => {
-    return filename.substring(0, filename.length - path.getExtension(filename).length);
-};
 
 class EditorUI {
     appContainer: Container;
@@ -217,6 +214,7 @@ class EditorUI {
         const scenePanel = new ScenePanel(events, tooltips, canvasContainer);
         const leftToolbar = new LeftToolbar(events, tooltips);
         const modeToggle = new ModeToggle(events, tooltips);
+        const viewModeToggle = new ViewModeToggle(events, tooltips);
         const modeSwitch = new ModeSwitch(events, tooltips);
         const overlayToggle = new OverlayToggle(events, tooltips);
         const cameraModeSwitch = new CameraModeSwitch(events, tooltips);
@@ -228,6 +226,7 @@ class EditorUI {
         canvasContainer.append(toolsContainer);
         canvasContainer.append(scenePanel);
         canvasContainer.append(leftToolbar);
+        canvasContainer.append(viewModeToggle);
         canvasContainer.append(modeToggle);
         canvasContainer.append(overlayToggle);
         canvasContainer.append(cameraModeSwitch);
@@ -349,7 +348,46 @@ class EditorUI {
             const imageSettings = await imageSettingsDialog.show();
 
             if (imageSettings) {
-                await events.invoke('render.image', imageSettings);
+                try {
+                    const imageFileTypes: Record<string, {
+                        description: string,
+                        accept: Record<`${string}/${string}`, `.${string}`[]>,
+                        extension: `.${string}`
+                    }> = {
+                        png: { description: 'PNG Image', accept: { 'image/png': ['.png'] }, extension: '.png' },
+                        jpeg: { description: 'JPEG Image', accept: { 'image/jpeg': ['.jpg', '.jpeg'] }, extension: '.jpg' },
+                        webp: { description: 'WebP Image', accept: { 'image/webp': ['.webp'] }, extension: '.webp' }
+                    };
+                    const imageFileType = imageFileTypes[imageSettings.format];
+                    let writable: FileSystemWritableFileStream | undefined;
+                    let fileHandle: FileSystemFileHandle | undefined;
+
+                    if (window.showSaveFilePicker) {
+                        fileHandle = await window.showSaveFilePicker({
+                            id: 'ReSplatImageFileExport',
+                            types: [{
+                                description: imageFileType.description,
+                                accept: imageFileType.accept
+                            }],
+                            suggestedName: `${events.invoke('render.baseFilename')}${imageFileType.extension}`
+                        });
+                        writable = await fileHandle.createWritable();
+                    }
+
+                    const result = await events.invoke('render.image', imageSettings, writable);
+                    if (result === false && fileHandle?.remove) {
+                        await fileHandle.remove();
+                    }
+                } catch (error) {
+                    if (error instanceof DOMException && error.name === 'AbortError') {
+                        return;
+                    }
+                    await events.invoke('showPopup', {
+                        type: 'error',
+                        header: i18n.t('panel.render.failed'),
+                        message: `'${(error as any).message ?? error}'`
+                    });
+                }
             }
         });
 
@@ -359,8 +397,6 @@ class EditorUI {
             if (videoSettings) {
 
                 try {
-                    const docName = events.invoke('doc.name');
-
                     // Determine file extension and mime type based on format
                     let fileExtension: string;
                     let filePickerTypes: FilePickerAcceptType[];
@@ -400,7 +436,7 @@ class EditorUI {
                         }];
                     }
 
-                    const suggested = `${removeExtension(docName ?? 'ReSplat')}${fileExtension}`;
+                    const suggested = `${events.invoke('render.baseFilename')}${fileExtension}`;
 
                     let writable;
                     let fileHandle: FileSystemFileHandle | undefined;
@@ -548,6 +584,9 @@ class EditorUI {
                 'deleteSelection': '删除选中',
                 'splatsTransform': '变换选中',
                 'setPivot': '设置枢轴',
+                'paintStroke': '绘画',
+                'splatSubdivide': '细分',
+                'decalSubdividePaint': '贴花细分绘画',
                 'addSplat': '新建包裹球',
                 'splatRename': '重命名',
                 'addGroup': '新建点云组',

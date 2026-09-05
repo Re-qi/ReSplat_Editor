@@ -9,6 +9,7 @@
 @use 'wrapper-list.scss';
 @use 'view-panel.scss';
 @use 'color-panel.scss';
+@use 'paint-palette.scss';
 @use 'splat-list.scss';
 @use 'transform.scss';
 @use 'left-toolbar.scss';
@@ -188,6 +189,9 @@ body {
     position: absolute;
     width: 100%;
     height: 100%;
+    // Cursor-following visuals stay above the canvas but below every sibling UI
+    // panel, toolbar and HUD element appended after this container.
+    z-index: 0;
     cursor: crosshair;
     &.noevents {
         pointer-events: none;

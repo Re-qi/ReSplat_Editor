@@ -1,9 +1,0 @@
-# clangd config for native/ node-addon sources.
-# Mirrors include dirs from native/binding.gyp (node-addon-api) plus the
-# node headers resolved by node-gyp (see native/build/config.gypi -> nodedir).
-CompileFlags:
-  Add:
-    - "-std=c++17"
-    - "-DNAPI_DISABLE_CPP_EXCEPTIONS"
-    - "-ID:/CodeProjects/ReSplat/ReSplat/node_modules/node-addon-api"
-    - "-IC:/Users/123/AppData/Local/node-gyp/Cache/24.14.1/include/node"

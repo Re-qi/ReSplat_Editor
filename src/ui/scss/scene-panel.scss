@@ -36,6 +36,10 @@
         box-sizing: border-box;
     }
 
+    & > .vertical-list-resize-handle {
+        margin: -4px 0 0;
+    }
+
     // Embedded color and view panels - override absolute positioning
     #color-panel,
     #view-panel {

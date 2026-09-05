@@ -13,6 +13,7 @@ import scanEyeSvg from './svg/scan-eye.svg';
 import shownOnlySvg from './svg/shown-only.svg';
 import shownOnly2Svg from './svg/shown-only2.svg';
 import { Tooltips } from './tooltips';
+import { addVerticalListResizeHandle } from './vertical-list-resize';
 
 const createSvg = (svgString: string) => {
     const decodedStr = decodeURIComponent(svgString.substring('data:image/svg+xml,'.length));
@@ -245,6 +246,7 @@ class PointCloudGroup extends Container {
 
         this.append(header);
         this.append(this.listContainer);
+        addVerticalListResizeHandle(this.listContainer.dom, { disableWhenEmpty: true });
 
         // Edit input for renaming
         this.editInput = new TextInput({
@@ -408,6 +410,31 @@ class PointCloudGroup extends Container {
 
         events.on('selection.changed', (selection: any) => {
             updateVisibility(selection);
+        });
+
+        // Painting always targets a complete Gaussian file. If a point-cloud
+        // group is current when paint mode starts, promote its owning Splat to
+        // the scene selection; updateVisibility then clears the group-current
+        // state while preserving the selected Gaussian bits themselves.
+        let prePaintGroup: PointCloudGroupData | null = null;
+        events.on('mode.changed', (mode: 'edit' | 'paint') => {
+            if (mode === 'paint') {
+                prePaintGroup = this._activeGroup ? this.selectedGroupData : null;
+                if (prePaintGroup) events.fire('selection', prePaintGroup.splat);
+                return;
+            }
+
+            const group = prePaintGroup;
+            prePaintGroup = null;
+            if (!group || !this.groups.includes(group) || !group.splat.scene || !group.splat.visible) return;
+
+            for (const item of this.groupItems) {
+                item.selected = item.groupData === group;
+            }
+            this.setSelectedGroupData(group);
+            this._activeGroup = true;
+            this._needsGaussianSelection = false;
+            this.events.fire('splat.stateChanged', group.splat);
         });
 
         // When a shape (wrapper) is selected, deactivate the group so the

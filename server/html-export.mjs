@@ -26,6 +26,8 @@ import path from 'node:path';
 import os from 'node:os';
 import { performance } from 'node:perf_hooks';
 
+import { NodePathReadFileSystem } from './node-path-read-file-system.mjs';
+
 // Reuse the ZIP entry extractor used by the Electron renderer path. It reads
 // the archive in the main/backend process and writes a seekable temporary PLY,
 // avoiding a multi-GB Buffer for .respproj sources.
@@ -299,18 +301,16 @@ export async function htmlExportToPath(inputPath, outputPath, options, splatLib,
     } else {
         console.log(`\n[html-export] Reading ${path.extname(sourcePath) || 'source'} (splat-transform): ${sourcePath}`);
         const {
-            readFile, getInputFormat, MemoryReadFileSystem, ZipReadFileSystem,
+            readFile, getInputFormat, ZipReadFileSystem,
             bakeTransform, materializeToDataTable, selectLod
         } = splatLib;
-        const bytes = fs.readFileSync(sourcePath);
         const base = path.basename(sourcePath);
         const inputFormat = getInputFormat(base);
-        const memFs = new MemoryReadFileSystem();
-        memFs.set(base, bytes);
-        let readFs = memFs;
+        const nodeFs = new NodePathReadFileSystem(sourcePath);
+        let readFs = nodeFs;
         let readFilename = base;
-        if (inputFormat === 'sog' && lowerInput.endsWith('.sog')) {
-            readFs = new ZipReadFileSystem(await memFs.createSource(base));
+        if (inputFormat === 'sog' && lowerSource.endsWith('.sog')) {
+            readFs = new ZipReadFileSystem(await nodeFs.createSource(base));
             readFilename = 'meta.json';
         }
         let dataTableFallback;
@@ -328,7 +328,7 @@ export async function htmlExportToPath(inputPath, outputPath, options, splatLib,
             }
         } finally {
             readFs.close?.();
-            memFs.set(base, new Uint8Array(0));
+            if (readFs !== nodeFs) nodeFs.close();
         }
         columns = dataTableFallback.columns.map(c => ({ name: c.name, data: c.data }));
         numRows = dataTableFallback.numRows;

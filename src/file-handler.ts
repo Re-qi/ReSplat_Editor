@@ -1,15 +1,16 @@
 import { type FileSystem } from '@playcanvas/splat-transform';
-import { Color, Mat4, path, Quat, Vec3 } from 'playcanvas';
+import { Asset, Color, GSplatResource, Mat4, path, Quat, Vec3 } from 'playcanvas';
 
 import { BackendClient } from './backend';
 import { CreateDropHandler } from './drop-handler';
 import { ElementType } from './element';
 import { Events } from './events';
+import { downsampleDimensions, imagePixelsToGSplatData } from './image-import';
 import { BrowserFileSystem, ElectronFileSystem, ElectronLccReadFileSystem, loadGSplatData, MappedReadFileSystem, readSogMeta, readPlyMeta, validateGSplatData } from './io';
 import { createDirectoryFileSystem, DirectoryFileSystem } from './io/write';
 import { Scene } from './scene';
 import { Splat } from './splat';
-import { serializeLcc2, serializeLcc2FromLodLog, serializeLcc2FromLodSplats, serializePly, serializePlyCompressed, serializeStandardPly, SerializeSettings, serializeSog, serializeSplat, serializeViewer, SogSettings, ViewerExportSettings } from './splat-serialize';
+import { serializeLcc2, serializeLcc2FromLodLog, serializeLcc2FromLodSplats, serializePagedLod0Ply, serializePly, serializePlyCompressed, serializeStandardPly, SerializeSettings, serializeSog, serializeSplat, serializeViewer, SogSettings, ViewerExportSettings } from './splat-serialize';
 import { showDownloadPrompt } from './ui/download-prompt';
 import { localize } from './ui/localization';
 
@@ -149,6 +150,8 @@ const allImportTypes = {
         'text/plain': ['.txt']
     }
 };
+
+const isImageFilename = (filename: string) => /\.(?:jpe?g|png)$/i.test(filename);
 
 // Convert a FilePickerAcceptType entry to an Electron dialog filter
 // ({ name, extensions }) for the native save dialog.
@@ -427,6 +430,92 @@ const initFileHandler = (scene: Scene, events: Events, dropTarget: HTMLElement) 
         });
     };
 
+    const importImageFile = async (file: File) => {
+        if (!isImageFilename(file.name)) {
+            await showLoadError(localize('popup.import-image.invalid-format'), file.name);
+            return null;
+        }
+
+        let bitmap: ImageBitmap | null = null;
+        let spinnerVisible = false;
+        try {
+            bitmap = await createImageBitmap(file);
+
+            const options: Array<{ v: string, t: string }> = [];
+            for (let level = 0; ; level++) {
+                const size = downsampleDimensions(bitmap.width, bitmap.height, level);
+                const count = size.width * size.height;
+                options.push({
+                    v: String(level),
+                    t: `${level} — ${size.width} × ${size.height} (${count.toLocaleString()} ${localize('popup.import-image.gaussians')})`
+                });
+                if (size.width === 1 && size.height === 1) break;
+            }
+
+            const settings = await events.invoke('showPopup', {
+                type: 'okcancel',
+                header: localize('popup.import-image.header'),
+                message: `${file.name}\n${localize('popup.import-image.downsample')}`,
+                icon: false,
+                select: {
+                    value: '0',
+                    options
+                },
+                warning: bitmap.width * bitmap.height > 4_000_000 ? {
+                    text: localize('popup.import-image.large-message')
+                } : undefined,
+                okText: localize('popup.import-image.import')
+            });
+            if (settings.action !== 'ok') return null;
+
+            const downsampleLevel = Math.max(0, parseInt(settings.value, 10) || 0);
+            const targetSize = downsampleDimensions(bitmap.width, bitmap.height, downsampleLevel);
+
+            events.fire('startSpinner');
+            spinnerVisible = true;
+            events.fire('spinnerText', localize('popup.import-image.converting'));
+
+            const canvas = document.createElement('canvas');
+            canvas.width = targetSize.width;
+            canvas.height = targetSize.height;
+            const context = canvas.getContext('2d', { willReadFrequently: true });
+            if (!context) throw new Error(localize('popup.import-image.canvas-error'));
+
+            context.imageSmoothingEnabled = true;
+            context.imageSmoothingQuality = 'high';
+            context.drawImage(bitmap, 0, 0, targetSize.width, targetSize.height);
+            const imageData = context.getImageData(0, 0, targetSize.width, targetSize.height);
+            const gsplatData = imagePixelsToGSplatData(
+                imageData,
+                localize('popup.import-image.no-visible-pixels')
+            );
+            validateGSplatData(gsplatData);
+
+            // Release the canvas backing store before PlayCanvas uploads the
+            // Gaussian properties to GPU textures.
+            canvas.width = 1;
+            canvas.height = 1;
+
+            const filename = file.name;
+            const asset = new Asset(filename, 'gsplat', {
+                url: `local-image-asset-${Date.now()}`,
+                filename
+            });
+            scene.app.assets.add(asset);
+            asset.resource = new GSplatResource(scene.app.graphicsDevice, gsplatData);
+
+            const splat = new Splat(asset, new Quat());
+            await scene.add(splat);
+            return splat;
+        } catch (error) {
+            await showLoadError(error.message ?? error, file.name);
+            return null;
+        } finally {
+            bitmap?.close();
+            if (spinnerVisible) events.fire('stopSpinner');
+        }
+    };
+
     // import splat model(s) - handles single files, SOG, and LCC formats
     const importSplatModel = async (files: ImportFile[], animationFrame: boolean) => {
         const firstFilename = files[0]?.filename ?? '?';
@@ -653,7 +742,8 @@ const initFileHandler = (scene: Scene, events: Events, dropTarget: HTMLElement) 
     // In browser: only create when showOpenFilePicker is unavailable.
     let fileSelector: HTMLInputElement;
     const isElectron = !!(window as any).electronAPI?.isElectron;
-    if (!window.showOpenFilePicker || isElectron) {
+    const debugFileSelector = new URLSearchParams(window.location.search).has('debugFileSelector');
+    if (!window.showOpenFilePicker || isElectron || debugFileSelector) {
         fileSelector = document.createElement('input');
         fileSelector.setAttribute('id', 'file-selector');
         fileSelector.setAttribute('type', 'file');
@@ -672,18 +762,52 @@ const initFileHandler = (scene: Scene, events: Events, dropTarget: HTMLElement) 
             importFiles(files);
             fileSelector.value = '';
         };
+        if (debugFileSelector) {
+            fileSelector.style.position = 'fixed';
+            fileSelector.style.zIndex = '100000';
+            fileSelector.style.top = '8px';
+            fileSelector.style.left = '8px';
+            fileSelector.style.display = 'block';
+        }
         document.body.append(fileSelector);
     }
 
+    // Image import is intentionally a separate single-file picker so JPG/PNG
+    // files do not enter the ordinary splat/container import classifier.
+    const imageFileSelector = document.createElement('input');
+    imageFileSelector.setAttribute('id', 'image-file-selector');
+    imageFileSelector.setAttribute('type', 'file');
+    imageFileSelector.setAttribute('accept', '.jpg,.jpeg,.png,image/jpeg,image/png');
+    imageFileSelector.setAttribute('multiple', 'false');
+    imageFileSelector.hidden = true;
+    imageFileSelector.onchange = async () => {
+        const file = imageFileSelector.files?.[0];
+        if (file) await importImageFile(file);
+        imageFileSelector.value = '';
+    };
+    document.body.append(imageFileSelector);
+
     // create the file drag & drop handler
-    CreateDropHandler(dropTarget, (entries, shift) => {
-        importFiles(entries.map((e) => {
-            const fp = (e.file as any).path ||
-                (window as any).electronAPI?.getDropFilePath?.(e.filename, e.file.size) ||
-                electronFilePath(e.file);
-            console.log(`[import] drop entry: ${e.filename}, path=${fp ?? 'none'}, sizeMB=${(e.file.size / (1024 * 1024)).toFixed(1)}`);
-            return toImportFile(e.file, e.filename, e.handle, fp);
-        }));
+    CreateDropHandler(dropTarget, async (entries, _shift) => {
+        const imageEntries = entries.filter(e => isImageFilename(e.filename));
+        const splatEntries = entries.filter(e => !isImageFilename(e.filename));
+
+        if (splatEntries.length > 0) {
+            await importFiles(splatEntries.map((e) => {
+                const fp = (e.file as any).path ||
+                    (window as any).electronAPI?.getDropFilePath?.(e.filename, e.file.size) ||
+                    electronFilePath(e.file);
+                console.log(`[import] drop entry: ${e.filename}, path=${fp ?? 'none'}, sizeMB=${(e.file.size / (1024 * 1024)).toFixed(1)}`);
+                return toImportFile(e.file, e.filename, e.handle, fp);
+            }));
+        }
+
+        // Image drops use the same settings dialog and conversion path as the
+        // file-menu action. Multiple images are handled sequentially so each
+        // one gets an explicit downsample choice.
+        for (const entry of imageEntries) {
+            await importImageFile(entry.file);
+        }
     });
 
     // get the list of visible splats containing gaussians
@@ -743,6 +867,10 @@ const initFileHandler = (scene: Scene, events: Events, dropTarget: HTMLElement) 
                 }
             }
         }
+    });
+
+    events.function('scene.importImage', () => {
+        imageFileSelector.click();
     });
 
     // Import a whole directory (Electron only). Streamed SOG (ssog) and LCC2
@@ -1152,6 +1280,18 @@ const initFileHandler = (scene: Scene, events: Events, dropTarget: HTMLElement) 
 
             const splats = splatIdx === 'all' ? getSplats() : [getSplats()[splatIdx]];
 
+            const unavailablePaged = splats.find(s => s.pagedLodDescriptor && !s.pagedLodEditSession);
+            if (unavailablePaged) {
+                throw new Error('LOD0 分页源文件缺失或指纹不匹配，重新定位源文件后才能导出');
+            }
+            if (splats.some(s => s.pagedLodEditSession) && fileType !== 'ply' && fileType !== 'lcc2') {
+                throw new Error('代理 LOD 模式当前只支持导出普通 PLY 或 LCC2');
+            }
+
+            // Proxy deletion is immediate, but exports must wait for the exact
+            // LOD0 source rows before reading the delete patch.
+            await Promise.all(splats.map(s => s.pagedLodEditSession?.waitForPendingRefinements()));
+
             // Shared SogSettings construction for the 'sog' and 'lcc2' cases —
             // both reuse serializeSog's underlying path (extractDataTable +
             // writeSogInternal), so the settings shape (minOpacity, removeInvalid,
@@ -1166,7 +1306,11 @@ const initFileHandler = (scene: Scene, events: Events, dropTarget: HTMLElement) 
 
             switch (fileType) {
                 case 'ply':
-                    await serializePly(splats, serializeSettings, fs);
+                    if (splats.length === 1 && splats[0].pagedLodEditSession) {
+                        await serializePagedLod0Ply(splats[0], splats[0].pagedLodEditSession, serializeSettings, fs);
+                    } else {
+                        await serializePly(splats, serializeSettings, fs);
+                    }
                     break;
                 case 'compressedPly':
                     serializeSettings.minOpacity = 1 / 255;
